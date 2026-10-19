@@ -17,7 +17,7 @@ export const LOCAL_HEADER_VALUE = '1';
 export const GREETING_MAX_CHARS = 200;
 /** 简历文件上限（字节）。 */
 export const RESUME_MAX_BYTES = 10 * 1024 * 1024;
-/** 允许上传的简历扩展名；txt/md 自动读取正文，pdf/docx 只保存文件，正文由用户粘贴并确认。 */
+/** 允许上传的简历扩展名；txt/md 自动读取正文，无法解析的 pdf/docx 由用户补充正文，统一保存即确认。 */
 export const RESUME_EXTENSIONS = ['.txt', '.md', '.pdf', '.docx'] as const;
 export type ResumeExtension = (typeof RESUME_EXTENSIONS)[number];
 
@@ -29,7 +29,7 @@ export type ErrorCode =
   | 'stale_version' // 批准时提交的 version 与当前批次不符
   | 'not_approvable' // 批次不满足批准条件（无目标、简历投递未确认等）
   | 'not_startable' // 批次未处于有效批准状态
-  | 'resume_unconfirmed' // 发现前需要已确认的简历正文
+  | 'inputs_incomplete' // 保存缺少无法解析文件的正文，或发现前缺少具体要求/有效简历正文
   | 'codex_signed_out'
   | 'browser_not_ready' // 浏览器未打开或停在登录/安全验证页
   | 'busy' // 已有发现任务在运行
@@ -100,14 +100,24 @@ export interface ResumeFileMeta {
 export interface ResumeState {
   /** 本地保存的原始文件元数据；未上传为 null。文件保存在本机数据目录，不入 Git。 */
   file: ResumeFileMeta | null;
-  /** 交给模型的简历正文。txt/md 上传后自动填入；pdf/docx 需用户粘贴。 */
+  /** 上次统一保存的匹配正文。txt/md 保存时自动读取；无法解析的 pdf/docx 需用户补充。 */
   text: string;
   textSource: 'file' | 'pasted' | null;
-  /** 用户已确认 text 与自己的简历一致；未确认不能开始发现。 */
-  textConfirmed: boolean;
 }
 
+/**
+ * 发现区只需一个操作按钮：idle 时开始，running 时停止，stopping 时禁用并等待结束事件。
+ * 耗时 = (finishedAt ?? 当前时间) - startedAt；没有 startedAt 时不显示。
+ * 时间随服务端状态持久化，刷新/重新连接不会重置；服务重启发现未终结任务时标记 idle、中断原因，
+ * finishedAt 记为检测到中断的恢复时间，而不是声称已知实际崩溃时刻。
+ * UI 可用本地定时器更新显示，不向后端轮询计时；状态变更仍由现有 SSE 通知。
+ */
+
 export interface DiscoveryState {
+  /** 后端记录的本轮开始时间（ISO 8601），从未开始为 null；接受新的开始请求才更新，校验失败不改变。 */
+  startedAt: string | null;
+  /** 后端记录的结束时间（ISO 8601）；运行/正在停止时为 null，完成、停止或失败后固定保留。 */
+  finishedAt: string | null;
   /** 缺关键条件时的问题；在同一个具体要求框补充并保存后清除，再重新开始发现。 */
   questions: string[];
   status: 'idle' | 'running' | 'stopping';
@@ -204,12 +214,10 @@ export interface Batch {
 /**
  * POST /api/codex/login            无体；开始 ChatGPT 登录，结果见 codex.pendingLoginUrl
  * POST /api/codex/logout           无体
- * PUT  /api/requirements           RequirementsRequest（替代 profile/criteria，旧接口删除）
- * POST /api/resume/file            原始文件字节作请求体；请求头 X-File-Name 为 encodeURIComponent(文件名)
- * PUT  /api/resume/text            ResumeTextRequest
- * DELETE /api/resume               删除本地简历文件与正文
+ * PUT  /api/inputs                 SaveInputsRequest：唯一资料保存入口，成功返回最新 AppState
+ *                                 删除旧 /api/requirements、/api/resume/file、/api/resume/text、DELETE /api/resume，不保留兼容写入口
  * POST /api/browser/open           打开本应用独立 profile 的浏览器到 BOSS（用户自行登录/验证）
- * POST /api/discovery/start        需：Codex 已登录、简历已确认、具体要求非空、批次不在执行；实际搜索前才要求浏览器 ready
+ * POST /api/discovery/start        需：Codex 已登录、已保存的简历正文/具体要求非空、批次不在执行；实际搜索前才要求浏览器 ready
  * POST /api/discovery/stop
  * PATCH /api/batch                 BatchPatch
  * PATCH /api/batch/targets/:id     TargetPatch
@@ -220,16 +228,37 @@ export interface Batch {
  * 具体要求、简历、批次的任何修改：批次 running 时返回 batch_running；
  * 否则若批次为 approved/paused，状态退回 draft、version +1（旧批准失效）。
  */
-export interface RequirementsRequest {
-  /** 具体要求自由文本，最多 10000 字；空白可以保存，发现时须补充。 */
-  text: string;
+/**
+ * 统一保存：文件选择、编辑正文和删除文件仅改变 UI 本地草稿，不调用任何上传/删除接口。
+ * 点击一次保存才提交本请求，保存即确认这些输入可用于匹配，没有独立确认勾选或接口。
+ *
+ * requirements、简历文件/正文/元数据与旧批准失效必须原子生效；任一校验或存储失败则全部保持原样。
+ * 批次 running 返回 batch_running，发现 running/stopping 返回 busy，均不得修改任何已保存数据或批准。
+ * 成功清除澄清问题，使未完成批次的旧批准失效并递增一次版本；不改变上轮发现时间。
+ * 保存不是对外投递批准；BOSS 附件确认与整批批准仍是独立安全步骤。
+ */
+export interface SaveInputsRequest {
+  /** 唯一具体要求自由文本，最多 10000 字；可保存空草稿，但开始发现前必须非空。 */
+  requirements: string;
+  resume: {
+    /**
+     * 省略：保留已保存文件；null：删除已保存文件；对象：用本次文件替换。
+     * 无论哪种操作，旧文件在整个提交成功前始终有效；文件与正文不会分两次提交。
+     */
+    file?: { fileName: string; base64: string } | null;
+    /**
+     * string：使用用户提供的正文（最多 50000 字），不能沿用未审阅的新文件对应旧正文。
+     * null：替换 txt/md 时自动读 UTF-8 正文；保留文件时保留原正文；删除文件时也删除正文。
+     * 替换无法解析的 pdf/docx 时必须提供非空正文，否则整次保存返回 inputs_incomplete。
+     * 文件存在但没有有效正文时保存失败；无文件可保存空正文，但不能开始发现。
+     * 新选 txt/md 的 UI 默认传 null，无需用户手抄或额外确认；新选 pdf/docx 不自动携带旧文件的正文。
+     */
+    text: string | null;
+  };
 }
 
-export interface ResumeTextRequest {
-  text: string;
-  /** 用户勾选「这段文字与我的简历一致」。 */
-  confirmed: boolean;
-}
+/** base64 只接受标准 RFC 4648 编码（含所需填充），不含 data: URL 前缀；解码后上限 RESUME_MAX_BYTES。 */
+export const INPUTS_MAX_BYTES = 4 * Math.ceil(RESUME_MAX_BYTES / 3) + 512 * 1024;
 
 export interface BatchPatch {
   resumeDelivery?: Partial<ResumeDelivery>;
