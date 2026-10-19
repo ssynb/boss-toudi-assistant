@@ -6,8 +6,8 @@ import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 const exec=promisify(execFile);
 
-test('单一要求保存、原位澄清、异步保留编辑和执行锁定', {timeout:90000}, async()=>{
- const state={doctor:[],codex:{signedIn:true,email:'测试服务器',pendingLoginUrl:null,error:null},browser:{page:'closed'},requirements:'',resume:{file:null,text:'合成简历',textConfirmed:true},discovery:{status:'idle',message:null,questions:[]},batch:null,contactedCount:0};
+test('原子保存草稿、文件失败保留输入、停止与权威计时', {timeout:90000}, async()=>{
+ const state={doctor:[],codex:{signedIn:true,email:'测试服务器',pendingLoginUrl:null,error:null},browser:{page:'closed'},requirements:'',resume:{file:null,text:'合成简历',textSource:'file'},discovery:{status:'idle',message:null,questions:[],startedAt:'2026-01-01T00:00:00Z',finishedAt:'2026-01-01T00:02:05Z'},batch:null,contactedCount:0};
  const streams=new Set();const writes=[];
  const changed=()=>{for(const stream of streams)stream.write('event: changed\n\n');};
  const server=http.createServer(async(req,res)=>{
@@ -21,8 +21,13 @@ test('单一要求保存、原位澄清、异步保留编辑和执行锁定', {t
   if(req.url==='/api/events'){res.writeHead(200,{'Content-Type':'text/event-stream'});res.write(': test\n\n');streams.add(res);res.on('close',()=>streams.delete(res));return;}
   if(req.method!=='GET'){
    let raw='';for await(const chunk of req)raw+=chunk;
-   writes.push([req.method,req.url,JSON.parse(raw)]);
-   if(req.url==='/api/requirements'){state.requirements=JSON.parse(raw).text;state.discovery.questions=[];}
+   writes.push([req.method,req.url,(raw?JSON.parse(raw):null)]);
+   if(req.url==='/api/inputs'){
+    const input=JSON.parse(raw);
+    if(input.resume.file){res.writeHead(400,{'Content-Type':'application/json'}).end(JSON.stringify({error:{message:'合成文件校验失败'}}));return;}
+    state.requirements=input.requirements;state.discovery.questions=[];
+   }
+   if(req.url==='/api/discovery/stop')state.discovery.status='stopping';
   }
   res.setHeader('Content-Type','application/json');res.end(JSON.stringify(state));
  });
@@ -31,25 +36,38 @@ test('单一要求保存、原位澄清、异步保留编辑和执行锁定', {t
  const inspect=async expression=>JSON.parse(await browser('eval',`${expression}`));
  try{
   await browser('open',`http://127.0.0.1:${server.address().port}`);
-  assert.equal(await inspect("Boolean(document.querySelector('#requirements textarea'))"),true,'必须提供唯一具体要求输入');
+  assert.equal(await inspect("Boolean(document.querySelector('#inputs textarea[name=requirements]'))"),true,'只有统一输入保存入口');
   await browser('find','label','具体要求','fill','杭州前端，至少 25K');
-  await browser('find','role','button','click','--name','保存要求');
-  await browser('wait','--fn',"document.querySelector('#requirements output').textContent==='已保存'");
-  assert.deepEqual(writes,[['PUT','/api/requirements',{text:'杭州前端，至少 25K'}]]);
+  await browser('find','role','button','click','--name','保存','--exact');
+  await browser('wait','--fn',"document.querySelector('#inputs output').textContent==='已保存'");
+  assert.deepEqual(writes,[['PUT','/api/inputs',{requirements:'杭州前端，至少 25K',resume:{text:null}}]]);
   await browser('reload');
-  assert.equal(await browser('get','value','#requirements textarea'),'杭州前端，至少 25K');
-  assert.equal(await inspect("document.querySelector('[data-action=\"discovery/start\"]').disabled"),false,'尚未打开 BOSS 也可提取要求及澄清');
+  assert.equal(await browser('get','value','[name=requirements]'),'杭州前端，至少 25K');
+  assert.equal(await browser('get','text','#elapsed'),'2:05');
   await browser('find','label','具体要求','fill','杭州前端，至少 25K，排除外包');
   state.discovery.questions=['本批最多找几个岗位？'];changed();
   await browser('wait','--text','本批最多找几个岗位？');
-  assert.equal(await browser('get','value','#requirements textarea'),'杭州前端，至少 25K，排除外包');
-  assert.equal(await inspect("document.querySelector('[data-action=\"discovery/start\"]').disabled"),true,'未保存编辑不能发起发现');
-  state.discovery.status='running';changed();
-  await browser('wait','--fn',"document.querySelector('#requirements fieldset').disabled");
-  state.discovery.status='idle';changed();
-  await browser('wait','--fn',"!document.querySelector('#requirements fieldset').disabled");
-  await browser('find','role','button','click','--name','保存要求');
-  await browser('wait','--fn',"document.querySelector('#clarification').hidden");
+  assert.equal(await browser('get','value','[name=requirements]'),'杭州前端，至少 25K，排除外包');
+  const file=new URL('./synthetic.pdf',import.meta.url);
+  await fs.writeFile(file,'%PDF-synthetic');
+  try{
+   await browser('upload','input[type=file]',file.pathname);
+   assert.equal(writes.length,1,'选择文件不得上传');
+   await browser('find','label','简历正文','fill','PDF 合成正文');
+   await browser('find','role','button','click','--name','保存','--exact');
+   await browser('wait','--text','合成文件校验失败');
+   assert.deepEqual(writes[1],['PUT','/api/inputs',{requirements:'杭州前端，至少 25K，排除外包',resume:{file:{fileName:'synthetic.pdf',base64:Buffer.from('%PDF-synthetic').toString('base64')},text:'PDF 合成正文'}}]);
+   assert.equal(await browser('get','value','[name=requirements]'),'杭州前端，至少 25K，排除外包');
+   assert.equal(await browser('get','value','[name=resumeText]'),'PDF 合成正文');
+   assert.equal(await inspect("document.querySelector('input[type=file]').files[0].name"),'synthetic.pdf');
+  }finally{await fs.unlink(file);}
+  state.discovery.status='running';state.discovery.startedAt=new Date(Date.now()-65000).toISOString();state.discovery.finishedAt=null;changed();
+  await browser('wait','--fn',"document.querySelector('#inputs fieldset').disabled");
+  await browser('find','role','button','click','--name','停止发现','--exact');
+  await browser('wait','--fn',"document.querySelector('#discover').disabled && document.querySelector('#discover').textContent==='正在停止…'");
+  state.discovery.status='idle';state.discovery.startedAt='2026-01-01T00:00:00Z';state.discovery.finishedAt='2026-01-01T00:02:05Z';changed();
+  await browser('wait','--fn',"!document.querySelector('#inputs fieldset').disabled");
+  assert.equal(await browser('get','text','#elapsed'),'2:05');
  }finally{
   await browser('close');for(const stream of streams)stream.end();await new Promise(resolve=>server.close(resolve));
  }
