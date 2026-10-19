@@ -1,6 +1,6 @@
 import {request, events} from './client.js';
 const $ = id => document.getElementById(id);
-let state, pending=false, sequence=0;
+let state, pending=false, sequence=0, pendingAction=null;
 const dirty=new Set();
 const text=(id,value)=>{$(id).textContent=value ?? '';};
 const fail=error=>{text('error',error.message); $('error').hidden=false; $('error').tabIndex=-1; $('error').focus();};
@@ -15,23 +15,32 @@ function fill(id, values){
 }
 function busy(){return pending || state?.discovery.status!=='idle' || state?.batch?.status==='running';}
 function controls(){
- text('notice',!state?'正在读取本机状态…':state.discovery.status!=='idle'||state.batch?.status==='running'?'发现或执行期间编辑已锁定；暂停会在当前步骤收尾后停止。':'');
+ text('notice',!state?'正在读取…':state.batch?.status==='running'?'执行中，暂停后可编辑':'');
  for(const field of document.querySelectorAll('fieldset')) field.disabled=busy();
  for(const button of document.querySelectorAll('[data-action]')) {
   const action=button.dataset.action;
-  button.disabled=pending || (action==='discovery/start' && (busy()||dirty.size>0||!state?.codex.signedIn||!state?.resume.textConfirmed||!state?.requirements.trim())) || (action==='discovery/stop' && state?.discovery.status!=='running') || (action==='batch/start' && (dirty.size>0||!['approved','paused'].includes(state?.batch?.status))) || (action==='batch/pause' && state?.batch?.status!=='running');
+  button.disabled=pending || !state || (action==='batch/start' && (dirty.size>0||!['approved','paused'].includes(state.batch?.status))) || (action==='batch/pause' && state.batch?.status!=='running');
  }
  $('approve').disabled=busy()||dirty.size>0||state?.batch?.status!=='draft';
- $('delete').disabled=busy();
+ const status=state?.discovery.status;
+ text('discover',pendingAction==='discovery/start'?'正在开始…':pendingAction==='discovery/stop'||status==='stopping'?'正在停止…':status==='running'?'停止发现':'开始发现');
+ $('discover').disabled=pending||!state||status==='stopping'||(status==='idle'&&(busy()||dirty.size>0||!state.codex.signedIn||!state.requirements.trim()||!state.resume.text.trim()));
+ text('save',pendingAction==='inputs'?'正在保存…':'保存');
+}
+function elapsed(){
+ const discovery=state?.discovery;
+ if(!discovery?.startedAt){text('elapsed','');return;}
+ const seconds=Math.max(0,Math.floor(((discovery.finishedAt?Date.parse(discovery.finishedAt):Date.now())-Date.parse(discovery.startedAt))/1000));
+ text('elapsed',`${Math.floor(seconds/60)}:${String(seconds%60).padStart(2,'0')}`);
 }
 async function mutate(path, method='POST', body, form, headers){
  if(pending) return;
- pending=true; controls(); $('error').hidden=true;
+ pending=true; pendingAction=path; controls(); $('error').hidden=true;
  try {
-  const next=await request(`/api/${path}`,method,body,headers);
-  if(form){dirty.delete(form.id);form.querySelector('output').textContent='已保存';}
+  const next=await request(`/api/${path}`,method,typeof body==='function'?await body():body,headers);
+  if(form){dirty.delete(form.id);form.querySelector('output').textContent='已保存';if(form.id==='inputs')form.elements.file.value='';}
   sequence++; render(next);
- }catch(error){fail(error);}finally{pending=false;controls();}
+ }catch(error){fail(error);}finally{pending=false;pendingAction=null;controls();}
 }
 async function refresh(){
  const ticket=++sequence;
@@ -39,23 +48,27 @@ async function refresh(){
 }
 function render(next){
  state=next;
- fill('requirements',{text:state.requirements});fill('resume',{text:state.resume.text,confirmed:state.resume.textConfirmed});
- text('codex',state.codex.signedIn?`Codex 已登录 · ${state.codex.email ?? ''}`:'Codex 未登录');
- if(state.codex.error) text('codex',state.codex.error);
+ fill('inputs',{requirements:state.requirements});
+ if(!dirty.has('inputs')){
+  $('inputs').elements.resumeText.value=state.resume.text;
+  $('resume-body').hidden=!(state.resume.file&&['.pdf','.docx'].includes(state.resume.file.extension));
+  text('file',state.resume.file?.fileName ?? '');
+ }
+ text('codex',state.codex.signedIn?`Codex · ${state.codex.email ?? '已登录'}`:'Codex 登录');
+ $('codex').hidden=Boolean(state.codex.pendingLoginUrl);
+ if(state.codex.error)fail(new Error(state.codex.error));
  const url=state.codex.pendingLoginUrl;
  $('login').hidden=!url; if(url){const parsed=new URL(url); if(parsed.protocol==='https:') $('login').href=url; else $('login').removeAttribute('href');}
- text('browser',`BOSS · ${{closed:'尚未打开',unknown:'页面状态未知',loggedOut:'请在独立窗口登录',verify:'请本人完成安全验证',ready:'已就绪'}[state.browser.page]}`);
- $('doctor').replaceChildren(...state.doctor.map(check=>{const li=document.createElement('li');li.textContent=`${check.ok?'通过':'未通过'} · ${check.detail}`;return li;}));
- text('count',`去重账本已记录 ${state.contactedCount} 个已联系或结果未确认的岗位`);
- text('file',state.resume.file?`${state.resume.file.fileName} · ${Math.ceil(state.resume.file.sizeBytes/1024)} KB`:'尚未上传文件');
- text('discovery',state.discovery.message || ({idle:'准备就绪后可开始发现',running:'正在发现岗位…',stopping:'正在停止，请等待当前读取结束'}[state.discovery.status]));
+ text('browser',({closed:'BOSS 登录',unknown:'BOSS · 状态未知',loggedOut:'BOSS 登录',verify:'BOSS · 请完成验证',ready:'BOSS · 已登录'}[state.browser.page]));
+ elapsed();
+ text('discovery',state.discovery.message || ({idle:'',running:'正在发现…',stopping:'等待当前读取结束'}[state.discovery.status]));
  $('clarification').hidden=state.discovery.questions.length===0;
  $('questions').replaceChildren(...state.discovery.questions.map(question=>{const li=document.createElement('li');li.textContent=question;return li;}));
  renderBatch(); controls();
 }
 const stepNames={todo:'未开始',inflight:'进行中',done:'已核实完成',skipped:'已跳过',failed:'已核实未发生',unknown:'结果未确认 · 请到 BOSS 核查，不自动重试'};
 function renderBatch(){
- const batch=state.batch; $('batch').hidden=!batch; if(!batch)return;
+ const batch=state.batch; $('batch').hidden=!batch?.targets.length; if(!batch?.targets.length)return;
  text('batch-state',`${{draft:'待审阅批准',approved:'已批准，尚未执行',running:'正在执行',paused:'已暂停',done:'处理结束（请逐步查看结果）'}[batch.status]} · 版本 ${batch.version} · ${batch.targets.filter(t=>!t.removed).length} 个保留目标${batch.stopReason?' · '+batch.stopReason:''}`);
  fill('delivery',batch.resumeDelivery);
  const ids=new Set(batch.targets.map(t=>t.id));
@@ -85,18 +98,35 @@ function renderBatch(){
  }
 }
 function submit(id,path,method,read){$(id).addEventListener('submit',event=>{event.preventDefault();mutate(path,method,read($(id).elements),$(id));});}
-submit('requirements','requirements','PUT',e=>({text:e.text.value}));
-submit('resume','resume/text','PUT',e=>({text:e.text.value,confirmed:e.confirmed.checked}));
 submit('delivery','batch','PATCH',e=>({resumeDelivery:{enabled:e.enabled.checked,bossAttachmentName:e.bossAttachmentName.value,bossAttachmentConfirmed:e.bossAttachmentConfirmed.checked}}));
 $('delivery').elements.bossAttachmentName.addEventListener('input',()=>{$('delivery').elements.bossAttachmentConfirmed.checked=false;});
-$('resume').elements.text.addEventListener('input',()=>{$('resume').elements.confirmed.checked=false;});
-$('upload').addEventListener('submit',event=>{event.preventDefault();if(dirty.has('resume')&&!confirm('上传会替换已保存正文。先保存当前正文，或取消后继续编辑。仍要上传？'))return;const file=$('upload').elements.file.files[0];mutate('resume/file','POST',file,$('upload'),{'X-File-Name':encodeURIComponent(file.name)});});
-$('delete').onclick=()=>{if(confirm('删除本机保存的简历文件与正文？'))mutate('resume','DELETE');};
+$('inputs').elements.file.addEventListener('change',()=>{
+ const file=$('inputs').elements.file.files[0];
+ dirty.add('inputs');
+ $('inputs').elements.resumeText.value='';
+ $('resume-body').hidden=!file||!(/\.(pdf|docx)$/i.test(file.name));
+ text('file',file?`${file.name} · 未保存`:state.resume.file?.fileName ?? '');
+ controls();
+});
+async function inputsBody(){
+ const form=$('inputs').elements;
+ const file=form.file.files[0];
+ const resume={text:null};
+ if(file){
+  if(file.size>10*1024*1024)throw new Error('简历文件不能超过 10 MB');
+  const data=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=()=>reject(new Error('读取文件失败，请重新选择'));reader.readAsDataURL(file);});
+  resume.file={fileName:file.name,base64:data.slice(data.indexOf(',')+1)};
+ }
+ if(!$('resume-body').hidden)resume.text=form.resumeText.value;
+ return {requirements:form.requirements.value,resume};
+}
+$('inputs').addEventListener('submit',event=>{event.preventDefault();mutate('inputs','PUT',inputsBody,$('inputs'));});
+$('discover').onclick=()=>mutate(state.discovery.status==='running'?'discovery/stop':'discovery/start');
 $('approve').onclick=()=>{if(confirm('确认批准本批保留目标的联系、招呼原文及附件设置？'))mutate('batch/approve','POST',{version:state.batch.version});};
 for(const button of document.querySelectorAll('[data-action]')) button.onclick=()=>mutate(button.dataset.action);
 for(const form of forms) form.addEventListener('input',controls);
-$('refresh').onclick=refresh;
 window.addEventListener('beforeunload',event=>{if(dirty.size){event.preventDefault();event.returnValue='';}});
 controls();
 await refresh();
+setInterval(elapsed,1000);
 events((name,data)=>{if(name==='changed')refresh();if(name==='log'){const li=document.createElement('li');li.textContent=`${data.at} ${data.text}`;$('logs').append(li);if($('logs').children.length>100)$('logs').firstChild.remove();}}).then(()=>fail(new Error('实时连接已断开。请重新加载页面恢复实时进度。'))).catch(fail);
