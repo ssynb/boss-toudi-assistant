@@ -25,7 +25,7 @@ export type ErrorCode =
   | 'bad_request'
   | 'forbidden' // Host/Origin/X-Boss-Local 校验未通过
   | 'not_found'
-  | 'batch_running' // 批次执行中，禁止修改资料、条件、简历、批次或开始新的发现
+  | 'batch_running' // 批次执行中，禁止修改具体要求、简历、批次或开始新的发现
   | 'stale_version' // 批准时提交的 version 与当前批次不符
   | 'not_approvable' // 批次不满足批准条件（无目标、简历投递未确认等）
   | 'not_startable' // 批次未处于有效批准状态
@@ -47,8 +47,8 @@ export interface AppState {
   doctor: DoctorCheck[];
   codex: CodexState;
   browser: BrowserState;
-  profile: Profile;
-  criteria: Criteria;
+  /** 唯一可编辑求职要求，AI 提取结果仅用于本轮发现。 */
+  requirements: string;
   resume: ResumeState;
   discovery: DiscoveryState;
   /** 当前批次；从未发现过时为 null。新的发现会替换非执行中的批次，已联系记录另行保存不丢失。 */
@@ -85,29 +85,6 @@ export interface BrowserState {
   url: string | null;
 }
 
-export interface Profile {
-  /** 求职者称呼，仅用于生成招呼语。 */
-  name: string;
-  /** 补充说明：求职意向、优势、不考虑的方向等，交给模型参考。 */
-  notes: string;
-}
-
-export interface Criteria {
-  keywords: string[];
-  /** 城市中文名，须为 SUPPORTED_CITIES 之一。 */
-  city: string;
-  /** 月薪下限（千元），null 表示不限；由模型按岗位卡显示的薪资筛选。 */
-  salaryMinK: number | null;
-  /** 本批最多目标数，1–50。 */
-  maxTargets: number;
-  /** 不投递的公司名（包含匹配）。 */
-  excludeCompanies: string[];
-}
-
-export const SUPPORTED_CITIES = [
-  '全国', '北京', '上海', '广州', '深圳', '杭州', '南京', '苏州', '成都', '武汉', '西安', '重庆', '天津', '长沙', '郑州', '厦门',
-] as const;
-
 export interface ResumeFileMeta {
   fileName: string;
   extension: ResumeExtension;
@@ -131,6 +108,8 @@ export interface ResumeState {
 }
 
 export interface DiscoveryState {
+  /** 缺关键条件时的问题；在同一个具体要求框补充并保存后清除，再重新开始发现。 */
+  questions: string[];
   status: 'idle' | 'running' | 'stopping';
   /** 最近一次发现的结果或失败原因（人话）。 */
   message: string | null;
@@ -140,7 +119,7 @@ export interface DiscoveryState {
 
 /**
  * draft     草案：可编辑，未批准，执行器不会做任何联系动作。
- * approved  已批准：批准绑定 version；之后任何改稿、资料/条件/简历/附件设置的修改都会退回 draft。
+ * approved  已批准：批准绑定 version；之后任何改稿、具体要求/简历/附件设置的修改都会退回 draft。
  * running   执行中：拒绝一切修改（batch_running）。
  * paused    已暂停：用户暂停，或遇到登录/验证/结果未确认而自动停下；批准仍有效时可继续，修改则退回 draft。
  * done      全部目标处理完毕。
@@ -225,8 +204,7 @@ export interface Batch {
 /**
  * POST /api/codex/login            无体；开始 ChatGPT 登录，结果见 codex.pendingLoginUrl
  * POST /api/codex/logout           无体
- * PUT  /api/profile                Profile
- * PUT  /api/criteria               Criteria
+ * PUT  /api/requirements           RequirementsRequest（替代 profile/criteria，旧接口删除）
  * POST /api/resume/file            原始文件字节作请求体；请求头 X-File-Name 为 encodeURIComponent(文件名)
  * PUT  /api/resume/text            ResumeTextRequest
  * DELETE /api/resume               删除本地简历文件与正文
@@ -239,9 +217,14 @@ export interface Batch {
  * POST /api/batch/start            从 approved 或仍有效批准的 paused 开始/继续
  * POST /api/batch/pause            当前 inflight 步骤收尾后停下，不再开始新动作
  *
- * 资料、条件、简历、批次的任何修改：批次 running 时返回 batch_running；
+ * 具体要求、简历、批次的任何修改：批次 running 时返回 batch_running；
  * 否则若批次为 approved/paused，状态退回 draft、version +1（旧批准失效）。
  */
+export interface RequirementsRequest {
+  /** 具体要求自由文本，最多 10000 字；空白可以保存，发现时须补充。 */
+  text: string;
+}
+
 export interface ResumeTextRequest {
   text: string;
   /** 用户勾选「这段文字与我的简历一致」。 */
