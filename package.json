@@ -12,7 +12,7 @@
     "start": "node src/main.ts",
     "setup": "node src/main.ts setup",
     "typecheck": "tsc",
-    "test": "node --test --test-concurrency=1 \"test/*.test.ts\"",
+    "test": "node --test --test-concurrency=1 \"test/*.test.ts\" \"public/test/*.test.js\"",
     "check": "npm run typecheck && npm test"
   },
   "dependencies": {
