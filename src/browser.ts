@@ -34,7 +34,11 @@ export interface Snapshot {
 /** 直接运行 agent-browser（不带本应用的 session 参数），供遥控与版本检查使用（不安装普通 Chrome）。 */
 export function runAgentBrowser(args: string[], opts: { env?: NodeJS.ProcessEnv } = {}): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [AGENT_BROWSER_BIN, '--config', CONFIG, ...args], {
+    // Windows 的 Node 启动器再派生原生进程，会让取消只结束启动器而留下持有管道的进程。
+    const native = process.platform === 'win32';
+    const command = native ? path.join(path.dirname(AGENT_BROWSER_BIN), 'agent-browser-win32-x64.exe') : process.execPath;
+    const prefix = native ? [] : [AGENT_BROWSER_BIN];
+    const child = spawn(command, [...prefix, '--config', CONFIG, ...args], {
       env: { ...systemEnvironment(), ...opts.env },
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
