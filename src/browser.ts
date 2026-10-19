@@ -45,9 +45,10 @@ export function runAgentBrowser(args: string[], opts: { env?: NodeJS.ProcessEnv 
     });
     let stdout = '';
     let stderr = '';
-    child.stdout?.on('data', (d: Buffer) => (stdout += d));
-    child.stderr?.on('data', (d: Buffer) => (stderr += d));
-    const timer = setTimeout(() => child.kill(), COMMAND_TIMEOUT_MS);
+    child.stdout?.on('data', (d: Buffer) => { stdout += d; if(process.env.CI) console.error('driver stdout:', d.toString()); });
+    child.stderr?.on('data', (d: Buffer) => { stderr += d; if(process.env.CI) console.error('driver stderr:', d.toString()); });
+    child.on('exit', (code, signal) => { if(process.env.CI) console.error('driver exit:',child.pid,code,signal); });
+    const timer = setTimeout(() => { if(process.env.CI) console.error('driver deadline:',child.pid,child.exitCode,stdout.length,stderr.length); child.kill(); }, COMMAND_TIMEOUT_MS);
     child.on('error', reject);
     child.on('close', (code) => {
       clearTimeout(timer);
