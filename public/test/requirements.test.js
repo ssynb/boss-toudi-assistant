@@ -8,7 +8,9 @@ import {runAgentBrowser} from '../../src/browser.ts';
 import {resolveCloak,profileArgs} from '../../src/cloak.ts';
 
 test('原子保存草稿、文件失败保留输入、停止与权威计时', {timeout:90000}, async()=>{
+ console.info('UI: resolve CloakBrowser');
  const runtime=await resolveCloak();
+ console.info('UI: resolved',runtime.binaryPath);
  const state={doctor:[],codex:{signedIn:true,email:'测试服务器',pendingLoginUrl:null,error:null},browser:{page:'closed'},requirements:'',resume:{file:null,text:'合成简历',textSource:'file'},discovery:{status:'idle',message:null,questions:[],startedAt:'2026-01-01T00:00:00Z',finishedAt:'2026-01-01T00:02:05Z'},batch:null,contactedCount:0};
  const streams=new Set();const writes=[];
  const changed=()=>{for(const stream of streams)stream.write('event: changed\n\n');};
@@ -39,9 +41,11 @@ test('原子保存草稿、文件失败保留输入、停止与权威计时', {t
  const flags=profileArgs(runtime,profile);
  const socket=await fs.mkdtemp(path.join(process.platform==='win32'?os.tmpdir():'/tmp','boss-ui-socket-'));
  const browser=async(...args)=>{
+  console.info('UI browser start:',args[0],args[1]??'');
   const result=await runAgentBrowser(['--session','ui','--profile',profile,'--headed','false',
    '--executable-path',runtime.binaryPath,'--args',flags.join(','),...args],
    {env:{HOME:dir,USERPROFILE:dir,AGENT_BROWSER_SOCKET_DIR:socket,AGENT_BROWSER_NAMESPACE:'ui-test'}});
+  console.info('UI browser end:',args[0],result.code,result.stderr);
   assert.equal(result.code,0,result.stderr||result.stdout);
   return result.stdout.trim();
  };
