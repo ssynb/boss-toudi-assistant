@@ -1,0 +1,26 @@
+{
+  "name": "boss-toudi-assistant",
+  "version": "0.1.0",
+  "private": true,
+  "description": "boss 投递助手：本地 Codex 驱动的 BOSS 直聘批量投递助手（macOS / Windows）",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=24.11.0"
+  },
+  "scripts": {
+    "start": "node src/main.ts",
+    "setup": "node src/main.ts setup",
+    "typecheck": "tsc",
+    "test": "node --test --test-concurrency=1 \"test/*.test.ts\"",
+    "check": "npm run typecheck && npm test"
+  },
+  "dependencies": {
+    "@openai/codex": "0.163.0",
+    "agent-browser": "0.39.1"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "7.0.2"
+  }
+}
