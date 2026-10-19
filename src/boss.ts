@@ -133,11 +133,13 @@ export function createBossSite(browser: Browser): Site {
       recruiter: document.querySelector('.chat-conversation a[href*="/boss_detail/"]')?.href || '',
       hasHistory: Boolean(document.querySelector('.chat-conversation .message-list'))
     }))()`);
-    const expectedRecruiter = recipients.get(t.jobId);
+    const saved = t.contactIdentity;
+    const expectedRecruiter = saved ? (saved.jobId === t.jobId ? saved.recruiterUrl : null) : recipients.get(t.jobId);
+    if (!expectedRecruiter) throw new Error('缺少已核实的会话身份：该目标不能自动继续，请到 BOSS 核对并手动完成剩余步骤，不要重新联系');
     if (!expectedRecruiter || identity.company !== t.company || !identity.hasHistory
       || identityUrl(identity.job, 'job_detail') !== `${ORIGIN}/job_detail/${t.jobId}.html`
       || identityUrl(identity.recruiter, 'boss_detail') !== expectedRecruiter) {
-      throw new Error('无法核实当前会话的岗位、招聘者与消息区域，停止发送');
+      throw new Error('当前会话的岗位或招聘者身份不符：请在 BOSS 切回原目标会话，再点击继续；不要重新联系');
     }
   }
 
@@ -202,7 +204,7 @@ export function createBossSite(browser: Browser): Site {
       await browser.waitFor('location.pathname.startsWith("/web/geek/chat")');
       try {
         await verifyChat(t);
-        return { ok: true, evidence: '已进入对应岗位和招聘者的会话页' };
+        return { ok: true, evidence: '已进入对应岗位和招聘者的会话页', identity: { jobId: t.jobId, recruiterUrl: recipients.get(t.jobId)! } };
       } catch (e) {
         return { ok: false, evidence: (e as Error).message };
       }

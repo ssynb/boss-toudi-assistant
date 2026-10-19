@@ -13,6 +13,7 @@ import {
   GREETING_MAX_CHARS,
   SUPPORTED_CITIES,
   type Batch,
+  type ContactIdentity,
   type BatchPatch,
   type BatchStatus,
   type Criteria,
@@ -67,6 +68,7 @@ CREATE TABLE IF NOT EXISTS targets (
   reason TEXT NOT NULL, greeting TEXT NOT NULL, removed INTEGER NOT NULL,
   contact TEXT NOT NULL, greeting_state TEXT NOT NULL, resume TEXT NOT NULL,
   evidence TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS contact_identities (target_id TEXT PRIMARY KEY, job_id TEXT NOT NULL, recruiter_url TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS contacts (job_id TEXT PRIMARY KEY, company TEXT NOT NULL, title TEXT NOT NULL, state TEXT NOT NULL, at TEXT NOT NULL);
 `;
 
@@ -167,7 +169,7 @@ export class State {
     this.#tx(() => {
       this.#assertNotRunning();
       const version = (this.#batchRow()?.version ?? 0) + 1;
-      this.#db.exec('DELETE FROM targets; DELETE FROM batch;');
+      this.#db.exec('DELETE FROM contact_identities; DELETE FROM targets; DELETE FROM batch;');
       const id = crypto.randomUUID();
       this.#db
         .prepare('INSERT INTO batch (id, version, status, approved_version, resume_delivery, stop_reason, created_at) VALUES (?, ?, ?, NULL, ?, NULL, ?)')
@@ -241,10 +243,15 @@ export class State {
     this.#db.prepare("UPDATE batch SET status = ?, stop_reason = ? WHERE status = 'running'").run(status, stopReason);
   }
 
-  setStep(target: Target, step: Step, value: StepState, evidence: string): void {
+  setStep(target: Target, step: Step, value: StepState, evidence: string, identity?: ContactIdentity): void {
     this.#tx(() => {
       this.#db.prepare(`UPDATE targets SET ${STEP_COLUMN[step]} = ?, evidence = ?, updated_at = ? WHERE id = ?`).run(value, evidence, now(), target.id);
       if (step !== 'contact') return;
+      if (value === 'done' && identity) {
+        if (identity.jobId !== target.jobId) throw new AppError('bad_request', '核实身份的岗位与目标不符');
+        this.#db.prepare('INSERT INTO contact_identities (target_id, job_id, recruiter_url) VALUES (?, ?, ?) ON CONFLICT(target_id) DO UPDATE SET job_id = excluded.job_id, recruiter_url = excluded.recruiter_url')
+          .run(target.id, identity.jobId, identity.recruiterUrl);
+      }
       if (value === 'inflight' || value === 'unknown' || value === 'done') {
         this.#db
           .prepare('INSERT INTO contacts (job_id, company, title, state, at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(job_id) DO UPDATE SET state = excluded.state, at = excluded.at')
@@ -327,6 +334,11 @@ export class State {
     return batch;
   }
 
+  #identity(targetId: string): { contactIdentity?: ContactIdentity } {
+    const row = this.#db.prepare('SELECT job_id, recruiter_url FROM contact_identities WHERE target_id = ?').get(targetId) as { job_id: string; recruiter_url: string } | undefined;
+    return row ? { contactIdentity: { jobId: row.job_id, recruiterUrl: row.recruiter_url } } : {};
+  }
+
   #batch(): Batch | null {
     const row = this.#batchRow();
     if (!row) return null;
@@ -339,6 +351,7 @@ export class State {
       stopReason: row.stop_reason,
       createdAt: row.created_at,
       targets: rows.map((t) => ({
+        ...this.#identity(t.id),
         id: t.id,
         jobId: t.job_id,
         company: t.company,

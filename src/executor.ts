@@ -5,10 +5,11 @@
  * 核实不了记 unknown 并停下整批，unknown 永不自动重试。
  * 暂停只在步骤之间生效，不打断正在进行的步骤。
  */
-import type { Batch, Target } from './contracts.ts';
+import type { Batch, Target, ContactIdentity } from './contracts.ts';
 import type { State } from './state.ts';
 
 export interface Verified {
+  identity?: ContactIdentity;
   ok: boolean;
   evidence: string;
 }
@@ -84,8 +85,9 @@ export class Executor {
     if (this.#pauseRequested) throw new Stop('');
   }
 
-  #set(t: Target, step: 'contact' | 'greeting' | 'resume', value: Target['steps']['contact'], evidence: string): void {
-    this.#state.setStep(t, step, value, evidence);
+  #set(t: Target, step: 'contact' | 'greeting' | 'resume', value: Target['steps']['contact'], evidence: string, identity?: ContactIdentity): void {
+    this.#state.setStep(t, step, value, evidence, identity);
+    if (identity) t.contactIdentity = identity;
     t.steps[step] = value;
     this.#onChange();
   }
@@ -114,8 +116,8 @@ export class Executor {
       }
       this.#checkpoint();
       this.#set(t, 'contact', 'inflight', opened.evidence);
-      const r = await this.#site.contact(t).catch((e: unknown) => ({ ok: false, evidence: `点击后出错：${errorText(e)}` }));
-      this.#set(t, 'contact', r.ok ? 'done' : 'unknown', r.evidence);
+      const r: Verified = await this.#site.contact(t).catch((e: unknown) => ({ ok: false, evidence: `点击后出错：${errorText(e)}` }));
+      this.#set(t, 'contact', r.ok ? 'done' : 'unknown', r.evidence, r.ok ? r.identity : undefined);
       if (!r.ok) {
         this.#skipRest(t, '联系结果未确认，不继续');
         throw new Stop(`「${t.company}」联系结果未确认：${r.evidence}`);
@@ -142,6 +144,8 @@ export class Executor {
 
     if (t.steps.resume !== 'todo') return;
     if (attachment === null || t.steps.greeting === 'unknown') return this.#set(t, 'resume', 'skipped', '本批未批准发简历');
+    this.#checkpoint();
+    await this.#site.readChat(t);
     this.#checkpoint();
     this.#set(t, 'resume', 'inflight', `发送 BOSS 附件简历「${attachment}」`);
     const r = await this.#site

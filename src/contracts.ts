@@ -166,7 +166,15 @@ export interface TargetSteps {
   resume: StepState;
 }
 
+/** 已从岗位页取得并在目标会话核实的身份；与联系完成状态同事务保存。 */
+export interface ContactIdentity {
+  jobId: string;
+  recruiterUrl: string;
+}
+
 export interface Target {
+  /** 老记录可能缺失；缺失时禁止恢复发送，不能用当前页面反推原批准对象。 */
+  contactIdentity?: ContactIdentity;
   id: string;
   /** BOSS 岗位 id，全局去重键。 */
   jobId: string;
