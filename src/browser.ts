@@ -3,7 +3,7 @@ import { systemEnvironment } from './process-env.ts';
  * agent-browser CLI 的薄封装：独立 session、独立持久 profile、独立 daemon 命名空间，
  * 不接管用户日常浏览器。命令串行执行；直接 spawn node + 包内启动脚本，不经过 shell。
  */
-import { spawn } from 'node:child_process';
+import { runCommand } from './command.ts';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import fs from 'node:fs';
@@ -33,28 +33,12 @@ export interface Snapshot {
 
 /** 直接运行 agent-browser（不带本应用的 session 参数），供遥控与版本检查使用（不安装普通 Chrome）。 */
 export function runAgentBrowser(args: string[], opts: { env?: NodeJS.ProcessEnv } = {}): Promise<{ code: number; stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    // Windows 的 Node 启动器再派生原生进程，会让取消只结束启动器而留下持有管道的进程。
-    const native = process.platform === 'win32';
-    const command = native ? path.join(path.dirname(AGENT_BROWSER_BIN), 'agent-browser-win32-x64.exe') : process.execPath;
-    const prefix = native ? [] : [AGENT_BROWSER_BIN];
-    const child = spawn(command, [...prefix, '--config', CONFIG, ...args], {
-      env: { ...systemEnvironment(), ...opts.env },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
-    let stdout = '';
-    let stderr = '';
-    child.stdout?.on('data', (d: Buffer) => { stdout += d; if(process.env.CI) console.error('driver stdout:', d.toString()); });
-    child.stderr?.on('data', (d: Buffer) => { stderr += d; if(process.env.CI) console.error('driver stderr:', d.toString()); });
-    child.on('exit', (code, signal) => { if(process.env.CI) console.error('driver exit:',child.pid,code,signal); });
-    const timer = setTimeout(() => { if(process.env.CI) console.error('driver deadline:',child.pid,child.exitCode,stdout.length,stderr.length); child.kill(); }, COMMAND_TIMEOUT_MS);
-    child.on('error', reject);
-    child.on('close', (code) => {
-      clearTimeout(timer);
-      resolve({ code: code ?? -1, stdout, stderr });
-    });
-  });
+  // Windows 直接运行原生程序，让进程退出与超时操作都指向实际命令。
+  const native = process.platform === 'win32';
+  const command = native ? path.join(path.dirname(AGENT_BROWSER_BIN), 'agent-browser-win32-x64.exe') : process.execPath;
+  const prefix = native ? [] : [AGENT_BROWSER_BIN];
+  return runCommand(command, [...prefix, '--config', CONFIG, ...args],
+    { ...systemEnvironment(), ...opts.env }, COMMAND_TIMEOUT_MS);
 }
 
 export class Browser {
