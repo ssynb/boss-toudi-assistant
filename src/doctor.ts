@@ -5,6 +5,7 @@ import path from 'node:path';
 import type { DoctorCheck } from './contracts.ts';
 import { CODEX_BIN } from './codex.ts';
 import { runAgentBrowser } from './browser.ts';
+import { resolveCloak } from './cloak.ts';
 
 export const MIN_NODE = [24, 11, 0] as const;
 
@@ -24,26 +25,15 @@ function codexVersion(): Promise<DoctorCheck> {
   });
 }
 
-async function agentBrowserChecks(executablePath: string | undefined): Promise<DoctorCheck[]> {
-  const r = await runAgentBrowser(['doctor', '--offline', '--quick', '--json']).catch((e: Error) => ({ code: -1, stdout: '', stderr: e.message }));
-  let checks: Array<{ id: string; status: string; message: string }> = [];
+async function browserChecks(): Promise<DoctorCheck[]> {
+  const result = await runAgentBrowser(['--version']).catch((e: Error) => ({ code: -1, stdout: '', stderr: e.message }));
+  const agent: DoctorCheck = { id: 'agentBrowser', ok: result.code === 0, detail: (result.code === 0 ? result.stdout : result.stderr).trim() };
   try {
-    checks = (JSON.parse(r.stdout) as { checks: typeof checks }).checks;
-  } catch {
-    return [
-      { id: 'agentBrowser', ok: false, detail: `agent-browser 无法运行：${(r.stderr || r.stdout).trim().slice(0, 200)}` },
-      { id: 'browser', ok: false, detail: '无法检查浏览器' },
-    ];
+    const runtime = await resolveCloak();
+    return [agent, { id: 'browser', ok: true, detail: `CloakBrowser 免费旧版 ${runtime.version}（非 latest）：${runtime.binaryPath}` }];
+  } catch (e) {
+    return [agent, { id: 'browser', ok: false, detail: (e as Error).message }];
   }
-  const version = checks.find((c) => c.id === 'env.version');
-  const agent: DoctorCheck = { id: 'agentBrowser', ok: version?.status === 'pass', detail: version?.message ?? 'agent-browser 未报告版本' };
-  if (executablePath) {
-    const exists = fs.existsSync(executablePath);
-    return [agent, { id: 'browser', ok: exists, detail: exists ? `自定义浏览器（不保证兼容）：${executablePath}` : `自定义浏览器不存在：${executablePath}` }];
-  }
-  const chrome = checks.find((c) => c.id === 'chrome.installed');
-  const ok = chrome?.status === 'pass';
-  return [agent, { id: 'browser', ok, detail: ok ? chrome!.message : `${chrome?.message ?? '未找到 Chrome'}；运行 npm run setup 安装` }];
 }
 
 function dataDirCheck(dataDir: string): DoctorCheck {
@@ -58,7 +48,7 @@ function dataDirCheck(dataDir: string): DoctorCheck {
   }
 }
 
-export async function runDoctor(dataDir: string, executablePath?: string): Promise<DoctorCheck[]> {
-  const [codex, browser] = await Promise.all([codexVersion(), agentBrowserChecks(executablePath)]);
+export async function runDoctor(dataDir: string): Promise<DoctorCheck[]> {
+  const [codex, browser] = await Promise.all([codexVersion(), browserChecks()]);
   return [nodeCheck(), codex, ...browser, dataDirCheck(dataDir)];
 }

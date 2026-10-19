@@ -35,7 +35,7 @@ export function dataLayout(dataDir: string) {
     codexHome: path.join(dataDir, 'codex-home'),
     codexUserHome: path.join(dataDir, 'codex-user-home'),
     codexWork: path.join(dataDir, 'codex-work'),
-    browserProfile: path.join(dataDir, 'browser-profile'),
+    browserProfile: path.join(dataDir, 'cloak-profile'),
   };
 }
 
@@ -43,7 +43,6 @@ export interface AppOptions {
   dataDir: string;
   /** 站点实现；默认用 agent-browser 驱动真实 BOSS。 */
   site?: Site;
-  browserPath?: string;
 }
 
 /** 事件：'changed'（状态有变）、'log'（人话日志文本）。 */
@@ -72,8 +71,8 @@ export class App extends EventEmitter {
     this.#codex.on('log', (t: string) => this.#log(t));
     this.#site =
       opts.site ??
-      createBossSite(new Browser({ profileDir: this.#layout.browserProfile, headed: true, namespace: `${APP_NAME}-${createHash('sha256').update(path.resolve(opts.dataDir)).digest('hex').slice(0, 12)}`, executablePath: opts.browserPath }));
-    this.#doctor = runDoctor(opts.dataDir, opts.browserPath);
+      createBossSite(new Browser({ profileDir: this.#layout.browserProfile, headed: true, namespace: `${APP_NAME}-cloak-${createHash('sha256').update(path.resolve(opts.dataDir)).digest('hex').slice(0, 12)}` }));
+    this.#doctor = runDoctor(opts.dataDir);
     void this.#refreshAccount();
   }
 

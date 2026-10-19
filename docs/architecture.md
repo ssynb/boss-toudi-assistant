@@ -2,7 +2,7 @@
 
 ## 进程与数据流
 
-一套 Node 本地 HTTP 服务负责状态和编排，静态 UI 放在 `public/`。Codex app-server、agent-browser 及 Chrome 是受控子进程，不存在 Python、容器或远程控制平面。TypeScript 直接由 Node 执行；最低版本 24.11.0 已在 macOS 实测可用原生 TS 与 node:sqlite（该版本 sqlite 仍会输出实验警告）。
+一套 Node 本地 HTTP 服务负责状态和编排，静态 UI 放在 `public/`。Codex app-server、agent-browser 及 CloakBrowser 是受控子进程，不存在 Python、容器或远程控制平面。TypeScript 直接由 Node 执行；最低版本 24.11.0 已在 macOS 实测可用原生 TS 与 node:sqlite（该版本 sqlite 仍会输出实验警告）。
 
 发现流程：具体要求（唯一持久化条件）与用户统一保存的简历正文 → Codex 提取本轮内存计划 → 应用的搜索/读详情工具 → 草案。关键方向、城市和薪资要求须引用用户原文；缺少或含糊时只显示澄清问题，用户在同一具体要求框补充，不增加聊天状态机。本轮计划不落库、不提供编辑入口。草案目标必须已成功读取非空实际 JD，不以岗位卡或整页正文冒充 JD。工具按完整操作串行，避免两个搜索互相切换页面。模型提供的 jobId 必须来自本轮观察，不能编造外部目标。
 
@@ -14,7 +14,8 @@
 - `state.ts`：具体要求、简历原始字节/正文与批准失效同事务保存；发现状态/时间、批次版本、跨批次联系账本与崩溃恢复。
 - `executor.ts`：逐步骤执行与暂停，任何对外动作前先记录 inflight。
 - `codex.ts` / `discovery.ts` / `search-plan.ts`：stdio RPC、登录、拒绝越权审批、根线程工具权限、本轮提取计划校验、澄清与发现草案。
-- `browser.ts` / `boss.ts`：跨平台子进程调用与 BOSS 页面读取/操作。
+- `browser.ts` / `boss.ts`：agent-browser 遥控 CloakBrowser 与 BOSS 页面读取/操作。
+- `cloak.ts` / `cloak-runtime.ts`：隔离调用官方 wrapper、检查已有免费版、用户确认许可后的官方下载；不读取个人 key、不回退其他浏览器。
 - `resume.ts`：有上限的严格 base64 解码、文件格式校验与文本提取，不写磁盘；字节交给 SQLite。pdf/docx 不解析，因此不需要 PDF/ZIP/Office 解析依赖。
 - `server.ts`：HTTP、SSE、静态托管和本机来源校验。
 
@@ -30,9 +31,9 @@ App 的取消令牌同时保护开始前的异步认证检查；保存同步进�
 
 ## 本机隔离
 
-数据目录下：`state.sqlite` 存业务事实与简历原始字节（BLOB）；`browser-profile/` 存专属浏览器 profile；`codex-home/` 由 Codex 自行存登录；`codex-user-home/` 隔离用户技能；`codex-work/` 是独立工作目录。
+数据目录下：`state.sqlite` 存业务事实与简历原始字节（BLOB）；`cloak-profile/` 存专属 CloakBrowser profile（不使用旧普通浏览器 profile）；`codex-home/` 由 Codex 自行存登录；`codex-user-home/` 隔离用户技能；`codex-work/` 是独立工作目录。
 
-Codex 不复用用户其他客户端的目录，避免继承 MCP server、hooks 与 AGENTS。子进程不继承 API key、NODE_OPTIONS 等隐式配置。agent-browser 使用项目显式配置而非用户默认配置，不启用插件。模型 shell 与浏览器工具关闭；文件修改、命令和权限审批均拒绝。
+Codex 不复用用户其他客户端的目录，避免继承 MCP server、hooks 与 AGENTS。子进程不继承 API key、NODE_OPTIONS 等隐式配置。agent-browser 使用项目显式配置而非用户默认配置，不启用插件。浏览器二进制只能来自 Cloak 官方缓存，启动总是显式传 executable-path 和官方指纹参数；profile seed 持久化。Cloak wrapper 子进程剥离外部覆盖、key 和下载源变量，使用应用专用缓存/HOME；共享旧缓存仅取指定免费版文件。Unix socket 使用短的隔离临时路径，不触碰 bbu 的会话。模型 shell 与浏览器工具关闭；文件修改、命令和权限审批均拒绝。
 
 HTTP 只接受实际监听端口对应的回环 Host；有 Origin 时必须同源，跨站 Fetch Metadata 被拒；所有 API 包括读取和事件流均要求专用头，无 CORS。CSP 禁止内联脚本和外部脚本，允许内联样式；设计师应把 JS 写到 `public/` 的独立模块。
 
@@ -48,6 +49,6 @@ HTTP 只接受实际监听端口对应的回环 Host；有 Origin 时必须同�
 
 ## 验证
 
-`npm run check` 包含规则、HTTP、真实 Codex 进程连接假模型、真实 Chrome 本地页。Windows CI 与 macOS CI 运行完整测试，而非仅类型检查。当前 Windows 配置尚未推送触发，因此没有 Windows 成功证据。
+`npm run check` 包含规则、HTTP、真实 Codex 进程连接假模型、真实 CloakBrowser 本地快照/填入/点击。Windows CI 与 macOS CI 运行完整测试，而非仅类型检查。当前 Windows 配置尚未推送触发，因此没有 Windows 成功证据；CI 下载前还需要仓库所有者设置许可确认变量。Windows 原生 arm64 不受当前 Cloak wrapper 支持，直接报错。
 
 尚需：本人在应用里登录 Codex 与 BOSS；只读确认岗位与会话结构；另行授权明确的测试目标才能验收发送。不能因假模型测试通过而宣布真实账号/站点端到端成功。

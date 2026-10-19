@@ -6,6 +6,10 @@ import { systemEnvironment } from './process-env.ts';
 import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import path from 'node:path';
+import fs from 'node:fs';
+import os from 'node:os';
+import { createHash } from 'node:crypto';
+import { resolveCloak, profileArgs, defaultCloakCache } from './cloak.ts';
 import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
@@ -20,8 +24,6 @@ export interface BrowserOptions {
   headed: boolean;
   /** agent-browser 守护进程命名空间，避免与用户自己的 agent-browser 会话互相影响。 */
   namespace: string;
-  /** 用户显式指定的浏览器可执行文件；不保证兼容。 */
-  executablePath?: string;
 }
 
 export interface Snapshot {
@@ -29,12 +31,12 @@ export interface Snapshot {
   snapshot: string;
 }
 
-/** 直接运行 agent-browser（不带本应用的 session 参数），供环境检查与安装浏览器使用。 */
-export function runAgentBrowser(args: string[], opts: { inherit?: boolean; env?: NodeJS.ProcessEnv } = {}): Promise<{ code: number; stdout: string; stderr: string }> {
+/** 直接运行 agent-browser（不带本应用的 session 参数），供遥控与版本检查使用（不安装普通 Chrome）。 */
+export function runAgentBrowser(args: string[], opts: { env?: NodeJS.ProcessEnv } = {}): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [AGENT_BROWSER_BIN, '--config', CONFIG, ...args], {
       env: { ...systemEnvironment(), ...opts.env },
-      stdio: opts.inherit ? 'inherit' : ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
     });
     let stdout = '';
@@ -54,6 +56,7 @@ export class Browser {
   readonly #opts: BrowserOptions;
   #queue: Promise<unknown> = Promise.resolve();
   #open = false;
+  #runtime: { binaryPath: string; args: string[] } | null = null;
 
   constructor(opts: BrowserOptions) {
     this.#opts = opts;
@@ -107,9 +110,21 @@ export class Browser {
   }
 
   async #exec(args: string[]): Promise<unknown> {
-    const global = ['--session', SESSION, '--profile', this.#opts.profileDir, '--headed', String(this.#opts.headed)];
-    if (this.#opts.executablePath) global.push('--executable-path', this.#opts.executablePath);
-    const { code, stdout, stderr } = await runAgentBrowser([...global, ...args, '--json'], { env: { AGENT_BROWSER_NAMESPACE: this.#opts.namespace } });
+    const cache = defaultCloakCache();
+    if (!this.#runtime) {
+      const runtime = await resolveCloak(cache);
+      this.#runtime = { binaryPath: runtime.binaryPath, args: profileArgs(runtime, this.#opts.profileDir) };
+    }
+    const home = path.join(path.dirname(this.#opts.profileDir), 'cloak-home');
+    fs.mkdirSync(home, { recursive: true, mode: 0o700 });
+    // Unix domain socket 路径长度有限，不能跟随深层 profile/HOME 目录。
+    const socketDir = path.join(process.platform === 'win32' ? os.tmpdir() : '/tmp', `boss-cb-${createHash('sha256').update(this.#opts.profileDir + this.#opts.namespace).digest('hex').slice(0, 16)}`);
+    fs.mkdirSync(socketDir, { recursive: true, mode: 0o700 });
+    const global = ['--session', SESSION, '--profile', this.#opts.profileDir, '--headed', String(this.#opts.headed),
+      '--executable-path', this.#runtime.binaryPath, '--args', this.#runtime.args.join(',')];
+    const { code, stdout, stderr } = await runAgentBrowser([...global, ...args, '--json'], {
+      env: { AGENT_BROWSER_NAMESPACE: this.#opts.namespace, AGENT_BROWSER_SOCKET_DIR: socketDir, HOME: home, USERPROFILE: home, CLOAKBROWSER_CACHE_DIR: cache },
+    });
     let parsed: { success: boolean; data: unknown; error: string | null };
     try {
       parsed = JSON.parse(stdout.trim().split('\n').at(-1) ?? '');

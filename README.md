@@ -18,14 +18,44 @@ npm start
 
 > 请从 https://github.com/ssynb/boss-toudi-assistant 获取源码，阅读 AGENTS.md，检查 Node.js 至少为 24.11.0（不满足时先指导我从 Node 官方渠道安装），然后执行 npm ci、npm run setup、npm start 并告诉我本地访问地址；登录和验证码由我本人完成，不联系任何 HR。
 
-`setup` 检查 Node、Codex、agent-browser、浏览器和数据目录。没有可用 Chrome 时，会用 agent-browser 从官方渠道下载 Chrome for Testing。项目不下载或打包 CloakBrowser。
+`setup` 检查 Node、Codex、agent-browser、CloakBrowser 和数据目录。**唯一浏览器是 CloakBrowser**，agent-browser 只负责遥控；不探测、安装或回退到普通 Chrome，也不支持自定义可执行文件路径。
+
+### CloakBrowser 安装与许可
+
+固定使用官方 npm wrapper `cloakbrowser@0.6.3`。wrapper 是 MIT，**浏览器二进制是单独的专有许可**，不能把 MIT 当作二进制许可。请本人先阅读 [Binary License v1.3](https://github.com/CloakHQ/CloakBrowser/blob/main/BINARY-LICENSE.md)：dependency listing 允许终端用户从官方渠道直接下载；禁止二进制打包、再分发；latest major 的使用受厂商订阅要求约束。
+
+本实现只接入不需要 key 的免费旧版；不获取 key、不付款、不使用用户全局 bbu 或 CloakBrowser 个人许可证。已有官方免费缓存可直接检查使用；缺失时 `npm run setup` 会明确失败，不自行下载或接受许可。
+
+**仅当本人审阅并同意许可后**，手动运行：
+
+macOS：
+```sh
+BOSS_CLOAK_LICENSE_ACCEPTED=1.3 npm run setup -- --install-cloak
+```
+
+Windows PowerShell：
+```powershell
+$env:BOSS_CLOAK_LICENSE_ACCEPTED = '1.3'
+npm run setup -- --install-cloak
+Remove-Item Env:BOSS_CLOAK_LICENSE_ACCEPTED
+```
+
+代理不得代填许可确认。官方 wrapper 负责下载、签名与归档校验；项目不打包二进制，也不上传到 CI 缓存或制品。安装后重新运行检查并启动。
+
+| 平台 | 0.6.3 无 key 免费版基线 | 状态 |
+|---|---|---|
+| macOS arm64 / x64 | 145.0.7632.109.2 | 官方提供两个架构；本机仅 arm64 实测 |
+| Windows x64 | 146.0.7680.177.5 | 官方提供，尚未真机/CI 验证 |
+| Windows 原生 arm64 | 无 | 明确拒绝，不偷换 Chrome 或承诺 x64 仿真兼容 |
+
+平台依据：[npm 0.6.3](https://www.npmjs.com/package/cloakbrowser/v/0.6.3) 的配置及官方 [145 发布资产](https://github.com/CloakHQ/cloakbrowser/releases/tag/chromium-v145.0.7632.109.2)、[146 发布资产](https://github.com/CloakHQ/cloakbrowser/releases/tag/chromium-v146.0.7680.177.5)。这些版本不是 latest，不能据此声称已获得最新安全更新或能绕过站点验证。
 
 ## 使用流程
 
 1. 在本应用里登录 Codex：打开官方 ChatGPT 授权链接。凭据由 Codex 自己保存，应用不读取、复制或展示 `auth.json`。本应用与其他 Codex 客户端使用不同的登录目录，需要单独登录一次。
 2. 在唯一的「具体要求」框写下求职要求，例如「上海前端，月薪至少25K，不考虑外包，最多10个」。不需要单独填写姓名、城市或薪资字段。AI 从这段文字提取本轮搜索条件；缺少岗位方向、城市或薪资要求（可明确写不限）时，先显示澄清问题，请仍在这个框补充、保存并重新开始。澄清不要求先登录 BOSS，实际搜索前才需要。
 3. 选择本地简历（txt / md / pdf / docx，≤10 MB），和具体要求一起点击一次「保存」。选择、替换或删除文件都先留在本地草稿，未保存不会改变已保存资料或批准。txt/md 保存时自动读取 UTF-8 正文；当前不能自动解析 pdf/docx，请在同一次保存中补充正文。保存即确认用于匹配的输入，没有独立一致性勾选。任一校验或存储失败则全部保持原状。
-4. 打开应用专属浏览器，在 BOSS 上本人登录、完成验证码或实名验证。不会接管日常 Chrome，不绕过风控。
+4. 打开应用专属 CloakBrowser，在 BOSS 上本人登录、完成验证码或实名验证。使用新的 cloak-profile，不复用或导入旧普通浏览器的登录态。不会接管日常浏览器，不绕过风控。
 5. 使用同一个按钮开始或停止发现。耗时由服务端开始/结束时间计算，停止后保留，刷新不会重置；「正在停止」期间任务尚未结束，计时仍继续。AI 读取每个候选岗位的实际 JD，结合已保存简历生成理由与招呼，不凭卡片标题编造经历；无法取得 JD 的岗位不进入草案。核对整批目标和每条招呼原文。可以改稿、移除目标，然后批准当前版本。
 6. 开始执行。暂停后不再开始新的外部步骤；已经发出的内容不会撤回。
 
@@ -62,7 +92,7 @@ npm start
 
 数据目录还包含专属浏览器登录态和独立 Codex 登录。**不要提交、上传或分享这个目录**。模型匹配需要将具体要求、已保存的简历正文、岗位 JD 发送给用户登录的 Codex 服务，本地存储不等于离线推理。
 
-可选环境变量：`PORT` 更改端口；`BOSS_DATA_DIR` 指定数据目录；`BOSS_BROWSER_PATH` 指定浏览器可执行文件（不承诺第三方浏览器兼容性）。不要把数据目录设置在仓库内。
+可选环境变量：`PORT` 更改端口；`BOSS_DATA_DIR` 指定数据目录。不要把数据目录设置在仓库内。CloakBrowser 二进制缓存独立放在 `~/.boss-toudi-assistant/cloakbrowser`，多个独立 profile 共用只读二进制；也可只读使用 `~/.cloakbrowser` 中相应免费旧版的官方二进制，但不读取那里的 key、配置或个人 profile。
 
 服务仅监听回环地址，检查 Host、Origin、浏览器请求来源与专用请求头，不提供跨域访问。它不防御本机同一用户权限下的恶意程序。
 
@@ -72,9 +102,9 @@ npm start
 npm run check
 ```
 
-测试包含真实 Codex app-server 进程连接本地假模型、真实 Chrome 打开本地页面、HTTP 安全边界、原子保存及真实数据库/文件失败恢复、持久计时、批准失效、暂停与崩溃去重；**不消耗真实模型额度，不联系任何 HR**。
+测试包含真实 Codex app-server 进程连接本地假模型、真实 CloakBrowser + agent-browser 在本地页完成快照、填入、点击并核实实际可执行路径、HTTP 安全边界、原子保存及真实数据库/文件失败恢复、持久计时、批准失效、暂停与崩溃去重；**不消耗真实模型额度，不联系任何 HR**。
 
-已在 macOS arm64 + Node 24.11.0 / 26.9.0 运行。Windows CI 配置会实际运行同一套测试（包括 Codex 与 Chrome），但当前尚未推送触发 CI，不能声称 Windows 已验证。CI 也不替代 Windows 用户桌面登录测试。
+已在 macOS arm64 + Node 24.11.0 / 26.9.0 运行。Windows CI 配置会实际运行同一套测试（包括 Codex 与 CloakBrowser），但当前尚未推送触发 CI，不能声称 Windows 已验证。仓库所有者需先审阅许可并把仓库变量 `CLOAK_BINARY_LICENSE_ACCEPTED` 设置为 `1.3`，CI 才能下载官方二进制；未确认则失败，不跳过冒烟假装通过。CI 也不替代 Windows 用户桌面登录测试。
 
 真实 BOSS 只读访问遇到安全验证，未由代理完成验证。登录后的岗位/聊天 DOM、真实模型调用、真实发送均待本人登录及明确授权测试目标后验收。
 
@@ -84,6 +114,8 @@ npm run check
 
 [官方 app-server 文档](https://learn.chatgpt.com/docs/app-server.md) 写明 “The app-server command and WebSocket transport are experimental and aren't supported for production workloads.” 认证章节还写明已有 local/open-source 应用可继续使用，推荐迁移到 Sign in with ChatGPT，并明确 “App-server authentication has never been permitted for commercial or hosted services.” 这些是上游原文约束，不构成本项目对具体商业场景的法律判断。ChatGPT 登录不是通用 API key，不承诺套餐额度与模型可用性。
 
-本项目源代码 MIT。Codex 和 agent-browser 各自为 Apache-2.0；Chrome 下载遵守其自身条款。依赖许可不会因本项目采用 MIT 而改变。
+本项目源代码 MIT。Codex 和 agent-browser 各自为 Apache-2.0；CloakBrowser wrapper 为 MIT、二进制遵守上述单独条款。依赖许可不会因本项目采用 MIT 而改变。
 
 开发接口与模块索引见 [AGENTS.md](AGENTS.md)。
+
+新增依赖的理由：agent-browser 不提供 CloakBrowser 二进制、官方签名校验与指纹参数；标准库也没有厂商的版本/校验协议。复用官方 wrapper 及其 tar 依赖，不另引 Playwright/Puppeteer，不自写二进制下载器。

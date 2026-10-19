@@ -17,7 +17,8 @@
   },
   "dependencies": {
     "@openai/codex": "0.163.0",
-    "agent-browser": "0.39.1"
+    "agent-browser": "0.39.1",
+    "cloakbrowser": "0.6.3"
   },
   "devDependencies": {
     "@types/node": "24.19.2",

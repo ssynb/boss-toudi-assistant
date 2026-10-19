@@ -2,7 +2,7 @@
 
 - 前后端接口只改 `src/contracts.ts`，没有独立的 API 文档镜像。`public/` 由 UI 维护者独占；后端维护者不改该目录。
 - 后端职责与验收边界见 [docs/architecture.md](docs/architecture.md)；修改核心时读 [src/AGENTS.md](src/AGENTS.md)，修改测试时读 [test/AGENTS.md](test/AGENTS.md)。
-- `npm ci` 安装，`npm run setup` 检查环境/安装 Chrome，`npm start` 启动；`npm run typecheck` 与 `npm test` 验证。
+- `npm ci` 安装，`npm run setup` 检查环境（CloakBrowser 下载需用户单独确认许可），`npm start` 启动；`npm run typecheck` 与 `npm test` 验证。
 - Node 原生执行 TypeScript，不生成 JS，不增加前端打包器；只写可擦除 TS 语法。
 
 # 不可越过的边界
@@ -26,3 +26,8 @@
 - `073fe82`：旧文件清理真实失败后的持久恢复。
 - `4b08a3d`：真实 Codex 接收模型错误后的计时终态。
 - `b81a1da`：10 MB 文件与完整 JSON 请求上限。
+
+- `3030272`：个人 key 和订阅版缓存不得进入免费运行路径。
+- `bdfe5e3`：按已确认的新需求替换原 browser 冒烟为真实 CloakBrowser 快照/填入/点击，并锁定不回退、平台与许可边界。
+
+浏览器只使用 CloakBrowser。不得执行 agent-browser install 下载普通 Chrome，不读取全局 bbu/Cloak 个人 key，不替用户设置许可确认；缺二进制或许可时明确阻塞。
