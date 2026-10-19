@@ -14,9 +14,9 @@ npm run setup
 npm start
 ```
 
-打开终端显示的地址（默认 `http://127.0.0.1:4318`）。首次推送发布后，也可以把下面这句话复制给自己的 Codex：
+打开终端显示的地址（默认 `http://127.0.0.1:4318`）。也可以把下面这句话复制给自己的 Codex：
 
-> 请从 https://github.com/ssynb/boss-toudi-assistant 获取源码，阅读 AGENTS.md，检查 Node.js 至少为 24.11.0（不满足时先指导我从 Node 官方渠道安装），然后执行 npm ci、npm run setup、npm start 并告诉我本地访问地址；登录和验证码由我本人完成，不联系任何 HR。
+> 请从 https://github.com/ssynb/boss-toudi-assistant 获取源码，阅读 AGENTS.md，检查 Node.js 至少为 24.11.0（不满足时先指导我从 Node 官方渠道安装），然后执行 npm ci 和 npm run setup；若缺少 CloakBrowser，先让我确认官方二进制许可，同意后按 README 安装。最后 npm start 并告诉我本地访问地址；登录和验证码由我本人完成，不联系任何 HR。
 
 `setup` 检查 Node、Codex、agent-browser、CloakBrowser 和数据目录。**唯一浏览器是 CloakBrowser**，agent-browser 只负责遥控；不探测、安装或回退到普通 Chrome，也不支持自定义可执行文件路径。
 
@@ -45,7 +45,7 @@ Remove-Item Env:BOSS_CLOAK_LICENSE_ACCEPTED
 | 平台 | 0.6.3 无 key 免费版基线 | 状态 |
 |---|---|---|
 | macOS arm64 / x64 | 145.0.7632.109.2 | 官方提供两个架构；本机仅 arm64 实测 |
-| Windows x64 | 146.0.7680.177.5 | 官方提供，尚未真机/CI 验证 |
+| Windows x64 | 146.0.7680.177.5 | Windows CI 已通过；真人桌面登录待验收 |
 | Windows 原生 arm64 | 无 | 明确拒绝，不偷换 Chrome 或承诺 x64 仿真兼容 |
 
 平台依据：[npm 0.6.3](https://www.npmjs.com/package/cloakbrowser/v/0.6.3) 的配置及官方 [145 发布资产](https://github.com/CloakHQ/cloakbrowser/releases/tag/chromium-v145.0.7632.109.2)、[146 发布资产](https://github.com/CloakHQ/cloakbrowser/releases/tag/chromium-v146.0.7680.177.5)。这些版本不是 latest，不能据此声称已获得最新安全更新或能绕过站点验证。
@@ -104,13 +104,13 @@ npm run check
 
 测试包含真实 Codex app-server 进程连接本地假模型、真实 CloakBrowser + agent-browser 在本地页完成快照、填入、点击并核实实际可执行路径、HTTP 安全边界、原子保存及真实数据库/文件失败恢复、持久计时、批准失效、暂停与崩溃去重；**不消耗真实模型额度，不联系任何 HR**。
 
-已在 macOS arm64 + Node 24.11.0 / 26.9.0 运行。Windows CI 配置会实际运行同一套测试（包括 Codex 与 CloakBrowser），但当前尚未推送触发 CI，不能声称 Windows 已验证。仓库所有者需先审阅许可并把仓库变量 `CLOAK_BINARY_LICENSE_ACCEPTED` 设置为 `1.3`，CI 才能下载官方二进制；未确认则失败，不跳过冒烟假装通过。CI 也不替代 Windows 用户桌面登录测试。
+macOS 与 Windows x64 的 Node 24.11.0 / 24 LTS CI 均已通过，包括官方下载安装、真实 Codex 进程与 CloakBrowser 操作；本机 macOS arm64 + Node 26.9.0 也通过。仓库所有者需先审阅许可并把仓库变量 `CLOAK_BINARY_LICENSE_ACCEPTED` 设置为 `1.3`，CI 才能下载官方二进制；未确认则失败，不跳过冒烟假装通过。CI 也不替代 Windows 用户桌面登录测试。
 
 真实 BOSS 只读访问遇到安全验证，未由代理完成验证。登录后的岗位/聊天 DOM、真实模型调用、真实发送均待本人登录及明确授权测试目标后验收。
 
 ## Codex 接入与许可
 
-固定使用 `@openai/codex@0.163.0` 的 app-server，属于官方标注的 experimental 接口；不承诺长期兼容或官方生产支持。应用只给模型提取本轮计划、请求澄清、搜索、读详情和提交草案等受控工具，外部写操作由应用执行器处理。命令、文件修改、权限申请等模型审批请求全部拒绝。
+通过本地 Codex CLI 启动 stdio app-server；[官方选型指南](https://developers.openai.com/codex/sdk) 推荐它用于带登录、审批与事件流的自定义客户端，`codex exec` / TypeScript SDK 更适合脚本及 CI。固定使用 `@openai/codex@0.163.0` 的 app-server，属于官方标注的 experimental 接口；不承诺长期兼容或官方生产支持。应用只给模型提取本轮计划、请求澄清、搜索、读详情和提交草案等受控工具，外部写操作由应用执行器处理。命令、文件修改、权限申请等模型审批请求全部拒绝。
 
 [官方 app-server 文档](https://developers.openai.com/codex/app-server) 写明 “The app-server command and WebSocket transport are experimental and aren't supported for production workloads.” 认证章节还写明已有 local/open-source 应用可继续使用，推荐迁移到 Sign in with ChatGPT，并明确 “App-server authentication has never been permitted for commercial or hosted services.” 这些是上游原文约束，不构成本项目对具体商业场景的法律判断。ChatGPT 登录不是通用 API key，不承诺套餐额度与模型可用性。
 

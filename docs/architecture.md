@@ -49,6 +49,6 @@ HTTP 只接受实际监听端口对应的回环 Host；有 Origin 时必须同�
 
 ## 验证
 
-`npm run check` 包含规则、HTTP、真实 Codex 进程连接假模型、真实 CloakBrowser 本地快照/填入/点击。Windows CI 与 macOS CI 运行完整测试，而非仅类型检查。当前 Windows 配置尚未推送触发，因此没有 Windows 成功证据；CI 下载前还需要仓库所有者设置许可确认变量。Windows 原生 arm64 不受当前 Cloak wrapper 支持，直接报错。
+`npm run check` 包含规则、HTTP、真实 Codex 进程连接假模型、真实 CloakBrowser 本地快照/填入/点击。Windows CI 与 macOS CI 运行完整测试，而非仅类型检查。macOS 与 Windows x64 的 Node 24.11.0 / 24 LTS CI 已通过；CI 下载前需要仓库所有者确认许可并设置对应变量。Windows 原生 arm64 不受当前 Cloak wrapper 支持，直接报错。
 
 尚需：本人在应用里登录 Codex 与 BOSS；只读确认岗位与会话结构；另行授权明确的测试目标才能验收发送。不能因假模型测试通过而宣布真实账号/站点端到端成功。
