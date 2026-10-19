@@ -99,8 +99,7 @@ test('批准必须针对当前版本', () => {
 const invalidating: Array<[string, (s: State) => void]> = [
   ['改招呼原文', (s) => s.patchTarget(target(s, 'a').id, { greeting: '改过的招呼' })],
   ['移除目标', (s) => s.patchTarget(target(s, 'a').id, { removed: true })],
-  ['改资料', (s) => s.setProfile({ name: '新名字', notes: '' })],
-  ['改条件', (s) => s.setCriteria({ keywords: ['后端'], city: '上海', salaryMinK: null, maxTargets: 5, excludeCompanies: [] })],
+  ['改具体要求', (s) => s.setRequirements('上海后端，薪资不限')],
   ['改简历正文', (s) => s.setResumeText('新的简历正文', true)],
   ['删除简历', (s) => s.clearResume()],
   ['改发简历附件设置', (s) => s.patchBatch({ resumeDelivery: { bossAttachmentName: '另一个附件.pdf' } })],
@@ -120,7 +119,7 @@ for (const [name, mutate] of invalidating) {
   });
 }
 
-test('执行中拒绝修改资料、条件、简历与批次', async () => {
+test('执行中拒绝修改具体要求、简历与批次', async () => {
   const state = approvedState(['a']);
   let release!: () => void;
   const entered = new Promise<void>((resolve) => {

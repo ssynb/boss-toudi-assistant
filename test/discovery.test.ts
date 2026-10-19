@@ -8,6 +8,10 @@ import type { AppState } from '../src/contracts.ts';
 import { api, LOCAL, tempDir } from './helpers.ts';
 import { mockProviderToml, startMockModel, type MockItem } from './mock-responses.ts';
 
+const plan: MockItem = { type: 'function_call', name: 'set_search_plan', args: {
+  keywords: ['前端'], city: '北京', salaryMinK: 20, maxTargets: 5, excludeCompanies: ['乙公司'],
+  quotes: { direction: '前端', city: '北京', salary: '月薪至少20K' },
+} };
 const cards = [
   { jobId: 'j1', url: 'https://www.zhipin.com/job_detail/j1.html', title: '前端工程师', company: '甲公司', salary: '25-35K', area: '北京·朝阳', snippet: '3-5年 本科 React' },
   { jobId: 'j2', url: 'https://www.zhipin.com/job_detail/j2.html', title: 'Java 开发', company: '乙公司', salary: '15-20K', area: '北京·海淀', snippet: '1-3年' },
@@ -49,7 +53,8 @@ async function setup(script: MockItem[][], model: string) {
   const fake = fakeSite();
   const server = await startServer({ dataDir, port: 0, site: fake.site });
   await api(server.url, 'PUT', '/api/resume/text', { text: '张三，五年前端经验，React/TypeScript', confirmed: true });
-  await api(server.url, 'PUT', '/api/criteria', { keywords: ['前端'], city: '北京', salaryMinK: 20, maxTargets: 5, excludeCompanies: [] });
+  const saved = await api(server.url, 'PUT', '/api/requirements', { text: '北京前端，月薪至少20K，最多5个，不考虑乙公司' });
+  assert.equal(saved.status, 200);
   return { mock, dataDir, fake, server };
 }
 
@@ -77,7 +82,9 @@ async function discover(base: string): Promise<AppState> {
 test('Codex 通过受限只读工具发现岗位，生成待批准草案，期间没有任何联系动作', async () => {
   const { mock, fake, server } = await setup(
     [
+      [plan],
       [{ type: 'function_call', name: 'boss_search', args: { keyword: '前端', page: 1 } }],
+      [{ type: 'function_call', name: 'propose_batch', args: { targets: [{ jobId: 'j1', reason: '只看标题', greeting: '你好' }] } }],
       [{ type: 'function_call', name: 'boss_job_detail', args: { jobId: 'j1' } }],
       [{ type: 'function_call', name: 'propose_batch', args: { targets: [{ jobId: 'zzz', reason: '编造的', greeting: '你好' }] } }],
       [{ type: 'function_call', name: 'propose_batch', args: { targets: [{ jobId: 'j1', reason: 'React 经验匹配', greeting: '您好，我有五年 React 经验' }] } }],
@@ -95,8 +102,10 @@ test('Codex 通过受限只读工具发现岗位，生成待批准草案，期�
       batch.targets.map((t) => ({ jobId: t.jobId, company: t.company, title: t.title, salary: t.salary, greeting: t.greeting, steps: t.steps })),
       [{ jobId: 'j1', company: '甲公司', title: '前端工程师', salary: '25-35K', greeting: '您好，我有五年 React 经验', steps: { contact: 'todo', greeting: 'todo', resume: 'todo' } }],
     );
-    const rejectedOutput = JSON.stringify(mock.requests[3]?.input.at(-1));
+    const rejectedOutput = JSON.stringify(mock.requests[5]?.input.at(-1));
     assert.match(rejectedOutput, /zzz/, '编造的岗位被工具拒绝并告知模型');
+    assert.match(JSON.stringify(mock.requests[3]?.input.at(-1)), /JD|详情/, '未读 JD 不能提交草案');
+    assert.ok(!JSON.stringify(mock.requests[2]?.input.at(-1)).includes('乙公司'), '排除公司不交给模型候选集');
   } finally {
     await server.close();
     mock.close();
@@ -137,4 +146,26 @@ test('模型看不到 shell、联网搜索等工具；越权的命令与改文�
     await server.close();
     mock.close();
   }
+});
+
+
+test('缺关键要求先澄清，不搜索；补充同一文本框后清除问题', async () => {
+  const { mock, fake, server } = await setup([
+    [{ type: 'function_call', name: 'request_clarification', args: { questions: ['希望在哪个城市？', '可接受的最低月薪或不限？'] } }],
+    [{ type: 'function_call', name: 'boss_search', args: { keyword: '前端', page: 1 } }],
+    [{ type: 'message', text: '请补充' }],
+  ], 'gpt-mock');
+  try {
+    await api(server.url, 'PUT', '/api/requirements', { text: '前端' });
+    const state = await discover(server.url);
+    assert.deepEqual(state.discovery.questions, ['希望在哪个城市？', '可接受的最低月薪或不限？']);
+    assert.deepEqual(fake.reads, []);
+    assert.deepEqual(fake.writes, []);
+    assert.equal(state.batch, null);
+    const saved = await api<AppState>(server.url, 'PUT', '/api/requirements', { text: '北京前端，薪资不限' });
+    assert.equal(saved.json.requirements, '北京前端，薪资不限');
+    assert.deepEqual(saved.json.discovery.questions, []);
+    for (const endpoint of ['profile', 'criteria']) assert.equal((await api(server.url, 'PUT', '/api/' + endpoint, {})).status, 404);
+    assert.ok(!('profile' in saved.json) && !('criteria' in saved.json));
+  } finally { await server.close(); mock.close(); }
 });
