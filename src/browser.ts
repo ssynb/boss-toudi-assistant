@@ -1,0 +1,122 @@
+import { systemEnvironment } from './process-env.ts';
+/**
+ * agent-browser CLI 的薄封装：独立 session、独立持久 profile、独立 daemon 命名空间，
+ * 不接管用户日常浏览器。命令串行执行；直接 spawn node + 包内启动脚本，不经过 shell。
+ */
+import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const require = createRequire(import.meta.url);
+export const AGENT_BROWSER_BIN = path.join(path.dirname(require.resolve('agent-browser/package.json')), 'bin', 'agent-browser.js');
+
+const SESSION = 'boss';
+const CONFIG = fileURLToPath(new URL('./browser-config.json', import.meta.url));
+const COMMAND_TIMEOUT_MS = 90_000;
+
+export interface BrowserOptions {
+  profileDir: string;
+  headed: boolean;
+  /** agent-browser 守护进程命名空间，避免与用户自己的 agent-browser 会话互相影响。 */
+  namespace: string;
+  /** 用户显式指定的浏览器可执行文件；不保证兼容。 */
+  executablePath?: string;
+}
+
+export interface Snapshot {
+  refs: Record<string, { role: string; name: string }>;
+  snapshot: string;
+}
+
+/** 直接运行 agent-browser（不带本应用的 session 参数），供环境检查与安装浏览器使用。 */
+export function runAgentBrowser(args: string[], opts: { inherit?: boolean; env?: NodeJS.ProcessEnv } = {}): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [AGENT_BROWSER_BIN, '--config', CONFIG, ...args], {
+      env: { ...systemEnvironment(), ...opts.env },
+      stdio: opts.inherit ? 'inherit' : ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout?.on('data', (d: Buffer) => (stdout += d));
+    child.stderr?.on('data', (d: Buffer) => (stderr += d));
+    const timer = setTimeout(() => child.kill(), COMMAND_TIMEOUT_MS);
+    child.on('error', reject);
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code: code ?? -1, stdout, stderr });
+    });
+  });
+}
+
+export class Browser {
+  readonly #opts: BrowserOptions;
+  #queue: Promise<unknown> = Promise.resolve();
+  #open = false;
+
+  constructor(opts: BrowserOptions) {
+    this.#opts = opts;
+  }
+
+  get isOpen(): boolean {
+    return this.#open;
+  }
+
+  async open(url: string): Promise<void> {
+    await this.#run(['open', url]);
+    this.#open = true;
+  }
+
+  /** 求值表达式并按 JSON 返回结果。 */
+  async eval<T>(expression: string): Promise<T> {
+    const data = (await this.#run(['eval', `JSON.stringify(${expression})`])) as { result: string };
+    return JSON.parse(data.result) as T;
+  }
+
+  async snapshot(selector?: string): Promise<Snapshot> {
+    return (await this.#run(['snapshot', '-i', ...(selector ? ['-s', selector] : [])])) as Snapshot;
+  }
+
+  async click(ref: string): Promise<void> {
+    await this.#run(['click', `@${ref}`]);
+  }
+
+  async fill(ref: string, text: string): Promise<void> {
+    await this.#run(['fill', `@${ref}`, text]);
+  }
+
+  async press(key: string): Promise<void> {
+    await this.#run(['press', key]);
+  }
+
+  async waitFor(expression: string): Promise<void> {
+    await this.#run(['wait', '--fn', expression]);
+  }
+
+  async close(): Promise<void> {
+    if (!this.#open) return;
+    this.#open = false;
+    await this.#run(['close']);
+  }
+
+  #run(args: string[]): Promise<unknown> {
+    const next = this.#queue.then(() => this.#exec(args));
+    this.#queue = next.catch(() => {});
+    return next;
+  }
+
+  async #exec(args: string[]): Promise<unknown> {
+    const global = ['--session', SESSION, '--profile', this.#opts.profileDir, '--headed', String(this.#opts.headed)];
+    if (this.#opts.executablePath) global.push('--executable-path', this.#opts.executablePath);
+    const { code, stdout, stderr } = await runAgentBrowser([...global, ...args, '--json'], { env: { AGENT_BROWSER_NAMESPACE: this.#opts.namespace } });
+    let parsed: { success: boolean; data: unknown; error: string | null };
+    try {
+      parsed = JSON.parse(stdout.trim().split('\n').at(-1) ?? '');
+    } catch {
+      throw new Error(`浏览器命令 ${args[0]} 失败（退出码 ${code}）：${(stderr || stdout).trim().slice(0, 300)}`);
+    }
+    if (code !== 0 || !parsed.success) throw new Error(`浏览器命令 ${args[0]} 失败（退出码 ${code}）：${parsed.error ?? '未知错误'}`);
+    return parsed.data;
+  }
+}
