@@ -1,0 +1,38 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { openState } from '../src/state.ts';
+import { tempDir } from './helpers.ts';
+
+test('迁移已提交但旧文件清理失败时，保留数据库字节和恢复标记，下次启动继续清理', () => {
+  const dir = tempDir('boss-cleanup-');
+  const file = path.join(dir, 'state.sqlite');
+  const bytes = Buffer.from('迁移后的简历');
+  const state = openState(file);
+  state.saveInputs({ requirements: '旧要求', resume: { file: { fileName: 'resume.txt', base64: bytes.toString('base64') }, text: null } });
+  const original = state.snapshot().resume;
+  state.close();
+  const meta = original.file!;
+  const legacy = path.join(dir, 'resume', meta.sha256 + meta.extension);
+  fs.mkdirSync(legacy, { recursive: true });
+  const db = new DatabaseSync(file);
+  db.prepare('INSERT INTO kv VALUES (?, ?)').run('legacy_resume_cleanup', JSON.stringify(meta));
+  db.close();
+  assert.throws(() => openState(file), /directory|EISDIR/i);
+  const retained = new DatabaseSync(file);
+  assert.deepEqual(Buffer.from(retained.prepare('SELECT data FROM resume_file').get()!.data as Uint8Array), bytes);
+  assert.ok(retained.prepare("SELECT value FROM kv WHERE key = 'legacy_resume_cleanup'").get());
+  retained.close();
+  fs.rmdirSync(legacy);
+  fs.writeFileSync(legacy, bytes);
+  const recovered = openState(file);
+  assert.deepEqual(recovered.snapshot().resume, original);
+  assert.equal(recovered.snapshot().requirements, '旧要求');
+  recovered.close();
+  assert.ok(!fs.existsSync(legacy));
+  const checked = new DatabaseSync(file);
+  assert.equal(checked.prepare("SELECT value FROM kv WHERE key = 'legacy_resume_cleanup'").get(), undefined);
+  checked.close();
+});
