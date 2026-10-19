@@ -40,7 +40,7 @@ npm run setup -- --install-cloak
 Remove-Item Env:BOSS_CLOAK_LICENSE_ACCEPTED
 ```
 
-代理不得代填许可确认。官方 wrapper 负责下载、签名与归档校验；项目不打包二进制，也不上传到 CI 缓存或制品。安装后重新运行检查并启动。
+只有本人已明确同意上述许可后，才可由代理执行相应的安装和 CI 配置。官方 wrapper 负责下载、签名与归档校验；项目不打包二进制，也不上传到 CI 缓存或制品。安装后重新运行检查并启动。
 
 | 平台 | 0.6.3 无 key 免费版基线 | 状态 |
 |---|---|---|
@@ -112,7 +112,7 @@ npm run check
 
 固定使用 `@openai/codex@0.163.0` 的 app-server，属于官方标注的 experimental 接口；不承诺长期兼容或官方生产支持。应用只给模型提取本轮计划、请求澄清、搜索、读详情和提交草案等受控工具，外部写操作由应用执行器处理。命令、文件修改、权限申请等模型审批请求全部拒绝。
 
-[官方 app-server 文档](https://learn.chatgpt.com/docs/app-server.md) 写明 “The app-server command and WebSocket transport are experimental and aren't supported for production workloads.” 认证章节还写明已有 local/open-source 应用可继续使用，推荐迁移到 Sign in with ChatGPT，并明确 “App-server authentication has never been permitted for commercial or hosted services.” 这些是上游原文约束，不构成本项目对具体商业场景的法律判断。ChatGPT 登录不是通用 API key，不承诺套餐额度与模型可用性。
+[官方 app-server 文档](https://developers.openai.com/codex/app-server) 写明 “The app-server command and WebSocket transport are experimental and aren't supported for production workloads.” 认证章节还写明已有 local/open-source 应用可继续使用，推荐迁移到 Sign in with ChatGPT，并明确 “App-server authentication has never been permitted for commercial or hosted services.” 这些是上游原文约束，不构成本项目对具体商业场景的法律判断。ChatGPT 登录不是通用 API key，不承诺套餐额度与模型可用性。
 
 本项目源代码 MIT。Codex 和 agent-browser 各自为 Apache-2.0；CloakBrowser wrapper 为 MIT、二进制遵守上述单独条款。依赖许可不会因本项目采用 MIT 而改变。
 

@@ -30,4 +30,4 @@
 - `3030272`：个人 key 和订阅版缓存不得进入免费运行路径。
 - `bdfe5e3`：按已确认的新需求替换原 browser 冒烟为真实 CloakBrowser 快照/填入/点击，并锁定不回退、平台与许可边界。
 
-浏览器只使用 CloakBrowser。不得执行 agent-browser install 下载普通 Chrome，不读取全局 bbu/Cloak 个人 key，不替用户设置许可确认；缺二进制或许可时明确阻塞。
+浏览器只使用 CloakBrowser。不得执行 agent-browser install 下载普通 Chrome，不读取全局 bbu/Cloak 个人 key，未经用户明确同意不设置许可确认；缺二进制或许可时明确阻塞。

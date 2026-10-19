@@ -2,11 +2,13 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import fs from 'node:fs/promises';
-import {execFile} from 'node:child_process';
-import {promisify} from 'node:util';
-const exec=promisify(execFile);
+import path from 'node:path';
+import os from 'node:os';
+import {runAgentBrowser} from '../../src/browser.ts';
+import {resolveCloak,profileArgs} from '../../src/cloak.ts';
 
 test('原子保存草稿、文件失败保留输入、停止与权威计时', {timeout:90000}, async()=>{
+ const runtime=await resolveCloak();
  const state={doctor:[],codex:{signedIn:true,email:'测试服务器',pendingLoginUrl:null,error:null},browser:{page:'closed'},requirements:'',resume:{file:null,text:'合成简历',textSource:'file'},discovery:{status:'idle',message:null,questions:[],startedAt:'2026-01-01T00:00:00Z',finishedAt:'2026-01-01T00:02:05Z'},batch:null,contactedCount:0};
  const streams=new Set();const writes=[];
  const changed=()=>{for(const stream of streams)stream.write('event: changed\n\n');};
@@ -32,7 +34,17 @@ test('原子保存草稿、文件失败保留输入、停止与权威计时', {t
   res.setHeader('Content-Type','application/json');res.end(JSON.stringify(state));
  });
  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
- const browser=async(...args)=>(await exec('bbu',['--as','requirements-acceptance',...args],{timeout:15000})).stdout.trim();
+ const dir=await fs.mkdtemp(path.join(os.tmpdir(),'boss-ui-'));
+ const profile=path.join(dir,'profile');
+ const flags=profileArgs(runtime,profile);
+ const socket=await fs.mkdtemp(path.join(process.platform==='win32'?os.tmpdir():'/tmp','boss-ui-socket-'));
+ const browser=async(...args)=>{
+  const result=await runAgentBrowser(['--session','ui','--profile',profile,'--headed','false',
+   '--executable-path',runtime.binaryPath,'--args',flags.join(','),...args],
+   {env:{HOME:dir,USERPROFILE:dir,AGENT_BROWSER_SOCKET_DIR:socket,AGENT_BROWSER_NAMESPACE:'ui-test'}});
+  assert.equal(result.code,0,result.stderr||result.stdout);
+  return result.stdout.trim();
+ };
  const inspect=async expression=>JSON.parse(await browser('eval',`${expression}`));
  try{
   await browser('open',`http://127.0.0.1:${server.address().port}`);
@@ -48,10 +60,10 @@ test('原子保存草稿、文件失败保留输入、停止与权威计时', {t
   state.discovery.questions=['本批最多找几个岗位？'];changed();
   await browser('wait','--text','本批最多找几个岗位？');
   assert.equal(await browser('get','value','[name=requirements]'),'杭州前端，至少 25K，排除外包');
-  const file=new URL('./synthetic.pdf',import.meta.url);
+  const file=path.join(dir,'synthetic.pdf');
   await fs.writeFile(file,'%PDF-synthetic');
   try{
-   await browser('upload','input[type=file]',file.pathname);
+   await browser('upload','input[type=file]',file);
    assert.equal(writes.length,1,'选择文件不得上传');
    await browser('find','label','简历正文','fill','PDF 合成正文');
    await browser('find','role','button','click','--name','保存','--exact');
@@ -69,6 +81,12 @@ test('原子保存草稿、文件失败保留输入、停止与权威计时', {t
   await browser('wait','--fn',"!document.querySelector('#inputs fieldset').disabled");
   assert.equal(await browser('get','text','#elapsed'),'2:05');
  }finally{
-  await browser('close');for(const stream of streams)stream.end();await new Promise(resolve=>server.close(resolve));
+  try{await browser('close');}finally{
+   for(const stream of streams)stream.end();
+   server.closeAllConnections();
+   await new Promise(resolve=>server.close(resolve));
+   await fs.rm(dir,{recursive:true,force:true});
+   await fs.rm(socket,{recursive:true,force:true});
+  }
  }
 });
