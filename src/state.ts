@@ -8,9 +8,14 @@
  * - 打开数据库时，上次残留的 inflight 步骤变为 unknown，执行中的批次变为 paused。
  */
 import crypto from 'node:crypto';
+import fs from 'node:fs';
+import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
   GREETING_MAX_CHARS,
+  RESUME_EXTENSIONS,
+  type SaveInputsRequest,
+  type DiscoveryState,
   type Batch,
   type ContactIdentity,
   type BatchPatch,
@@ -24,6 +29,7 @@ import {
   type TargetSteps,
 } from './contracts.ts';
 import { AppError } from './errors.ts';
+import { prepareInputs } from './resume.ts';
 
 export interface DraftTarget {
   jobId: string;
@@ -38,13 +44,15 @@ export interface DraftTarget {
 export type Step = keyof TargetSteps;
 
 export interface StateSnapshot {
+  discovery: DiscoveryState;
   requirements: string;
   resume: ResumeState;
   batch: Batch | null;
   contactedCount: number;
 }
 
-const DEFAULT_RESUME: ResumeState = { file: null, text: '', textSource: null, textConfirmed: false };
+const DEFAULT_RESUME: ResumeState = { file: null, text: '', textSource: null };
+const DEFAULT_DISCOVERY: DiscoveryState = { status: 'idle', message: null, questions: [], startedAt: null, finishedAt: null };
 const DEFAULT_DELIVERY: ResumeDelivery = { enabled: false, bossAttachmentName: '', bossAttachmentConfirmed: false };
 const MAX_TARGETS = 50;
 const CRASH_REASON = '上次运行意外中断：中断时正在进行的步骤结果未确认，请到 BOSS 上自行核对。';
@@ -52,6 +60,7 @@ const CRASH_REASON = '上次运行意外中断：中断时正在进行的步骤�
 const STEP_COLUMN: Record<Step, string> = { contact: 'contact', greeting: 'greeting_state', resume: 'resume' };
 
 const SCHEMA = `
+CREATE TABLE IF NOT EXISTS resume_file (id INTEGER PRIMARY KEY CHECK(id = 1), data BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS batch (
   id TEXT PRIMARY KEY, version INTEGER NOT NULL, status TEXT NOT NULL, approved_version INTEGER,
@@ -104,9 +113,15 @@ export class State {
 
   constructor(file: string) {
     this.#db = new DatabaseSync(file);
-    this.#db.exec('PRAGMA locking_mode = EXCLUSIVE; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
-    this.#db.exec(SCHEMA);
-    this.#recover();
+    try {
+      this.#db.exec('PRAGMA locking_mode = EXCLUSIVE; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
+      this.#db.exec(SCHEMA);
+      this.#migrateResume(file);
+      this.#recover();
+    } catch (e) {
+      this.#db.close();
+      throw e;
+    }
   }
 
   close(): void {
@@ -116,6 +131,7 @@ export class State {
   snapshot(): StateSnapshot {
     const count = this.#db.prepare('SELECT COUNT(*) AS n FROM contacts').get() as { n: number };
     return {
+      discovery: this.#kv('discovery', DEFAULT_DISCOVERY),
       requirements: this.#kv('requirements', ''),
       resume: this.#kv('resume', DEFAULT_RESUME),
       batch: this.#batch(),
@@ -125,28 +141,40 @@ export class State {
 
   // ---------- 具体要求、简历（修改即使批准失效） ----------
 
-  setRequirements(text: string): void {
-    const requirements = str(text, '具体要求', 10_000);
-    this.#edit(() => this.#setKv('requirements', requirements));
+  saveInputs(request: SaveInputsRequest): void {
+    this.#edit(() => {
+      const input = prepareInputs(request, this.#kv('resume', DEFAULT_RESUME));
+      if (input.data === null) this.#db.exec('DELETE FROM resume_file');
+      else if (input.data !== undefined) this.#db.prepare('INSERT INTO resume_file (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data').run(input.data);
+      this.#setKv('requirements', input.requirements);
+      this.#setKv('resume', input.resume);
+      this.#setKv('discovery', { ...this.#kv('discovery', DEFAULT_DISCOVERY), message: null, questions: [] });
+    });
   }
 
-  setResumeFile(file: ResumeFileMeta, text: string | null): void {
-    const resume: ResumeState = { file, text: text ?? '', textSource: text === null ? null : 'file', textConfirmed: false };
-    this.#edit(() => this.#setKv('resume', resume));
+  beginDiscovery(): void {
+    this.#tx(() => {
+      this.#assertNotRunning();
+      this.#assertDiscoveryIdle();
+      if (!this.#kv('requirements', '').trim() || !this.#kv('resume', DEFAULT_RESUME).text.trim()) {
+        throw new AppError('inputs_incomplete', '请先统一保存具体要求和有效简历正文');
+      }
+      this.#setKv('discovery', { status: 'running', message: '正在发现岗位…', questions: [], startedAt: now(), finishedAt: null });
+    });
   }
 
-  setResumeText(text: string, confirmed: boolean): void {
-    const current = this.#kv('resume', DEFAULT_RESUME);
-    const body = str(text, 'text', 50_000);
-    const textSource = current.textSource === 'file' && body === current.text ? 'file' : body ? 'pasted' : null;
-    const resume: ResumeState = { ...current, text: body, textSource, textConfirmed: confirmed === true && body.trim() !== '' };
-    this.#edit(() => this.#setKv('resume', resume));
+  requestDiscoveryStop(): void {
+    this.#tx(() => {
+      const current = this.#kv('discovery', DEFAULT_DISCOVERY);
+      if (current.status === 'running') this.#setKv('discovery', { ...current, status: 'stopping', message: '正在停止…' });
+    });
   }
 
-  clearResume(): ResumeFileMeta | null {
-    const old = this.#kv('resume', DEFAULT_RESUME).file;
-    this.#edit(() => this.#setKv('resume', DEFAULT_RESUME));
-    return old;
+  finishDiscovery(message: string, questions: string[] = []): void {
+    this.#tx(() => {
+      const current = this.#kv('discovery', DEFAULT_DISCOVERY);
+      if (current.status !== 'idle') this.#setKv('discovery', { ...current, status: 'idle', message, questions, finishedAt: now() });
+    });
   }
 
   // ---------- 批次 ----------
@@ -202,6 +230,7 @@ export class State {
 
   approve(version: number): void {
     this.#tx(() => {
+      this.#assertDiscoveryIdle();
       const batch = this.#requireBatch();
       if (batch.status === 'running' || batch.status === 'done') throw new AppError('not_approvable', '当前批次不可批准');
       if (version !== batch.version) throw new AppError('stale_version', '批次已被修改，请刷新后重新核对');
@@ -220,6 +249,7 @@ export class State {
 
   beginRun(): Batch {
     this.#tx(() => {
+      this.#assertDiscoveryIdle();
       const row = this.#batchRow();
       const valid = row && row.approved_version === row.version && (row.status === 'approved' || row.status === 'paused');
       if (!valid) throw new AppError('not_startable', '批次未处于有效批准状态，请先核对并批准');
@@ -257,8 +287,33 @@ export class State {
 
   // ---------- 内部 ----------
 
+  #migrateResume(databasePath: string): void {
+    const legacyPath = (meta: ResumeFileMeta) => {
+      if (!/^[a-f0-9]{64}$/.test(meta.sha256) || !RESUME_EXTENSIONS.includes(meta.extension)) throw new Error('旧简历元数据无效，未删除文件');
+      return path.join(path.dirname(databasePath), 'resume', meta.sha256 + meta.extension);
+    };
+    const resume = this.#kv('resume', DEFAULT_RESUME);
+    this.#tx(() => {
+      if (resume.file && !this.#db.prepare('SELECT id FROM resume_file WHERE id = 1').get()) {
+        const data = fs.readFileSync(legacyPath(resume.file));
+        if (crypto.createHash('sha256').update(data).digest('hex') !== resume.file.sha256) throw new Error('旧简历文件校验失败，未删除文件');
+        this.#db.prepare('INSERT INTO resume_file (id, data) VALUES (1, ?)').run(data);
+        this.#setKv('legacy_resume_cleanup', resume.file);
+      }
+      if ('textConfirmed' in resume) this.#setKv('resume', { file: resume.file, text: resume.text, textSource: resume.textSource });
+    });
+    // 迁移提交之后才删旧文件；清理失败则启动失败，下次启动按持久标记继续，不丢原始字节。
+    const cleanup = this.#kv<ResumeFileMeta | null>('legacy_resume_cleanup', null);
+    if (cleanup) {
+      fs.rmSync(legacyPath(cleanup), { force: true });
+      this.#db.prepare("DELETE FROM kv WHERE key = 'legacy_resume_cleanup'").run();
+    }
+  }
+
   #recover(): void {
     this.#tx(() => {
+      const discovery = this.#kv('discovery', DEFAULT_DISCOVERY);
+      if (discovery.status !== 'idle') this.#setKv('discovery', { ...discovery, status: 'idle', message: '上次发现因进程中断而停止，结束时间为本次恢复检测时间。', finishedAt: now() });
       const legacy = this.#db.prepare("DELETE FROM kv WHERE key IN ('profile', 'criteria')").run();
       if (legacy.changes) this.#invalidate();
       const stale = this.#db.prepare("SELECT COUNT(*) AS n FROM targets WHERE contact = 'inflight' OR greeting_state = 'inflight' OR resume = 'inflight'").get() as { n: number };
@@ -272,6 +327,7 @@ export class State {
   #edit(fn: () => void): void {
     this.#tx(() => {
       this.#assertNotRunning();
+      this.#assertDiscoveryIdle();
       fn();
       this.#invalidate();
     });
@@ -280,6 +336,7 @@ export class State {
   #editBatch(fn: (batch: Batch) => void): void {
     this.#tx(() => {
       this.#assertNotRunning();
+      this.#assertDiscoveryIdle();
       const batch = this.#requireBatch();
       if (batch.status === 'done') throw new AppError('bad_request', '批次已完成，请重新发现生成新批次');
       fn(batch);
@@ -289,6 +346,10 @@ export class State {
 
   #invalidate(): void {
     this.#db.prepare("UPDATE batch SET status = 'draft', version = version + 1, approved_version = NULL WHERE status != 'done'").run();
+  }
+
+  #assertDiscoveryIdle(): void {
+    if (this.#kv('discovery', DEFAULT_DISCOVERY).status !== 'idle') throw new AppError('busy', '发现运行中，请先停止');
   }
 
   #assertNotRunning(): void {

@@ -126,11 +126,12 @@ export class CodexClient extends EventEmitter {
     const finished = new Promise<TurnResult>((done) => {
       this.#turn = { threadId, tools: new Map(opts.tools.map((t) => [t.name, t])), done };
     });
-    const turn = (await this.#request('turn/start', { threadId, input: [{ type: 'text', text: opts.input }] })) as { turn: { id: string } };
-    const interrupt = () => void this.#request('turn/interrupt', { threadId, turnId: turn.turn.id }).catch(() => {});
-    if (opts.signal.aborted) interrupt();
-    opts.signal.addEventListener('abort', interrupt, { once: true });
+    let interrupt = () => {};
     try {
+      const turn = (await this.#request('turn/start', { threadId, input: [{ type: 'text', text: opts.input }] })) as { turn: { id: string } };
+      interrupt = () => void this.#request('turn/interrupt', { threadId, turnId: turn.turn.id }).catch(() => {});
+      if (opts.signal.aborted) interrupt();
+      opts.signal.addEventListener('abort', interrupt, { once: true });
       return await finished;
     } finally {
       opts.signal.removeEventListener('abort', interrupt);

@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { LOCAL_HEADER, LOCAL_HEADER_VALUE, RESUME_MAX_BYTES, type ApiError, type ErrorCode } from './contracts.ts';
+import { LOCAL_HEADER, LOCAL_HEADER_VALUE, INPUTS_MAX_BYTES, type ApiError, type ErrorCode } from './contracts.ts';
 import { App, type AppOptions } from './app.ts';
 import { AppError } from './errors.ts';
 
@@ -54,18 +54,13 @@ type Handler = (app: App, body: Body, params: string[]) => unknown;
 
 interface Body {
   json(): unknown;
-  raw: Buffer;
-  fileName: string;
 }
 
 const ROUTES: Array<[string, RegExp, Handler]> = [
   ['GET', /^\/api\/state$/, () => null],
   ['POST', /^\/api\/codex\/login$/, (a) => a.login()],
   ['POST', /^\/api\/codex\/logout$/, (a) => a.logout()],
-  ['PUT', /^\/api\/requirements$/, (a, b) => a.setRequirements((b.json() as { text: string }).text)],
-  ['POST', /^\/api\/resume\/file$/, (a, b) => a.uploadResume(b.fileName, b.raw)],
-  ['PUT', /^\/api\/resume\/text$/, (a, b) => a.setResumeText(b.json() as never)],
-  ['DELETE', /^\/api\/resume$/, (a) => a.deleteResume()],
+  ['PUT', /^\/api\/inputs$/, (a, b) => a.saveInputs(b.json() as never)],
   ['POST', /^\/api\/browser\/open$/, (a) => a.openBrowser()],
   ['POST', /^\/api\/discovery\/start$/, (a) => a.startDiscovery()],
   ['POST', /^\/api\/discovery\/stop$/, (a) => a.stopDiscovery()],
@@ -102,11 +97,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     for (const [method, pattern, handler] of ROUTES) {
       const m = pattern.exec(url.pathname);
       if (!m || method !== req.method) continue;
-      const isUpload = url.pathname === '/api/resume/file';
-      const raw = await drain(req, isUpload ? RESUME_MAX_BYTES : JSON_MAX_BYTES);
+      const raw = await drain(req, url.pathname === '/api/inputs' ? INPUTS_MAX_BYTES : JSON_MAX_BYTES);
       const body: Body = {
-        raw,
-        fileName: decodeHeader(req.headers['x-file-name']),
         json() {
           try {
             return JSON.parse(raw.toString('utf8'));
@@ -157,14 +149,6 @@ async function drain(req: http.IncomingMessage, max: number): Promise<Buffer> {
   }
   if (size > max && max > 0) throw new AppError('file_too_large', '请求体过大');
   return Buffer.concat(chunks);
-}
-
-function decodeHeader(v: string | string[] | undefined): string {
-  try {
-    return decodeURIComponent(typeof v === 'string' ? v : '');
-  } catch {
-    return '';
-  }
 }
 
 function sendJson(res: http.ServerResponse, status: number, body: unknown): void {

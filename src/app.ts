@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { AppState, BatchPatch, BrowserState, CodexState, DiscoveryState, DoctorCheck, ResumeTextRequest, TargetPatch } from './contracts.ts';
+import type { AppState, BatchPatch, BrowserState, CodexState, DoctorCheck, SaveInputsRequest, TargetPatch } from './contracts.ts';
 import { Browser } from './browser.ts';
 import { createBossSite, type Site } from './boss.ts';
 import { CodexClient } from './codex.ts';
@@ -15,7 +15,6 @@ import { runDiscovery } from './discovery.ts';
 import { runDoctor } from './doctor.ts';
 import { AppError } from './errors.ts';
 import { Executor } from './executor.ts';
-import { deleteResume, storeResume } from './resume.ts';
 import { openState, type State } from './state.ts';
 
 export const APP_NAME = 'boss-toudi-assistant';
@@ -33,7 +32,6 @@ export function defaultDataDir(): string {
 export function dataLayout(dataDir: string) {
   return {
     db: path.join(dataDir, 'state.sqlite'),
-    resume: path.join(dataDir, 'resume'),
     codexHome: path.join(dataDir, 'codex-home'),
     codexUserHome: path.join(dataDir, 'codex-user-home'),
     codexWork: path.join(dataDir, 'codex-work'),
@@ -56,11 +54,11 @@ export class App extends EventEmitter {
   readonly #site: Site;
   #doctor: Promise<DoctorCheck[]>;
   #codexState: CodexState = { signedIn: false, email: null, plan: null, pendingLoginUrl: null, error: null };
-  #discovery: DiscoveryState = { status: 'idle', message: null, questions: [] };
   #discoveryAbort: AbortController | null = null;
   #executor: Executor | null = null;
   #execution: Promise<void> | null = null;
   #discovering: Promise<void> | null = null;
+  #starting: Promise<void> | null = null;
 
   constructor(opts: AppOptions) {
     super();
@@ -83,6 +81,7 @@ export class App extends EventEmitter {
     this.#executor?.pause();
     this.#discoveryAbort?.abort();
     this.#codex.close();
+    await Promise.allSettled([this.#starting]);
     await Promise.allSettled([this.#execution, this.#discovering]);
     try {
       await this.#site.close();
@@ -97,7 +96,6 @@ export class App extends EventEmitter {
       doctor,
       codex: { ...this.#codexState, pendingLoginUrl: this.#codex.pendingLoginUrl },
       browser,
-      discovery: this.#discovery,
       ...this.#state.snapshot(),
     };
   }
@@ -116,32 +114,9 @@ export class App extends EventEmitter {
 
   // ---------- 具体要求、简历 ----------
 
-  setRequirements(text: string): void {
+  saveInputs(request: SaveInputsRequest): void {
     this.#assertDiscoveryIdle();
-    this.#state.setRequirements(text);
-    this.#discovery = { status: 'idle', message: null, questions: [] };
-    this.#changed();
-  }
-
-  uploadResume(fileName: string, bytes: Buffer): void {
-    this.#assertDiscoveryIdle();
-    const old = this.#state.snapshot().resume.file;
-    if (this.#state.snapshot().batch?.status === 'running') throw new AppError('batch_running', '批次执行中，请先暂停');
-    const stored = storeResume(this.#layout.resume, fileName, bytes);
-    this.#state.setResumeFile(stored.meta, stored.text);
-    if (old && (old.sha256 !== stored.meta.sha256 || old.extension !== stored.meta.extension)) deleteResume(this.#layout.resume, old);
-    this.#changed();
-  }
-
-  setResumeText(r: ResumeTextRequest): void {
-    this.#assertDiscoveryIdle();
-    this.#state.setResumeText(r.text, r.confirmed);
-    this.#changed();
-  }
-
-  deleteResume(): void {
-    this.#assertDiscoveryIdle();
-    deleteResume(this.#layout.resume, this.#state.clearResume());
+    this.#state.saveInputs(request);
     this.#changed();
   }
 
@@ -156,44 +131,48 @@ export class App extends EventEmitter {
 
   // ---------- 发现 ----------
 
-  async startDiscovery(): Promise<void> {
+  startDiscovery(): Promise<void> {
     const snap = this.#state.snapshot();
     if (snap.batch?.status === 'running') throw new AppError('batch_running', '批次执行中，请先暂停');
-    if (this.#discovery.status !== 'idle') throw new AppError('busy', '已有发现任务在运行');
-    if (!snap.resume.textConfirmed) throw new AppError('resume_unconfirmed', '请先上传或粘贴简历正文并确认');
-    if (!snap.requirements.trim()) throw new AppError('bad_request', '请先填写具体要求（岗位方向、城市、薪资要求）');
+    this.#assertDiscoveryIdle();
+    if (!snap.resume.text.trim() || !snap.requirements.trim()) throw new AppError('inputs_incomplete', '请先统一保存具体要求和有效简历正文');
     const abort = new AbortController();
     this.#discoveryAbort = abort;
-    this.#discovery = { status: 'running', message: '正在检查登录状态…', questions: [] };
+    this.#starting = this.#launchDiscovery(abort);
+    return this.#starting;
+  }
+
+  async #launchDiscovery(abort: AbortController): Promise<void> {
     try {
       await this.#refreshAccount();
-      if (!this.#codexState.signedIn) throw new AppError('codex_signed_out', '请先登录 Codex（ChatGPT 账号）');
       if (abort.signal.aborted) {
         this.#discoveryAbort = null;
-        this.#discovery = { status: 'idle', message: '已停止发现。', questions: [] };
-        this.#changed();
         return;
       }
-      this.#discovery = { status: 'running', message: '正在发现岗位…', questions: [] };
+      if (!this.#codexState.signedIn) throw new AppError('codex_signed_out', '请先登录 Codex（ChatGPT 账号）');
+      this.#state.beginDiscovery();
       this.#changed();
       this.#discovering = runDiscovery({ codex: this.#codex, site: this.#site, state: this.#state, signal: abort.signal, log: (t) => this.#log(t) })
         .catch((e: unknown) => ({ message: `发现失败：${e instanceof Error ? e.message : String(e)}`, questions: [] as string[] }))
         .then(({ message, questions }) => {
+          const outcome = abort.signal.aborted ? '已停止发现。' : message;
+          this.#state.finishDiscovery(outcome, abort.signal.aborted ? [] : questions);
+          this.#log(outcome);
+        })
+        .catch((e: unknown) => this.#log(`无法保存发现结束状态，请重启后检查：${e instanceof Error ? e.message : String(e)}`))
+        .finally(() => {
           this.#discoveryAbort = null;
-          this.#discovery = { status: 'idle', message, questions };
-          this.#log(message);
           this.#changed();
         });
     } catch (e) {
       this.#discoveryAbort = null;
-      this.#discovery = { status: 'idle', message: null, questions: [] };
       throw e;
     }
   }
 
   stopDiscovery(): void {
     if (!this.#discoveryAbort) return;
-    this.#discovery = { status: 'stopping', message: '正在停止…', questions: [] };
+    this.#state.requestDiscoveryStop();
     this.#discoveryAbort.abort();
     this.#changed();
   }
@@ -219,7 +198,7 @@ export class App extends EventEmitter {
   }
 
   startBatch(): void {
-    if (this.#discovery.status !== 'idle') throw new AppError('busy', '发现任务运行中，请等待结束');
+    this.#assertDiscoveryIdle();
     if (this.#executor) throw new AppError('batch_running', '批次已在执行');
     const executor = new Executor(this.#state, this.#site, () => this.#changed());
     const run = executor.start();
@@ -243,7 +222,7 @@ export class App extends EventEmitter {
   // ---------- 内部 ----------
 
   #assertDiscoveryIdle(): void {
-    if (this.#discovery.status !== 'idle') throw new AppError('busy', '请先停止发现，再修改具体要求或批次');
+    if (this.#discoveryAbort || this.#state.snapshot().discovery.status !== 'idle') throw new AppError('busy', '请先停止发现，再修改具体要求或批次');
   }
 
   async #browserState(): Promise<BrowserState> {

@@ -9,7 +9,7 @@ const STATUS: Record<ErrorCode, number> = {
   stale_version: 409,
   not_approvable: 409,
   not_startable: 409,
-  resume_unconfirmed: 409,
+  inputs_incomplete: 409,
   codex_signed_out: 409,
   browser_not_ready: 409,
   busy: 409,

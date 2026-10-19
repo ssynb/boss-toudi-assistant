@@ -188,8 +188,13 @@ export async function runDiscovery(opts: { codex: CodexClient; site: ReadSite & 
       return work;
     },
   }));
-  const result = await opts.codex.runTurn({ developerInstructions: INSTRUCTIONS, input: `具体要求（唯一用户条件来源）：\n${requirements}\n\n已确认的简历正文：\n${resume.text}`, tools: serialTools, signal: abort.signal });
-  await queue;
+  let result;
+  try {
+    result = await opts.codex.runTurn({ developerInstructions: INSTRUCTIONS, input: `具体要求（唯一用户条件来源）：\n${requirements}\n\n已保存供匹配的简历正文：\n${resume.text}`, tools: serialTools, signal: abort.signal });
+  } finally {
+    abort.abort();
+    await queue;
+  }
   if (questions.length) return { proposed, questions, message: '请在具体要求框补充以下信息，保存后重新开始发现。' };
   if (blocked) return { proposed, questions, message: `${blocked}，完成后重新开始发现。` };
   if (proposed) return { proposed, questions, message: `草案已生成：${proposed} 个目标，请核对后批准。` };
