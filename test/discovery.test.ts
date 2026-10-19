@@ -52,8 +52,7 @@ async function setup(script: MockItem[][], model: string) {
   fs.writeFileSync(path.join(dataDir, 'codex-home', 'config.toml'), mockProviderToml(mock.baseUrl, model));
   const fake = fakeSite();
   const server = await startServer({ dataDir, port: 0, site: fake.site });
-  await api(server.url, 'PUT', '/api/resume/text', { text: '张三，五年前端经验，React/TypeScript', confirmed: true });
-  const saved = await api(server.url, 'PUT', '/api/requirements', { text: '北京前端，月薪至少20K，最多5个，不考虑乙公司' });
+  const saved = await api(server.url, 'PUT', '/api/inputs', { requirements: '北京前端，月薪至少20K，最多5个，不考虑乙公司', resume: { text: '张三，五年前端经验，React/TypeScript' } });
   assert.equal(saved.status, 200);
   return { mock, dataDir, fake, server };
 }
@@ -156,13 +155,13 @@ test('缺关键要求先澄清，不搜索；补充同一文本框后清除问�
     [{ type: 'message', text: '请补充' }],
   ], 'gpt-mock');
   try {
-    await api(server.url, 'PUT', '/api/requirements', { text: '前端' });
+    await api(server.url, 'PUT', '/api/inputs', { requirements: '前端', resume: { text: null } });
     const state = await discover(server.url);
     assert.deepEqual(state.discovery.questions, ['希望在哪个城市？', '可接受的最低月薪或不限？']);
     assert.deepEqual(fake.reads, []);
     assert.deepEqual(fake.writes, []);
     assert.equal(state.batch, null);
-    const saved = await api<AppState>(server.url, 'PUT', '/api/requirements', { text: '北京前端，薪资不限' });
+    const saved = await api<AppState>(server.url, 'PUT', '/api/inputs', { requirements: '北京前端，薪资不限', resume: { text: null } });
     assert.equal(saved.json.requirements, '北京前端，薪资不限');
     assert.deepEqual(saved.json.discovery.questions, []);
     for (const endpoint of ['profile', 'criteria']) assert.equal((await api(server.url, 'PUT', '/api/' + endpoint, {})).status, 404);

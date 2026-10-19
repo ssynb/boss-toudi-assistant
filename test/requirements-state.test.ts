@@ -8,8 +8,8 @@ import { tempDir } from './helpers.ts';
 test('具体要求重启保留，删除旧条件入口时不删除简历或联系账本', () => {
   const file = path.join(tempDir('boss-requirements-'), 'state.sqlite');
   let state = openState(file);
-  state.setResumeFile({ fileName: 'resume.pdf', extension: '.pdf', sizeBytes: 12, sha256: 'abc', uploadedAt: '2026-10-19' }, null);
-  state.setResumeText('简历正文', true);
+  state.saveInputs({ requirements: '', resume: { file: { fileName: 'resume.pdf', base64: Buffer.from('%PDF-1.7\n').toString('base64') }, text: '简历正文' } });
+  const originalHash = state.snapshot().resume.file!.sha256;
   const b = state.replaceBatch([{ jobId: 'job', company: '公司', title: '前端', salary: '', url: 'https://www.zhipin.com/job_detail/job.html', reason: '', greeting: '你好' }]);
   state.setStep(b.targets[0]!, 'contact', 'done', '已联系');
   state.approve(b.version);
@@ -21,14 +21,14 @@ test('具体要求重启保留，删除旧条件入口时不删除简历或联�
   state = openState(file);
   assert.equal(state.snapshot().requirements, '');
   assert.equal(state.snapshot().batch!.status, 'draft', '旧条件的批准不继续有效');
-  state.setRequirements('上海前端，薪资不限');
+  state.saveInputs({ requirements: '上海前端，薪资不限', resume: { text: null } });
   state.close();
   state = openState(file);
   const saved = state.snapshot();
   assert.equal(saved.requirements, '上海前端，薪资不限');
-  assert.equal(saved.resume.file!.sha256, 'abc');
+  assert.equal(saved.resume.file!.sha256, originalHash);
   assert.equal(saved.resume.text, '简历正文');
-  assert.equal(saved.resume.textConfirmed, true);
+  assert.ok(!('textConfirmed' in saved.resume));
   assert.equal(saved.contactedCount, 1);
   assert.equal(saved.batch!.targets[0]!.steps.contact, 'done');
   assert.ok(!('profile' in saved) && !('criteria' in saved));

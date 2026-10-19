@@ -99,9 +99,9 @@ test('批准必须针对当前版本', () => {
 const invalidating: Array<[string, (s: State) => void]> = [
   ['改招呼原文', (s) => s.patchTarget(target(s, 'a').id, { greeting: '改过的招呼' })],
   ['移除目标', (s) => s.patchTarget(target(s, 'a').id, { removed: true })],
-  ['改具体要求', (s) => s.setRequirements('上海后端，薪资不限')],
-  ['改简历正文', (s) => s.setResumeText('新的简历正文', true)],
-  ['删除简历', (s) => s.clearResume()],
+  ['改具体要求', (s) => s.saveInputs({ requirements: '上海后端，薪资不限', resume: { text: null } })],
+  ['改简历正文', (s) => s.saveInputs({ requirements: '', resume: { text: '新的简历正文' } })],
+  ['删除简历', (s) => s.saveInputs({ requirements: '', resume: { file: null, text: null } })],
   ['改发简历附件设置', (s) => s.patchBatch({ resumeDelivery: { bossAttachmentName: '另一个附件.pdf' } })],
 ];
 

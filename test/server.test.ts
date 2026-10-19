@@ -1,8 +1,6 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import fs from 'node:fs';
-import path from 'node:path';
 import { startServer, type RunningServer } from '../src/server.ts';
 import type { AppState, ApiError } from '../src/contracts.ts';
 import { api, LOCAL, rawRequest, tempDir } from './helpers.ts';
@@ -56,29 +54,13 @@ test('静态页面同样拒绝 DNS 重绑定的 Host', async () => {
   assert.equal(res.status, 403);
 });
 
-async function upload(name: string, bytes: Buffer) {
-  const res = await fetch(`${server.url}/api/resume/file`, {
-    method: 'POST',
-    headers: { ...LOCAL, 'x-file-name': encodeURIComponent(name), 'content-type': 'application/octet-stream' },
-    body: bytes,
+async function upload(name: string, bytes: Buffer, text: string | null = null) {
+  return api<AppState & ApiError>(server.url, 'PUT', '/api/inputs', {
+    requirements: '北京前端，薪资不限', resume: { file: { fileName: name, base64: bytes.toString('base64') }, text },
   });
-  return { status: res.status, json: (await res.json()) as AppState & ApiError };
 }
 
-function storedCopies(bytes: Buffer): string[] {
-  const found: string[] = [];
-  const walk = (dir: string) => {
-    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-      const p = path.join(dir, e.name);
-      if (e.isDirectory()) walk(p);
-      else if (e.isFile() && fs.statSync(p).size === bytes.length && fs.readFileSync(p).equals(bytes)) found.push(p);
-    }
-  };
-  walk(dataDir);
-  return found;
-}
-
-test('上传 txt 简历：保存到本机数据目录并读出正文，等待用户确认', async () => {
+test('统一保存 txt 简历自动提取正文，不再需要确认勾选', async () => {
   const bytes = Buffer.from('张三\n五年前端经验，熟悉 React 与 Node.js\n', 'utf8');
   const { status, json } = await upload('张三简历.txt', bytes);
   assert.equal(status, 200);
@@ -88,28 +70,23 @@ test('上传 txt 简历：保存到本机数据目录并读出正文，等待用
   );
   assert.equal(json.resume.text, bytes.toString('utf8'));
   assert.equal(json.resume.textSource, 'file');
-  assert.equal(json.resume.textConfirmed, false);
-
-  const copies = storedCopies(bytes);
-  assert.equal(copies.length, 1);
-  if (process.platform !== 'win32') assert.equal(fs.statSync(copies[0]!).mode & 0o077, 0, '仅本人可读');
-
-  const confirmed = await api<AppState>(server.url, 'PUT', '/api/resume/text', { text: json.resume.text, confirmed: true });
-  assert.equal(confirmed.json.resume.textConfirmed, true);
-  assert.equal(confirmed.json.resume.textSource, 'file');
+  assert.ok(!('textConfirmed' in json.resume));
 });
 
-test('上传 pdf 简历只保存文件，正文需用户粘贴', async () => {
+test('不能解析的 pdf 必须在同一次保存提供正文，不发生部分上传', async () => {
+  const before = (await api<AppState>(server.url, 'GET', '/api/state')).json;
   const bytes = Buffer.concat([Buffer.from('%PDF-1.7\n'), crypto.randomBytes(64)]);
-  const { status, json } = await upload('resume.pdf', bytes);
-  assert.equal(status, 200);
-  assert.equal(json.resume.file?.extension, '.pdf');
-  assert.equal(json.resume.text, '');
-  assert.equal(json.resume.textConfirmed, false);
-
-  const pasted = await api<AppState>(server.url, 'PUT', '/api/resume/text', { text: '粘贴的简历正文', confirmed: true });
-  assert.equal(pasted.json.resume.textSource, 'pasted');
-  assert.equal(pasted.json.resume.file?.extension, '.pdf');
+  const missing = await upload('resume.pdf', bytes);
+  assert.equal(missing.status, 409);
+  assert.equal(missing.json.error.code, 'inputs_incomplete');
+  const unchanged = (await api<AppState>(server.url, 'GET', '/api/state')).json;
+  assert.deepEqual(unchanged.resume, before.resume);
+  assert.equal(unchanged.requirements, before.requirements);
+  const saved = await upload('resume.pdf', bytes, '粘贴的简历正文');
+  assert.equal(saved.status, 200);
+  assert.equal(saved.json.resume.text, '粘贴的简历正文');
+  assert.equal(saved.json.resume.textSource, 'pasted');
+  assert.equal(saved.json.resume.file?.extension, '.pdf');
 });
 
 test('拒绝不支持或与扩展名不符的简历文件', async () => {
@@ -132,9 +109,9 @@ test('简历超过大小上限被拒绝', async () => {
   assert.equal(json.error.code, 'file_too_large');
 });
 
-test('简历正文未确认时不能开始发现', async () => {
-  await api(server.url, 'DELETE', '/api/resume');
+test('没有已保存的有效正文时不能开始发现', async () => {
+  await api(server.url, 'PUT', '/api/inputs', { requirements: '', resume: { file: null, text: null } });
   const res = await api<ApiError>(server.url, 'POST', '/api/discovery/start');
   assert.equal(res.status, 409);
-  assert.equal(res.json.error.code, 'resume_unconfirmed');
+  assert.equal(res.json.error.code, 'inputs_incomplete');
 });
