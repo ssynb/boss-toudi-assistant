@@ -87,10 +87,22 @@ const EXTRACT_CARDS = `(() => {
 
 const EXTRACT_DETAIL = `((document.querySelector('.job-sec-text') || document.querySelector('[class*="job-detail"]') || document.body).innerText || '').slice(0, 4000)`;
 
-const OWN_MESSAGES = `[...document.querySelectorAll('[class*="item-myself"]')].map((e) => (e.innerText || '').trim())`;
+const OWN_MESSAGES = `[...document.querySelectorAll('.chat-conversation .message-list [class*="item-myself"]')].map((e) => (e.innerText || '').trim())`;
+const OWN_ATTACHMENTS = `[...document.querySelectorAll('.chat-conversation .message-list [class*="item-myself"] [data-file-name]')].map(e => e.getAttribute('data-file-name'))`;
+
+function identityUrl(href: string, kind: 'job_detail' | 'boss_detail'): string | null {
+  try {
+    const url = new URL(href);
+    if (url.origin !== ORIGIN || !new RegExp('^/' + kind + '/[^/]+\\.html$').test(url.pathname)) return null;
+    return url.origin + url.pathname;
+  } catch {
+    return null;
+  }
+}
 
 export function createBossSite(browser: Browser): Site {
   let contactRef: string | null = null;
+  const recipients = new Map<string, string>();
 
   async function status(): Promise<BrowserState> {
     if (!browser.isOpen) return { page: 'closed', url: null };
@@ -112,16 +124,25 @@ export function createBossSite(browser: Browser): Site {
   const findRef = (refs: Record<string, { role: string; name: string }>, test: (name: string, role: string) => boolean) =>
     Object.entries(refs).find(([, r]) => test(r.name.trim(), r.role))?.[0] ?? null;
 
-  async function ownMessages(t: Target): Promise<string[]> {
+  async function verifyChat(t: Target): Promise<void> {
     const s = await status();
     if (s.page !== 'ready' || !s.url?.includes('/web/geek/chat')) throw new Error('不在已登录的 BOSS 会话页');
-    const identity = await browser.eval<{ company: string; hasHistory: boolean }>(`(() => ({
+    const identity = await browser.eval<{ company: string; hasHistory: boolean; job: string; recruiter: string }>(`(() => ({
       company: document.querySelector('.chat-conversation .company-name')?.textContent?.trim() || '',
+      job: document.querySelector('.chat-conversation a[href*="/job_detail/"]')?.href || '',
+      recruiter: document.querySelector('.chat-conversation a[href*="/boss_detail/"]')?.href || '',
       hasHistory: Boolean(document.querySelector('.chat-conversation .message-list'))
     }))()`);
-    if (identity.company !== t.company || !identity.hasHistory) {
-      throw new Error('无法核实当前会话的公司与消息区域，停止发送');
+    const expectedRecruiter = recipients.get(t.jobId);
+    if (!expectedRecruiter || identity.company !== t.company || !identity.hasHistory
+      || identityUrl(identity.job, 'job_detail') !== `${ORIGIN}/job_detail/${t.jobId}.html`
+      || identityUrl(identity.recruiter, 'boss_detail') !== expectedRecruiter) {
+      throw new Error('无法核实当前会话的岗位、招聘者与消息区域，停止发送');
     }
+  }
+
+  async function ownMessages(t: Target): Promise<string[]> {
+    await verifyChat(t);
     const messages = await browser.eval<string[]>(OWN_MESSAGES);
     if (messages.length === 0) {
       const empty = await browser.eval<boolean>(`Boolean([...document.querySelectorAll('.chat-conversation .message-list *')].find(e => e.textContent?.trim() === '暂无聊天记录'))`);
@@ -153,6 +174,7 @@ export function createBossSite(browser: Browser): Site {
 
     async openJob(t: Target): Promise<OpenJobResult> {
       contactRef = null;
+      recipients.delete(t.jobId);
       try {
         await goto(t.url);
       } catch (e) {
@@ -163,19 +185,27 @@ export function createBossSite(browser: Browser): Site {
       if (findRef(refs, (n) => n === '继续沟通')) return { kind: 'alreadyContacted', evidence: '岗位页显示「继续沟通」，站点上已有会话' };
       contactRef = findRef(refs, (n) => n === '立即沟通');
       if (!contactRef) return { kind: 'missing', evidence: '岗位页没有「立即沟通」入口（可能已下线）' };
-      return { kind: 'canContact', evidence: '岗位页有「立即沟通」' };
+      const recruiter = identityUrl(await browser.eval<string>(`document.querySelector('a[href*="/boss_detail/"]')?.href || ''`), 'boss_detail');
+      if (!recruiter) return { kind: 'blocked', evidence: '岗位页无法识别招聘者身份，未点击沟通' };
+      recipients.set(t.jobId, recruiter);
+      return { kind: 'canContact', evidence: '岗位页有「立即沟通」，已记录对应招聘者身份' };
     },
 
     async contact(t): Promise<Verified> {
       if (!contactRef) return { ok: false, evidence: '缺少「立即沟通」按钮引用' };
       const current = await browser.eval<string>('location.pathname');
       if (current !== `/job_detail/${t.jobId}.html`) return { ok: false, evidence: '当前岗位已变化，未点击沟通' };
+      const recruiter = identityUrl(await browser.eval<string>(`document.querySelector('a[href*="/boss_detail/"]')?.href || ''`), 'boss_detail');
+      if (!recruiter || recruiter !== recipients.get(t.jobId)) return { ok: false, evidence: '招聘者身份已变化，未点击沟通' };
       await browser.click(contactRef);
       contactRef = null;
       await browser.waitFor('location.pathname.startsWith("/web/geek/chat")');
-      const s = await status();
-      const ok = Boolean(s.url?.includes('/web/geek/chat'));
-      return { ok, evidence: ok ? '已进入会话页' : `点击后未进入会话页（${s.url ?? '未知页面'}）` };
+      try {
+        await verifyChat(t);
+        return { ok: true, evidence: '已进入对应岗位和招聘者的会话页' };
+      } catch (e) {
+        return { ok: false, evidence: (e as Error).message };
+      }
     },
 
     async readChat(t) {
@@ -190,6 +220,7 @@ export function createBossSite(browser: Browser): Site {
       const input = boxes.length === 1 ? boxes[0]![0] : null;
       if (!input) return { ok: false, evidence: '会话页找不到输入框' };
       await browser.fill(input, text);
+      await verifyChat(t);
       await browser.press('Enter');
       await browser.waitFor(`(${OWN_MESSAGES}).some((m) => m === ${JSON.stringify(text)})`);
       const ok = (await ownMessages(t)).some((m) => m === text);
@@ -197,14 +228,15 @@ export function createBossSite(browser: Browser): Site {
     },
 
     async sendResume(t, attachmentName) {
-      const before = (await ownMessages(t)).length;
+      await verifyChat(t);
+      const before = await browser.eval<string[]>(OWN_ATTACHMENTS);
       // 未验证「发简历」入口是否直接发送，不能先点再核对附件；只处理已经显示的确认对话框。
       const dialogSelector = '[role="dialog"]';
-      const dialog = await browser.eval<string>(`(() => {
+      const dialog = await browser.eval<string[]>(`(() => {
         const dialogs = [...document.querySelectorAll(${JSON.stringify(dialogSelector)})].filter(e => e.getClientRects().length);
-        return dialogs.length === 1 ? dialogs[0].innerText : '';
+        return dialogs.length === 1 ? [...dialogs[0].querySelectorAll('[data-file-name]')].map(e => e.getAttribute('data-file-name')) : [];
       })()`);
-      if (!dialog.includes(attachmentName)) {
+      if (dialog.length !== 1 || dialog[0] !== attachmentName) {
         await browser.press('Escape');
         return { kind: 'mismatch', evidence: `对话框里没有附件「${attachmentName}」，未发送` };
       }
@@ -213,10 +245,12 @@ export function createBossSite(browser: Browser): Site {
         await browser.press('Escape');
         return { kind: 'mismatch', evidence: '对话框里找不到确认按钮，未发送' };
       }
+      await verifyChat(t);
       await browser.click(confirm);
-      await browser.waitFor(`(${OWN_MESSAGES}).length > ${before}`);
-      const after = await ownMessages(t);
-      const ok = after.length > before && after.slice(before).some((m) => m.includes(attachmentName));
+      await browser.waitFor(`(${OWN_ATTACHMENTS}).length > ${before.length}`);
+      await verifyChat(t);
+      const after = await browser.eval<string[]>(OWN_ATTACHMENTS);
+      const ok = after.slice(before.length).some((name) => name === attachmentName);
       return { kind: ok ? 'sent' : 'unverified', evidence: ok ? `已发送附件简历「${attachmentName}」` : '点确认后会话里没有出现新的本方消息' };
     },
   };

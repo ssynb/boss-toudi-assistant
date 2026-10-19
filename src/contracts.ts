@@ -202,7 +202,7 @@ export interface ResumeDelivery {
 
 export interface Batch {
   id: string;
-  /** 每次修改 +1；批准时必须提交当前 version。 */
+  /** 在当前数据库内跨批次单调递增；替换批次或修改时 +1，批准时必须提交当前 version。 */
   version: number;
   status: BatchStatus;
   resumeDelivery: ResumeDelivery;

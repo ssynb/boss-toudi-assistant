@@ -166,11 +166,12 @@ export class State {
     if (new Set(drafts.map((d) => d.jobId)).size !== drafts.length) throw new AppError('bad_request', '草案中有重复岗位');
     this.#tx(() => {
       this.#assertNotRunning();
+      const version = (this.#batchRow()?.version ?? 0) + 1;
       this.#db.exec('DELETE FROM targets; DELETE FROM batch;');
       const id = crypto.randomUUID();
       this.#db
-        .prepare('INSERT INTO batch (id, version, status, approved_version, resume_delivery, stop_reason, created_at) VALUES (?, 1, ?, NULL, ?, NULL, ?)')
-        .run(id, 'draft', JSON.stringify(DEFAULT_DELIVERY), now());
+        .prepare('INSERT INTO batch (id, version, status, approved_version, resume_delivery, stop_reason, created_at) VALUES (?, ?, ?, NULL, ?, NULL, ?)')
+        .run(id, version, 'draft', JSON.stringify(DEFAULT_DELIVERY), now());
       const insert = this.#db.prepare(
         `INSERT INTO targets (id, batch_id, ord, job_id, company, title, salary, url, reason, greeting, removed, contact, greeting_state, resume, evidence, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'todo', 'todo', 'todo', '', ?)`,
