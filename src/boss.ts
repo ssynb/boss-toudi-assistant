@@ -52,7 +52,7 @@ export class SiteBlockedError extends Error {
 const ORIGIN = 'https://www.zhipin.com';
 const LOGIN_URL = `${ORIGIN}/web/user/`;
 
-/** BOSS 城市代码（与 contracts.SUPPORTED_CITIES 一一对应）。 */
+/** BOSS 内部查询使用的城市名称到代码映射，用于校验 AI 提取结果，不是 UI 固定选项列表。 */
 const CITY_CODES: Record<string, string> = {
   全国: '100010000', 北京: '101010100', 上海: '101020100', 广州: '101280100', 深圳: '101280600', 杭州: '101210100',
   南京: '101190100', 苏州: '101190400', 成都: '101270100', 武汉: '101200100', 西安: '101110100', 重庆: '101040100',
