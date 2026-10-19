@@ -59,6 +59,16 @@ const CITY_CODES: Record<string, string> = {
   天津: '101030100', 长沙: '101250100', 郑州: '101180100', 厦门: '101230200',
 };
 
+export const SUPPORTED_CITIES = Object.keys(CITY_CODES);
+export const MAX_SEARCH_PAGE = 5;
+
+export function validateSearchQuery(q: SearchQuery): void {
+  if (typeof q.keyword !== 'string' || !q.keyword.trim() || q.keyword.length > 80
+    || !SUPPORTED_CITIES.includes(q.city) || !Number.isInteger(q.page) || q.page < 1 || q.page > MAX_SEARCH_PAGE) {
+    throw new Error('搜索参数无效：需要有效的岗位词、支持的城市和页码');
+  }
+}
+
 const PAGE_PROBE = `(() => ({
   url: location.href,
   title: document.title,
@@ -85,7 +95,7 @@ const EXTRACT_CARDS = `(() => {
   return out;
 })()`;
 
-const EXTRACT_DETAIL = `((document.querySelector('.job-sec-text') || document.querySelector('[class*="job-detail"]') || document.body).innerText || '').slice(0, 4000)`;
+const EXTRACT_DETAIL = `(document.querySelector('.job-sec-text')?.innerText || '').slice(0, 20000)`;
 
 const OWN_MESSAGES = `[...document.querySelectorAll('.chat-conversation .message-list [class*="item-myself"]')].map((e) => (e.innerText || '').trim())`;
 const OWN_ATTACHMENTS = `[...document.querySelectorAll('.chat-conversation .message-list [class*="item-myself"] [data-file-name]')].map(e => e.getAttribute('data-file-name'))`;
@@ -162,6 +172,7 @@ export function createBossSite(browser: Browser): Site {
     close: () => browser.close(),
 
     async search(q) {
+      validateSearchQuery(q);
       const code = CITY_CODES[q.city];
       if (!code) throw new Error(`不支持的城市：${q.city}`);
       const params = new URLSearchParams({ query: q.keyword, city: code, page: String(q.page) });

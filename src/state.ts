@@ -2,7 +2,7 @@
  * 本地持久状态与批次规则的唯一来源（SQLite）。
  *
  * 规则：
- * - 批次执行中拒绝一切修改；其余时候任何修改（资料、条件、简历、批次）都会让未完成批次退回草案并使批准失效。
+ * - 批次执行中拒绝一切修改；其余时候任何修改（具体要求、简历、批次）都会让未完成批次退回草案并使批准失效。
  * - 联系账本（contacts）跨批次保存：联系步骤动手前先记为 unknown，核实后改为 done；
  *   账本里出现过的岗位永不再次联系。
  * - 打开数据库时，上次残留的 inflight 步骤变为 unknown，执行中的批次变为 paused。
@@ -11,13 +11,10 @@ import crypto from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 import {
   GREETING_MAX_CHARS,
-  SUPPORTED_CITIES,
   type Batch,
   type ContactIdentity,
   type BatchPatch,
   type BatchStatus,
-  type Criteria,
-  type Profile,
   type ResumeDelivery,
   type ResumeFileMeta,
   type ResumeState,
@@ -41,15 +38,12 @@ export interface DraftTarget {
 export type Step = keyof TargetSteps;
 
 export interface StateSnapshot {
-  profile: Profile;
-  criteria: Criteria;
+  requirements: string;
   resume: ResumeState;
   batch: Batch | null;
   contactedCount: number;
 }
 
-const DEFAULT_PROFILE: Profile = { name: '', notes: '' };
-const DEFAULT_CRITERIA: Criteria = { keywords: [], city: '全国', salaryMinK: null, maxTargets: 10, excludeCompanies: [] };
 const DEFAULT_RESUME: ResumeState = { file: null, text: '', textSource: null, textConfirmed: false };
 const DEFAULT_DELIVERY: ResumeDelivery = { enabled: false, bossAttachmentName: '', bossAttachmentConfirmed: false };
 const MAX_TARGETS = 50;
@@ -122,23 +116,18 @@ export class State {
   snapshot(): StateSnapshot {
     const count = this.#db.prepare('SELECT COUNT(*) AS n FROM contacts').get() as { n: number };
     return {
-      profile: this.#kv('profile', DEFAULT_PROFILE),
-      criteria: this.#kv('criteria', DEFAULT_CRITERIA),
+      requirements: this.#kv('requirements', ''),
       resume: this.#kv('resume', DEFAULT_RESUME),
       batch: this.#batch(),
       contactedCount: count.n,
     };
   }
 
-  // ---------- 资料、条件、简历（修改即使批准失效） ----------
+  // ---------- 具体要求、简历（修改即使批准失效） ----------
 
-  setProfile(p: Profile): void {
-    const profile = { name: str(p.name, 'name', 50), notes: str(p.notes, 'notes', 2000) };
-    this.#edit(() => this.#setKv('profile', profile));
-  }
-
-  setCriteria(c: Criteria): void {
-    this.#edit(() => this.#setKv('criteria', validateCriteria(c)));
+  setRequirements(text: string): void {
+    const requirements = str(text, '具体要求', 10_000);
+    this.#edit(() => this.#setKv('requirements', requirements));
   }
 
   setResumeFile(file: ResumeFileMeta, text: string | null): void {
@@ -270,6 +259,8 @@ export class State {
 
   #recover(): void {
     this.#tx(() => {
+      const legacy = this.#db.prepare("DELETE FROM kv WHERE key IN ('profile', 'criteria')").run();
+      if (legacy.changes) this.#invalidate();
       const stale = this.#db.prepare("SELECT COUNT(*) AS n FROM targets WHERE contact = 'inflight' OR greeting_state = 'inflight' OR resume = 'inflight'").get() as { n: number };
       for (const col of Object.values(STEP_COLUMN)) {
         this.#db.prepare(`UPDATE targets SET ${col} = 'unknown', updated_at = ? WHERE ${col} = 'inflight'`).run(now());
@@ -378,17 +369,4 @@ export function greetingText(v: unknown): string {
   const text = str(v, 'greeting', GREETING_MAX_CHARS).trim();
   if (!text) throw new AppError('bad_request', '招呼原文不能为空');
   return text;
-}
-
-function strList(v: unknown, field: string): string[] {
-  if (!Array.isArray(v) || v.length > 20) throw new AppError('bad_request', `${field} 须为不超过 20 项的列表`);
-  return v.map((x) => str(x, field, 50).trim()).filter(Boolean);
-}
-
-function validateCriteria(c: Criteria): Criteria {
-  if (typeof c !== 'object' || c === null) throw new AppError('bad_request', '条件格式错误');
-  if (!(SUPPORTED_CITIES as readonly string[]).includes(c.city)) throw new AppError('bad_request', `城市须为：${SUPPORTED_CITIES.join('、')}`);
-  if (!Number.isInteger(c.maxTargets) || c.maxTargets < 1 || c.maxTargets > MAX_TARGETS) throw new AppError('bad_request', `目标数须为 1–${MAX_TARGETS}`);
-  if (c.salaryMinK !== null && (typeof c.salaryMinK !== 'number' || c.salaryMinK < 0 || c.salaryMinK > 1000)) throw new AppError('bad_request', '薪资下限格式错误');
-  return { keywords: strList(c.keywords, 'keywords'), city: c.city, salaryMinK: c.salaryMinK, maxTargets: c.maxTargets, excludeCompanies: strList(c.excludeCompanies, 'excludeCompanies') };
 }

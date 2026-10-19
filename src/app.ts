@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { AppState, BatchPatch, BrowserState, CodexState, Criteria, DiscoveryState, DoctorCheck, Profile, ResumeTextRequest, TargetPatch } from './contracts.ts';
+import type { AppState, BatchPatch, BrowserState, CodexState, DiscoveryState, DoctorCheck, ResumeTextRequest, TargetPatch } from './contracts.ts';
 import { Browser } from './browser.ts';
 import { createBossSite, type Site } from './boss.ts';
 import { CodexClient } from './codex.ts';
@@ -56,7 +56,7 @@ export class App extends EventEmitter {
   readonly #site: Site;
   #doctor: Promise<DoctorCheck[]>;
   #codexState: CodexState = { signedIn: false, email: null, plan: null, pendingLoginUrl: null, error: null };
-  #discovery: DiscoveryState = { status: 'idle', message: null };
+  #discovery: DiscoveryState = { status: 'idle', message: null, questions: [] };
   #discoveryAbort: AbortController | null = null;
   #executor: Executor | null = null;
   #execution: Promise<void> | null = null;
@@ -114,17 +114,12 @@ export class App extends EventEmitter {
     await this.#refreshAccount();
   }
 
-  // ---------- 资料、条件、简历 ----------
+  // ---------- 具体要求、简历 ----------
 
-  setProfile(p: Profile): void {
+  setRequirements(text: string): void {
     this.#assertDiscoveryIdle();
-    this.#state.setProfile(p);
-    this.#changed();
-  }
-
-  setCriteria(c: Criteria): void {
-    this.#assertDiscoveryIdle();
-    this.#state.setCriteria(c);
+    this.#state.setRequirements(text);
+    this.#discovery = { status: 'idle', message: null, questions: [] };
     this.#changed();
   }
 
@@ -166,41 +161,39 @@ export class App extends EventEmitter {
     if (snap.batch?.status === 'running') throw new AppError('batch_running', '批次执行中，请先暂停');
     if (this.#discovery.status !== 'idle') throw new AppError('busy', '已有发现任务在运行');
     if (!snap.resume.textConfirmed) throw new AppError('resume_unconfirmed', '请先上传或粘贴简历正文并确认');
-    if (snap.criteria.keywords.length === 0) throw new AppError('bad_request', '请至少填写一个岗位关键词');
+    if (!snap.requirements.trim()) throw new AppError('bad_request', '请先填写具体要求（岗位方向、城市、薪资要求）');
     const abort = new AbortController();
     this.#discoveryAbort = abort;
-    this.#discovery = { status: 'running', message: '正在检查登录状态…' };
+    this.#discovery = { status: 'running', message: '正在检查登录状态…', questions: [] };
     try {
       await this.#refreshAccount();
       if (!this.#codexState.signedIn) throw new AppError('codex_signed_out', '请先登录 Codex（ChatGPT 账号）');
-      const browser = await this.#site.status();
-      if (browser.page !== 'ready') throw new AppError('browser_not_ready', '请先打开浏览器并在 BOSS 上完成登录');
       if (abort.signal.aborted) {
         this.#discoveryAbort = null;
-        this.#discovery = { status: 'idle', message: '已停止发现。' };
+        this.#discovery = { status: 'idle', message: '已停止发现。', questions: [] };
         this.#changed();
         return;
       }
-      this.#discovery = { status: 'running', message: '正在发现岗位…' };
+      this.#discovery = { status: 'running', message: '正在发现岗位…', questions: [] };
       this.#changed();
       this.#discovering = runDiscovery({ codex: this.#codex, site: this.#site, state: this.#state, signal: abort.signal, log: (t) => this.#log(t) })
-        .then((r) => r.message, (e: unknown) => `发现失败：${e instanceof Error ? e.message : String(e)}`)
-        .then((message) => {
+        .catch((e: unknown) => ({ message: `发现失败：${e instanceof Error ? e.message : String(e)}`, questions: [] as string[] }))
+        .then(({ message, questions }) => {
           this.#discoveryAbort = null;
-          this.#discovery = { status: 'idle', message };
+          this.#discovery = { status: 'idle', message, questions };
           this.#log(message);
           this.#changed();
         });
     } catch (e) {
       this.#discoveryAbort = null;
-      this.#discovery = { status: 'idle', message: null };
+      this.#discovery = { status: 'idle', message: null, questions: [] };
       throw e;
     }
   }
 
   stopDiscovery(): void {
     if (!this.#discoveryAbort) return;
-    this.#discovery = { status: 'stopping', message: '正在停止…' };
+    this.#discovery = { status: 'stopping', message: '正在停止…', questions: [] };
     this.#discoveryAbort.abort();
     this.#changed();
   }
@@ -250,7 +243,7 @@ export class App extends EventEmitter {
   // ---------- 内部 ----------
 
   #assertDiscoveryIdle(): void {
-    if (this.#discovery.status !== 'idle') throw new AppError('busy', '请先停止发现，再修改资料或批次');
+    if (this.#discovery.status !== 'idle') throw new AppError('busy', '请先停止发现，再修改具体要求或批次');
   }
 
   async #browserState(): Promise<BrowserState> {

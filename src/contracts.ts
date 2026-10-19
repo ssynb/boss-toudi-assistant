@@ -209,7 +209,7 @@ export interface Batch {
  * PUT  /api/resume/text            ResumeTextRequest
  * DELETE /api/resume               删除本地简历文件与正文
  * POST /api/browser/open           打开本应用独立 profile 的浏览器到 BOSS（用户自行登录/验证）
- * POST /api/discovery/start        需：Codex 已登录、简历已确认、浏览器 ready、批次不在执行
+ * POST /api/discovery/start        需：Codex 已登录、简历已确认、具体要求非空、批次不在执行；实际搜索前才要求浏览器 ready
  * POST /api/discovery/stop
  * PATCH /api/batch                 BatchPatch
  * PATCH /api/batch/targets/:id     TargetPatch
