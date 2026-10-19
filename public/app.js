@@ -4,14 +4,13 @@ let state, pending=false, sequence=0;
 const dirty=new Set();
 const text=(id,value)=>{$(id).textContent=value ?? '';};
 const fail=error=>{text('error',error.message); $('error').hidden=false; $('error').tabIndex=-1; $('error').focus();};
-const split=value=>value.split(/[,，\n]/).map(x=>x.trim()).filter(Boolean);
 const forms=[...document.forms];
 for(const form of forms) form.addEventListener('input',()=>{dirty.add(form.id); form.querySelector('output').textContent='有未保存修改';});
 function fill(id, values){
  if(dirty.has(id)) return;
  for(const [key,value] of Object.entries(values)) {
   const input=$(id).elements.namedItem(key); if(!input) continue;
-  if(input.type==='checkbox') input.checked=value; else input.value=Array.isArray(value)?value.join('，'):value ?? '';
+  if(input.type==='checkbox') input.checked=value; else input.value=value ?? '';
  }
 }
 function busy(){return pending || state?.discovery.status!=='idle' || state?.batch?.status==='running';}
@@ -20,7 +19,7 @@ function controls(){
  for(const field of document.querySelectorAll('fieldset')) field.disabled=busy();
  for(const button of document.querySelectorAll('[data-action]')) {
   const action=button.dataset.action;
-  button.disabled=pending || (action==='discovery/start' && (busy()||dirty.size>0||!state?.codex.signedIn||!state?.resume.textConfirmed||state?.browser.page!=='ready')) || (action==='discovery/stop' && state?.discovery.status!=='running') || (action==='batch/start' && (dirty.size>0||!['approved','paused'].includes(state?.batch?.status))) || (action==='batch/pause' && state?.batch?.status!=='running');
+  button.disabled=pending || (action==='discovery/start' && (busy()||dirty.size>0||!state?.codex.signedIn||!state?.resume.textConfirmed||!state?.requirements.trim())) || (action==='discovery/stop' && state?.discovery.status!=='running') || (action==='batch/start' && (dirty.size>0||!['approved','paused'].includes(state?.batch?.status))) || (action==='batch/pause' && state?.batch?.status!=='running');
  }
  $('approve').disabled=busy()||dirty.size>0||state?.batch?.status!=='draft';
  $('delete').disabled=busy();
@@ -40,7 +39,7 @@ async function refresh(){
 }
 function render(next){
  state=next;
- fill('profile',state.profile);fill('criteria',state.criteria);fill('resume',{text:state.resume.text,confirmed:state.resume.textConfirmed});
+ fill('requirements',{text:state.requirements});fill('resume',{text:state.resume.text,confirmed:state.resume.textConfirmed});
  text('codex',state.codex.signedIn?`Codex 已登录 · ${state.codex.email ?? ''}`:'Codex 未登录');
  if(state.codex.error) text('codex',state.codex.error);
  const url=state.codex.pendingLoginUrl;
@@ -50,6 +49,8 @@ function render(next){
  text('count',`去重账本已记录 ${state.contactedCount} 个已联系或结果未确认的岗位`);
  text('file',state.resume.file?`${state.resume.file.fileName} · ${Math.ceil(state.resume.file.sizeBytes/1024)} KB`:'尚未上传文件');
  text('discovery',state.discovery.message || ({idle:'准备就绪后可开始发现',running:'正在发现岗位…',stopping:'正在停止，请等待当前读取结束'}[state.discovery.status]));
+ $('clarification').hidden=state.discovery.questions.length===0;
+ $('questions').replaceChildren(...state.discovery.questions.map(question=>{const li=document.createElement('li');li.textContent=question;return li;}));
  renderBatch(); controls();
 }
 const stepNames={todo:'未开始',inflight:'进行中',done:'已核实完成',skipped:'已跳过',failed:'已核实未发生',unknown:'结果未确认 · 请到 BOSS 核查，不自动重试'};
@@ -83,10 +84,8 @@ function renderBatch(){
   form.querySelector('.evidence').textContent=target.evidence;
  }
 }
-for(const city of ['全国','北京','上海','广州','深圳','杭州','南京','苏州','成都','武汉','西安','重庆','天津','长沙','郑州','厦门']) $('criteria').elements.city.add(new Option(city,city));
 function submit(id,path,method,read){$(id).addEventListener('submit',event=>{event.preventDefault();mutate(path,method,read($(id).elements),$(id));});}
-submit('profile','profile','PUT',e=>({name:e.name.value,notes:e.notes.value}));
-submit('criteria','criteria','PUT',e=>({keywords:split(e.keywords.value),city:e.city.value,salaryMinK:e.salaryMinK.value===''?null:Number(e.salaryMinK.value),maxTargets:Number(e.maxTargets.value),excludeCompanies:split(e.excludeCompanies.value)}));
+submit('requirements','requirements','PUT',e=>({text:e.text.value}));
 submit('resume','resume/text','PUT',e=>({text:e.text.value,confirmed:e.confirmed.checked}));
 submit('delivery','batch','PATCH',e=>({resumeDelivery:{enabled:e.enabled.checked,bossAttachmentName:e.bossAttachmentName.value,bossAttachmentConfirmed:e.bossAttachmentConfirmed.checked}}));
 $('delivery').elements.bossAttachmentName.addEventListener('input',()=>{$('delivery').elements.bossAttachmentConfirmed.checked=false;});
