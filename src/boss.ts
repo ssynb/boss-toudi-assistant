@@ -148,6 +148,7 @@ export function createBossSite(browser: Browser): Site {
   }
 
   async function goto(url: string): Promise<void> {
+    await chat.close();
     await browser.open(url);
     await browser.waitFor(PAGE_LOADED);
     const s = await status();
@@ -288,6 +289,7 @@ export function createBossSite(browser: Browser): Site {
   return {
     // 已登录账号访问登录页会在加载后再跳回首页，所以先看首页，只有未登录才进登录页。
     async open() {
+      await chat.close();
       await browser.open(HOME_URL);
       await browser.waitFor(PAGE_LOADED);
       const s = await status();
@@ -296,7 +298,7 @@ export function createBossSite(browser: Browser): Site {
       return status();
     },
     status,
-    close: () => browser.close(),
+    async close() { await chat.close(); await browser.close(); },
 
     async search(q) {
       validateSearchQuery(q);

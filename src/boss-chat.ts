@@ -1,6 +1,6 @@
 /**
  * BOSS 已有会话的进入、历史判定与发送前核对。所有联系后的去向（新标签页、路由、弹层）
- * 和重启恢复都走同一条路径：先开始只读观察历史接口，再打开会话页并只选择岗位与招聘者
+ * 和重启恢复都走同一条路径：先打开会话页，再开始只读观察历史接口，最后只选择岗位与招聘者
  * 同时匹配的已有会话。
  *
  * 两类证据各管一件事：被动捕获的历史响应证明「历史已完整读到」及其中的本方消息；
@@ -14,7 +14,7 @@ import type { ResponseObservation, ResponseWatch } from './browser-responses.ts'
 import type { GreetingResult } from './executor.ts';
 
 export type ChatIdentity = Extract<ContactIdentity, { kind: 'chatId' }>;
-type ChatBrowser = Pick<Browser, 'eval' | 'waitFor' | 'clickSelector' | 'fillSelector' | 'press' | 'watchResponses'>;
+type ChatBrowser = Pick<Browser, 'eval' | 'waitFor' | 'clickNth' | 'scrollWithin' | 'fillSelector' | 'press' | 'watchResponses'>;
 
 export const ORIGIN = 'https://www.zhipin.com';
 export const CHAT_URL = `${ORIGIN}/web/geek/chat`;
@@ -28,7 +28,7 @@ const LIST_ITEMS = '.chat-user .chat-content li[role="listitem"]';
 const CONTROLS = '.chat-conversation .message-controls';
 const CHAT_INPUT = `${CONTROLS} .chat-input[contenteditable="true"]`;
 const SEND_BUTTON = `${CONTROLS} .btn-send`;
-const MESSAGES = '.chat-conversation .chat-record .message-item[data-mid]';
+const MESSAGES = '.chat-conversation .chat-record .message-item';
 const VISIBLE = 'e => e.checkVisibility({checkVisibilityCSS:true,checkOpacity:true})';
 
 const IDENTITY_CHANGED = '当前会话的岗位或招聘者身份不符：请在 BOSS 切回原目标会话，再点击继续；不要重新联系';
@@ -37,6 +37,10 @@ const IDENTITY_CHANGED = '当前会话的岗位或招聘者身份不符：请在
 export class HistoryError extends Error {}
 
 interface Observation {
+  jobId: string;
+  document: number;
+  revision: number;
+  watch: ResponseWatch;
   recruiterId: string;
   uid: string;
   friendId: string;
@@ -47,10 +51,11 @@ interface Observation {
 }
 
 interface PageState {
+  document: number;
   identity: boolean;
   uid: string | null;
   friendId: string | null;
-  items: Array<{ mid: string; self: boolean }>;
+  items: Array<{ mid: string | null; self: boolean }>;
 }
 
 const js = JSON.stringify;
@@ -66,6 +71,7 @@ function pageState(t: Target, id: ChatIdentity): string {
     const uid = window._PAGE?.uid;
     return {
       identity,
+      document: performance.timeOrigin,
       uid: uid == null ? null : String(uid),
       friendId: selected?.friendId == null ? null : String(selected.friendId),
       items: [...document.querySelectorAll(${js(MESSAGES)})].map(e => ({ mid: e.getAttribute('data-mid'), self: e.classList.contains('item-myself') })),
@@ -73,17 +79,9 @@ function pageState(t: Target, id: ChatIdentity): string {
   })()`;
 }
 
-const TARGET_MARK = 'data-boss-toudi-target';
-
-/** 标记岗位与招聘者同时匹配的列表项并返回匹配数；点击按标记定位，不依赖兄弟节点位置。 */
-function markMatches(id: ChatIdentity): string {
-  return `(() => {
-    const items = [...document.querySelectorAll(${js(LIST_ITEMS)})];
-    items.forEach(e => e.removeAttribute(${js(TARGET_MARK)}));
-    const matches = items.filter(e => e.__vue__?.$props?.source?.encryptJobId === ${js(id.jobId)} && e.__vue__.$props.source.encryptBossId === ${js(id.recruiterId)});
-    matches.forEach(e => e.setAttribute(${js(TARGET_MARK)}, ''));
-    return matches.length;
-  })()`;
+function matchingIndices(id: ChatIdentity): string {
+  return `[...document.querySelectorAll(${js(LIST_ITEMS)})].map((e, index) => ({source:e.__vue__?.$props?.source,index}))
+    .filter(e => e.source?.encryptJobId === ${js(id.jobId)} && e.source?.encryptBossId === ${js(id.recruiterId)}).map(e => e.index)`;
 }
 
 /** root 子树最近 ms 毫秒内没有任何变化；首次求值时安装观察者。 */
@@ -99,13 +97,6 @@ function quiet(selector: string, ms: number): string {
     return performance.now() - root[key].at >= ${ms};
   })()`;
 }
-
-const SCROLL_HISTORY_TOP = `(() => {
-  let e = document.querySelector(${js(MESSAGES)})?.parentElement;
-  while (e && !(e.scrollHeight > e.clientHeight && /auto|scroll/.test(getComputedStyle(e).overflowY))) e = e.parentElement;
-  if (e) e.scrollTop = 0;
-  return true;
-})()`;
 
 const CONTROLS_READY = `(() => {
   const visible = ${VISIBLE};
@@ -124,9 +115,17 @@ function inputState(text: string): string {
   })()`;
 }
 
-function echoed(t: Target, id: ChatIdentity, text: string, before: Set<string>): string {
-  return `(${pageState(t, id)}).identity && [...document.querySelectorAll(${js(MESSAGES)})].some(e => e.classList.contains('item-myself')
-    && !${js([...before])}.includes(e.getAttribute('data-mid')) && (e.querySelector('.text-content')?.innerText || '').trim() === ${js(text.trim())})`;
+function deliveryState(t: Target, id: ChatIdentity, text: string, before: Set<string>): string {
+  // BOSS MessageStatus 将服务端确认后的 DELIVERED/READ 渲染为 status-delivery/status-read；
+  // 乐观消息只有 status-loading，失败为 status-error，不以新 mid 或原文回显冒充送达。
+  return `(() => {
+    if (!(${pageState(t, id)}).identity) return 'identity';
+    const matches = [...document.querySelectorAll(${js(MESSAGES)})].filter(e => e.classList.contains('item-myself')
+      && e.getAttribute('data-mid') && !${js([...before])}.includes(e.getAttribute('data-mid')) && (e.querySelector('.text-content')?.innerText || '').trim() === ${js(text.trim())});
+    if (matches.some(e => e.querySelector('.message-status.status-error'))) return 'failed';
+    if (matches.length === 1 && matches[0].querySelector('.message-status.status-delivery, .message-status.status-read')) return 'delivered';
+    return 'pending';
+  })()`;
 }
 
 type RawMessage = { mid?: unknown; from?: { uid?: unknown }; to?: { uid?: unknown } };
@@ -153,7 +152,7 @@ function messageId(m: RawMessage): string {
  * 按请求顺序消费目标招聘者的历史分页：首批游标为 0，后续页的游标必须等于上一页的最小消息编号
  * （与站点自身翻页一致）；见到本方消息即可下结论，否则必须读到明确的「没有更多」。
  */
-async function readHistory(watch: ResponseWatch, id: ChatIdentity, account: { uid: string; friendId: string }, loadOlder: () => Promise<void>): Promise<Set<string>> {
+async function readHistory(watch: ResponseWatch, id: ChatIdentity, account: { uid: string; friendId: string }, loadOlder: () => Promise<void>): Promise<{ own: Set<string>; revision: number }> {
   const seen = new Set<string>();
   const own = new Set<string>();
   let expected: { page: string; cursor: string } | null = null;
@@ -173,12 +172,13 @@ async function readHistory(watch: ResponseWatch, id: ChatIdentity, account: { ui
     const fresh = mids.filter(mid => !seen.has(mid));
     messages.forEach((m, i) => {
       seen.add(mids[i]!);
-      if (String(m.from?.uid) !== account.uid) return;
-      if (String(m.to?.uid) !== account.friendId) throw new HistoryError('历史里的本方消息接收者与当前招聘者归属不一致，停止发送');
-      own.add(mids[i]!);
+      const from = String(m.from?.uid), to = String(m.to?.uid);
+      const self = from === account.uid && to === account.friendId;
+      const friend = from === account.friendId && to === account.uid;
+      if (!self && !friend) throw new HistoryError('历史消息的发送者、接收者与当前账号和招聘者归属不一致，停止发送');
+      if (self) own.add(mids[i]!);
     });
-    if (own.size) return own;
-    if (!hasMore) return own;
+    if (own.size || !hasMore) return { own, revision: event.revision };
     if (!fresh.length) throw new HistoryError('消息历史分页没有进展，不能证明会话没有本方消息');
     const next: number = Number(page) + 1;
     if (next > MAX_HISTORY_PAGES) throw new HistoryError('消息历史过长，未能读到结束，不能证明会话没有本方消息');
@@ -189,6 +189,7 @@ async function readHistory(watch: ResponseWatch, id: ChatIdentity, account: { ui
 }
 
 export interface ChatSession {
+  close(): Promise<void>;
   /** 选中目标已有会话并读取完整历史；不点击任何联系入口。 */
   enter(t: Target, id: ChatIdentity): Promise<void>;
   ownMessages(t: Target, id: ChatIdentity): Promise<number>;
@@ -196,47 +197,69 @@ export interface ChatSession {
 }
 
 export function createChatSession(browser: ChatBrowser, goto: (url: string) => Promise<void>): ChatSession {
-  const observations = new Map<string, Observation>();
+  let observation: Observation | null = null;
+
+  async function close(): Promise<void> {
+    const previous = observation;
+    observation = null;
+    await previous?.watch.close();
+  }
+
+  function current(obs: Observation): boolean {
+    try { return obs.watch.revision === obs.revision; }
+    catch { return false; }
+  }
 
   const read = (t: Target, id: ChatIdentity) => browser.eval<PageState>(pageState(t, id));
 
   async function loadOlder(): Promise<void> {
     // 站点在内容不足一屏时自动加载下一页，否则要滚到顶部；等列表安静后滚动，两种情况都覆盖。
     await browser.waitFor(quiet('.chat-conversation .chat-record', QUIET_MS));
-    await browser.eval(SCROLL_HISTORY_TOP);
+    const height = await browser.eval<number>(`document.querySelector('.chat-conversation .chat-message')?.scrollHeight ?? 0`);
+    if (height) await browser.scrollWithin('.chat-conversation .chat-message', 'up', height);
   }
 
   async function enter(t: Target, id: ChatIdentity): Promise<void> {
-    observations.delete(t.jobId);
+    await close();
     // 观察附着在当前标签页：先打开会话页，再开始观察，最后才选中目标触发首批历史请求。
     await goto(CHAT_URL);
     await browser.waitFor(`document.querySelectorAll(${js(LIST_ITEMS)}).length > 0`);
-    if (await browser.eval<number>(markMatches(id)) !== 1) throw new Error('无法唯一识别已存在的目标会话，停止后续动作');
+    const indices = await browser.eval<number[]>(matchingIndices(id));
+    if (indices.length !== 1) throw new Error('无法唯一识别已存在的目标会话，停止后续动作');
     const watch = await browser.watchResponses(HISTORY_ENDPOINT);
     try {
-      await browser.clickSelector(`${LIST_ITEMS}[${TARGET_MARK}]`);
+      await browser.clickNth(LIST_ITEMS, indices[0]!);
       await browser.waitFor(`(${pageState(t, id)}).identity`);
       const page = await read(t, id);
       if (page.uid === null || page.friendId === null) throw new Error('会话缺少账号或招聘者编号，不能核对消息归属');
       const account = { uid: page.uid, friendId: page.friendId };
-      const historyOwn = await readHistory(watch, id, account, loadOlder);
-      observations.set(t.jobId, { recruiterId: id.recruiterId, ...account, historyOwn, shown: new Set() });
-    } finally {
+      const history = await readHistory(watch, id, account, loadOlder);
+      const proof = { jobId: t.jobId, recruiterId: id.recruiterId, ...account, document: page.document,
+        revision: history.revision, watch, historyOwn: history.own, shown: new Set<string>() };
+      if (!current(proof)) throw new HistoryError('消息历史观察已变化，旧历史不能证明当前会话');
+      observation = proof;
+    } catch (e) {
       await watch.close();
+      throw e;
     }
   }
 
   /** 当前页面仍显示同一会话且没有重新加载时返回本方消息数，否则返回 null。 */
   async function measure(t: Target, id: ChatIdentity): Promise<number | null> {
-    const obs = observations.get(t.jobId);
-    if (!obs || obs.recruiterId !== id.recruiterId) return null;
+    const obs = observation;
+    if (!obs || obs.jobId !== t.jobId || obs.recruiterId !== id.recruiterId || !current(obs)) return null;
     const page = await read(t, id);
-    const shown = new Set(page.items.map(item => item.mid));
-    if (!page.identity || page.uid !== obs.uid || page.friendId !== obs.friendId || [...obs.shown].some(mid => !shown.has(mid))) return null;
+    const shown = new Set(page.items.flatMap(item => item.mid ? [item.mid] : []));
+    if (!current(obs) || page.document !== obs.document || !page.identity || page.uid !== obs.uid || page.friendId !== obs.friendId || [...obs.shown].some(mid => !shown.has(mid))) return null;
     obs.shown = shown;
     const own = new Set(obs.historyOwn);
-    for (const item of page.items) if (item.self) own.add(item.mid);
-    return own.size;
+    let pendingOwn = 0;
+    for (const item of page.items) {
+      if (!item.self) continue;
+      if (item.mid) own.add(item.mid);
+      else pendingOwn++;
+    }
+    return own.size + pendingOwn;
   }
 
   async function ownMessages(t: Target, id: ChatIdentity): Promise<number> {
@@ -249,24 +272,33 @@ export function createChatSession(browser: ChatBrowser, goto: (url: string) => P
   }
 
   return {
+    close,
     enter,
     ownMessages,
 
     async sendGreeting(t, id, text) {
       if (await ownMessages(t, id)) return { ok: true, skipped: true, evidence: '填写前已有本方消息，未发送本次招呼' };
       if (!(await browser.eval<boolean>(CONTROLS_READY))) return { ok: false, evidence: '会话页找不到唯一可见的输入框和发送按钮，未填写' };
+      const beforeFill = await measure(t, id);
+      if (beforeFill === null) return { ok: false, evidence: '填写前会话或历史证明已失效，未填写' };
+      if (beforeFill) return { ok: true, skipped: true, evidence: '填写前已有本方消息，未发送本次招呼' };
       await browser.fillSelector(CHAT_INPUT, text);
       await browser.waitFor(quiet(CONTROLS, QUIET_MS));
       const own = await measure(t, id);
-      if (own === null) return { ok: false, evidence: '填写后当前会话的岗位或招聘者身份已变化，未发送' };
+      if (own === null) return { ok: false, evidence: '填写后当前会话身份或历史证明已变化，未发送' };
       if (own) return { ok: true, skipped: true, evidence: '提交前出现本方消息，未发送本次招呼' };
       const input = await browser.eval<{ exact: boolean; sendable: boolean }>(inputState(text));
       if (!input.exact) return { ok: false, evidence: '输入框内容与批准原文不一致，未发送' };
       if (!input.sendable) return { ok: false, evidence: '发送按钮不可用，未发送' };
-      const before = observations.get(t.jobId)!.shown;
+      const beforeSubmit = await measure(t, id);
+      if (beforeSubmit === null) return { ok: false, evidence: '提交前会话身份或历史证明已失效，未发送' };
+      if (beforeSubmit) return { ok: true, skipped: true, evidence: '提交前出现本方消息，未发送本次招呼' };
+      const before = observation!.shown;
       await browser.press('Enter');
-      await browser.waitFor(echoed(t, id, text, before));
-      return { ok: true, evidence: '招呼原文已作为本方新消息出现在目标会话中' };
+      const delivery = deliveryState(t, id, text, before);
+      await browser.waitFor(`(${delivery}) !== 'pending'`);
+      const delivered = await browser.eval<string>(delivery) === 'delivered' && await measure(t, id) !== null;
+      return { ok: delivered, evidence: delivered ? '目标会话中的招呼原文已显示送达或已读' : '发送结果未获目标会话送达确认，不重试' };
     },
   };
 }
