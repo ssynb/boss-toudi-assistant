@@ -21,7 +21,8 @@ export interface GreetingResult extends Verified {
 
 export type OpenJobResult =
   | { kind: 'canContact'; evidence: string } // 岗位页有「立即沟通」
-  | { kind: 'alreadyContacted'; evidence: string } // 岗位页显示「继续沟通」等：站点上已有会话
+  | { kind: 'alreadyContacted'; evidence: string } // 已有会话中已核实本方消息，不再发送
+  | { kind: 'existingConversation'; identity: ContactIdentity; evidence: string } // 只读进入已有会话，完整历史证明尚无本方消息
   | { kind: 'missing'; evidence: string } // 岗位已下线或找不到沟通入口
   | { kind: 'blocked'; evidence: string }; // 登录失效、安全验证或风控页
 
@@ -117,12 +118,16 @@ export class Executor {
         return this.#skipRest(t, '站点显示已有会话，不再发送');
       }
       this.#checkpoint();
-      this.#set(t, 'contact', 'inflight', opened.evidence);
-      const r: Verified = await this.#site.contact(t).catch((e: unknown) => ({ ok: false, evidence: `点击后出错：${errorText(e)}` }));
-      this.#set(t, 'contact', r.ok ? 'done' : 'unknown', r.evidence, r.ok ? r.identity : undefined);
-      if (!r.ok) {
-        this.#skipRest(t, '联系结果未确认，不继续');
-        throw new Stop(`「${t.company}」联系结果未确认：${r.evidence}`);
+      if (opened.kind === 'existingConversation') {
+        this.#set(t, 'contact', 'done', opened.evidence, opened.identity);
+      } else {
+        this.#set(t, 'contact', 'inflight', opened.evidence);
+        const r: Verified = await this.#site.contact(t).catch((e: unknown) => ({ ok: false, evidence: `点击后出错：${errorText(e)}` }));
+        this.#set(t, 'contact', r.ok ? 'done' : 'unknown', r.evidence, r.ok ? r.identity : undefined);
+        if (!r.ok) {
+          this.#skipRest(t, '联系结果未确认，不继续');
+          throw new Stop(`「${t.company}」联系结果未确认：${r.evidence}`);
+        }
       }
     }
     if (t.steps.contact !== 'done') return this.#skipRest(t, '未建立会话');

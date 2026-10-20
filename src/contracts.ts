@@ -151,7 +151,7 @@ export type BatchStatus = 'draft' | 'approved' | 'running' | 'paused' | 'done';
 export type StepState = 'todo' | 'inflight' | 'done' | 'skipped' | 'failed' | 'unknown';
 
 export interface TargetSteps {
-  /** 点「立即沟通」打开会话。站点可能因此自动发送默认招呼语，所以它本身就算联系 HR。 */
+  /** 确认目标会话已建立；已有空会话只读进入，不重复点击。新建时点「立即沟通」可能自动招呼，本身即需批准。 */
   contact: StepState;
   /** 发送本目标的定制招呼原文；站点已自动发出招呼时为 skipped。 */
   greeting: StepState;
