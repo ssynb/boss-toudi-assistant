@@ -65,3 +65,16 @@ test('填写过程中同一空会话重新请求历史，即使 DOM 和身份不
     assert.deepEqual(f.sends, []);
   } finally { await site.close(); await f.close(); }
 });
+
+for (const delivery of ['failed', 'pending'] as const) {
+  test(`本地乐观回显之后${delivery}不能声明发送成功或重试`, async () => {
+    const f = await startBoss({ friends: [TARGET], delivery });
+    const browser = localBrowser('chat-delivery');
+    const site = createBossSite(bossBrowser(browser, f));
+    try {
+      const result = await site.sendGreeting(target, '待确认招呼').catch((e: Error) => ({ ok: false, evidence: e.message }));
+      assert.equal(result.ok, false, result.evidence);
+      assert.deepEqual(f.sends, ['待确认招呼']);
+    } finally { await site.close(); await f.close(); }
+  });
+}

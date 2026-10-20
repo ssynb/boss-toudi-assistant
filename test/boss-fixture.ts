@@ -34,6 +34,7 @@ export interface Scenario {
   mangleInput?: boolean;
   /** 输入时页面切到另一会话。 */
   switchOnInput?: boolean;
+  delivery?: 'delivered' | 'failed' | 'pending';
 }
 
 export interface BossFixture {
@@ -101,7 +102,10 @@ input.addEventListener('input',()=>{if(inputSeen)return;inputSeen=true;
   ${s.switchOnInput ? "select(friends.find(x=>x!==current));" : ''}});
 input.addEventListener('keydown',async e=>{if(e.key!=='Enter')return;e.preventDefault();if(send.classList.contains('disabled'))return;
   const text=input.innerText.trim();input.innerHTML='';const r=await (await fetch('/wapi/send?bossId='+encodeURIComponent(current.encryptBossId),{method:'POST',body:text})).json();
-  render({mid:r.mid,from:{uid:${UID}},to:{uid:current.friendId},body:{text}});});
+  render({mid:r.mid,from:{uid:${UID}},to:{uid:current.friendId},body:{text}});
+  const status=document.createElement('i');status.className='message-status status-loading';list.lastChild.append(status);
+  ${s.delivery === 'pending' ? '' : `queueMicrotask(()=>{status.className='message-status ${s.delivery === 'failed' ? 'status-error' : 'status-delivery'}';});`}
+});
 (async()=>{friends=await (await fetch('/wapi/friends')).json();const ul=document.querySelector('.chat-content ul');
   friends.forEach(f=>{const li=document.createElement('li');li.setAttribute('role','listitem');li.textContent=f.companyName;li.__vue__={$props:{source:f}};li.onclick=()=>select(f);ul.append(li);});
   const p=new URLSearchParams(location.search),auto=friends.find(f=>f.encryptBossId===p.get('id')&&f.encryptJobId===p.get('jobId'));if(auto)select(auto);})();
