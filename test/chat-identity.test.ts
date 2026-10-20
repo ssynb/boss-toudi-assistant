@@ -16,6 +16,7 @@ function fixture(recruiterId = 'bossA') {
   const selected = { encryptJobId: 'jobA', encryptBossId: recruiterId, friendId: 8, friendSource: 0 };
   const header = { ...selected, companyName: '公司' };
   const record = { selectedFriend$: selected, conversation$: header, boss: { ...selected }, loading: false, history: false, isToTop: true, msgMinId: 1,
+    page: 1, lastContentHeight: 100, $refs: { scrollContent: { clientHeight: 100 } },
     list$: [{ mid: 1, isSelf: true, fromId: 7, toId: 8, friendSource: 0 }] };
   const messageNode = (m: typeof record.list$[number]) => ({
     classList: { contains: (name: string) => name === (m.isSelf ? 'item-myself' : 'item-friend') },
@@ -135,6 +136,17 @@ for (const condition of ['history', 'empty', 'ownership', 'stale-payload'] as co
       f.record.boss.encryptBossId = 'other';
     }
     await assert.rejects(createBossSite(f.browser).readChat(target), condition === 'ownership' ? /归属/ : condition === 'stale-payload' ? /身份/ : /历史|证明/);
+    assert.deepEqual(f.writes, []);
+  });
+}
+
+for (const condition of ['history-response-before-render', 'multi-page-merge'] as const) {
+  test(`历史完成标志不能早于消息合并放行：${condition}`, async () => {
+    const f = fixture(); f.chat();
+    f.record.list$ = [{ mid: 1, isSelf: false, fromId: 8, toId: 7, friendSource: 0 }];
+    if (condition === 'history-response-before-render') f.record.lastContentHeight = 0;
+    else f.record.page = 2;
+    await assert.rejects(createBossSite(f.browser).readChat(target), /历史|渲染|证明/);
     assert.deepEqual(f.writes, []);
   });
 }
