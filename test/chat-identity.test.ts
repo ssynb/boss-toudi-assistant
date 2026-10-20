@@ -13,9 +13,15 @@ const target = { id: 'target', jobId: 'jobA', url: 'https://www.zhipin.com/job_d
 
 function fixture(recruiterId = 'bossA') {
   let url = target.url;
-  const selected = { encryptJobId: 'jobA', encryptBossId: recruiterId };
+  const selected = { encryptJobId: 'jobA', encryptBossId: recruiterId, friendId: 8, friendSource: 0 };
   const header = { ...selected, companyName: '公司' };
-  const record = { selectedFriend$: selected, conversation$: header, loading: false, history: false, list$: [{ isSelf: true }] };
+  const record = { selectedFriend$: selected, conversation$: header, boss: { ...selected }, loading: false, history: false, isToTop: true, msgMinId: 1,
+    list$: [{ mid: 1, isSelf: true, fromId: 7, toId: 8, friendSource: 0 }] };
+  const messageNode = (m: typeof record.list$[number]) => ({
+    classList: { contains: (name: string) => name === (m.isSelf ? 'item-myself' : 'item-friend') },
+    getAttribute: (name: string) => name === 'data-mid' ? String(m.mid) : null,
+    querySelector: () => ({ innerText: '你好' }),
+  });
   let redirect = `https://www.zhipin.com/web/geek/chat?id=${encodeURIComponent(recruiterId)}&jobId=jobA&securityId=not-an-identity`;
   const writes: string[] = [];
   const document = {
@@ -29,7 +35,8 @@ function fixture(recruiterId = 'bossA') {
     querySelectorAll(selector: string) {
       if (selector === '.nav-figure, .user-nav .user-name') return [{ checkVisibility: () => true }];
       if (selector === '.btn-startchat[redirect-url]') return [{ getAttribute: () => redirect }, { getAttribute: () => redirect }];
-      if (selector === '.chat-conversation .chat-record .item-myself') return [{ innerText: '已读\n你好', querySelector: () => ({ innerText: '你好' }) }];
+      if (selector === '.chat-conversation .chat-record .item-myself') return record.list$.filter(m => m.isSelf).map(messageNode);
+      if (selector === '.chat-conversation .chat-record .im-list > .message-item') return record.list$.map(messageNode);
       return [];
     },
   };
@@ -38,7 +45,7 @@ function fixture(recruiterId = 'bossA') {
     async open(next: string) { url = next; },
     async waitFor() {},
     async snapshot() { return { refs: { contact: { role: 'link', name: '立即沟通' } } }; },
-    async eval(expression: string) { return vm.runInNewContext(expression, { document, location: new URL(url), URL }); },
+    async eval(expression: string) { return vm.runInNewContext(expression, { document, location: new URL(url), URL, window: { _PAGE: { uid: 7 } } }); },
     async click() { writes.push('contact'); url = 'https://www.zhipin.com/web/geek/chat'; },
     async fill() { writes.push('fill'); },
     async press() { writes.push('send'); },
@@ -107,3 +114,27 @@ test('ID 身份重启后保留，旧 URL 身份仍可恢复且联系账本不丢
   assert.equal(state.snapshot().contactedCount, 2);
   state.close();
 });
+
+
+test('历史已完整加载且仅有对方消息时，可证明本方消息为零', async () => {
+  const f = fixture(); f.chat();
+  f.record.list$ = [{ mid: 1, isSelf: false, fromId: 8, toId: 7, friendSource: 0 }];
+  assert.equal((await createBossSite(f.browser).readChat(target)).ourMessages, 0);
+  assert.deepEqual(f.writes, []);
+});
+
+for (const condition of ['history', 'empty', 'ownership', 'stale-payload'] as const) {
+  test(`没有可靠零消息证据时阻塞：${condition}`, async () => {
+    const f = fixture(); f.chat();
+    f.record.list$ = [{ mid: 1, isSelf: false, fromId: 8, toId: 7, friendSource: 0 }];
+    if (condition === 'history') { f.record.history = true; f.record.isToTop = false; }
+    if (condition === 'empty') { f.record.list$ = []; f.record.isToTop = false; f.record.msgMinId = 0; }
+    if (condition === 'ownership') f.record.list$[0]!.isSelf = true;
+    if (condition === 'stale-payload') {
+      f.record.list$ = [{ mid: 1, isSelf: true, fromId: 7, toId: 8, friendSource: 0 }];
+      f.record.boss.encryptBossId = 'other';
+    }
+    await assert.rejects(createBossSite(f.browser).readChat(target), condition === 'ownership' ? /归属/ : condition === 'stale-payload' ? /身份/ : /历史|证明/);
+    assert.deepEqual(f.writes, []);
+  });
+}
