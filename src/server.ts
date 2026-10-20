@@ -64,7 +64,6 @@ const ROUTES: Array<[string, RegExp, Handler]> = [
   ['POST', /^\/api\/browser\/open$/, (a) => a.openBrowser()],
   ['POST', /^\/api\/discovery\/start$/, (a) => a.startDiscovery()],
   ['POST', /^\/api\/discovery\/stop$/, (a) => a.stopDiscovery()],
-  ['PATCH', /^\/api\/batch$/, (a, b) => a.patchBatch(b.json() as never)],
   ['PATCH', /^\/api\/batch\/targets\/([\w-]+)$/, (a, b, p) => a.patchTarget(p[0]!, b.json() as never)],
   ['POST', /^\/api\/batch\/approve$/, (a, b) => a.approve((b.json() as { version: number }).version)],
   ['POST', /^\/api\/batch\/start$/, (a) => a.startBatch()],

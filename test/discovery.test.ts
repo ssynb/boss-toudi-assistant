@@ -40,7 +40,6 @@ function fakeSite() {
     contact: refuse('contact'),
     readChat: refuse('readChat'),
     sendGreeting: refuse('sendGreeting'),
-    sendResume: refuse('sendResume'),
   };
   return { site, writes, reads };
 }
@@ -99,7 +98,7 @@ test('Codex 通过受限只读工具发现岗位，生成待批准草案，期�
     assert.equal(batch.status, 'draft');
     assert.deepEqual(
       batch.targets.map((t) => ({ jobId: t.jobId, company: t.company, title: t.title, salary: t.salary, greeting: t.greeting, steps: t.steps })),
-      [{ jobId: 'j1', company: '甲公司', title: '前端工程师', salary: '25-35K', greeting: '您好，我有五年 React 经验', steps: { contact: 'todo', greeting: 'todo', resume: 'todo' } }],
+      [{ jobId: 'j1', company: '甲公司', title: '前端工程师', salary: '25-35K', greeting: '您好，我有五年 React 经验', steps: { contact: 'todo', greeting: 'todo' } }],
     );
     const rejectedOutput = JSON.stringify(mock.requests[5]?.input.at(-1));
     assert.match(rejectedOutput, /zzz/, '编造的岗位被工具拒绝并告知模型');

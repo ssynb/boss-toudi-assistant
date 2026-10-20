@@ -79,7 +79,9 @@ const PAGE_PROBE = `(() => {
   };
 })()`;
 
+// 岗位卡薪资用站点私有字体显示数字：U+E031–U+E03A 依次对应 0–9。
 const EXTRACT_CARDS = `(() => {
+  const digits = (s) => s.replace(/[\\ue031-\\ue03a]/g, (c) => String(c.charCodeAt(0) - 0xe031));
   const seen = new Set(); const out = [];
   for (const a of document.querySelectorAll('a[href*="/job_detail/"]')) {
     const m = a.href.match(/\\/job_detail\\/([^/?#.]+)\\.html/);
@@ -91,7 +93,7 @@ const EXTRACT_CARDS = `(() => {
       jobId: m[1], url: a.href.split('?')[0],
       title: q('[class*="job-name"]') || (a.textContent || '').trim().split('\\n')[0],
       company: q('[class*="company-name"], [class*="boss-name"]'),
-      salary: q('[class*="salary"]'), area: q('[class*="job-area"], [class*="location"]'),
+      salary: digits(q('[class*="salary"]')), area: q('[class*="job-area"], [class*="location"]'),
       snippet: ((card && card.innerText) || '').replace(/\\s+/g, ' ').slice(0, 300),
     });
   }
@@ -101,7 +103,6 @@ const EXTRACT_CARDS = `(() => {
 const EXTRACT_DETAIL = `(document.querySelector('.job-sec-text')?.innerText || '').slice(0, 20000)`;
 
 const OWN_MESSAGES = `[...document.querySelectorAll('.chat-conversation .message-list [class*="item-myself"]')].map((e) => (e.innerText || '').trim())`;
-const OWN_ATTACHMENTS = `[...document.querySelectorAll('.chat-conversation .message-list [class*="item-myself"] [data-file-name]')].map(e => e.getAttribute('data-file-name'))`;
 
 function identityUrl(href: string, kind: 'job_detail' | 'boss_detail'): string | null {
   try {
@@ -241,33 +242,6 @@ export function createBossSite(browser: Browser): Site {
       await browser.waitFor(`(${OWN_MESSAGES}).some((m) => m === ${JSON.stringify(text)})`);
       const ok = (await ownMessages(t)).some((m) => m === text);
       return { ok, evidence: ok ? '招呼原文已出现在会话中' : '发送后会话里找不到这段原文' };
-    },
-
-    async sendResume(t, attachmentName) {
-      await verifyChat(t);
-      const before = await browser.eval<string[]>(OWN_ATTACHMENTS);
-      // 未验证「发简历」入口是否直接发送，不能先点再核对附件；只处理已经显示的确认对话框。
-      const dialogSelector = '[role="dialog"]';
-      const dialog = await browser.eval<string[]>(`(() => {
-        const dialogs = [...document.querySelectorAll(${JSON.stringify(dialogSelector)})].filter(e => e.getClientRects().length);
-        return dialogs.length === 1 ? [...dialogs[0].querySelectorAll('[data-file-name]')].map(e => e.getAttribute('data-file-name')) : [];
-      })()`);
-      if (dialog.length !== 1 || dialog[0] !== attachmentName) {
-        await browser.press('Escape');
-        return { kind: 'mismatch', evidence: `对话框里没有附件「${attachmentName}」，未发送` };
-      }
-      const confirm = findRef((await browser.snapshot(dialogSelector)).refs, (n, role) => role === 'button' && (n === '确定' || n === '发送'));
-      if (!confirm) {
-        await browser.press('Escape');
-        return { kind: 'mismatch', evidence: '对话框里找不到确认按钮，未发送' };
-      }
-      await verifyChat(t);
-      await browser.click(confirm);
-      await browser.waitFor(`(${OWN_ATTACHMENTS}).length > ${before.length}`);
-      await verifyChat(t);
-      const after = await browser.eval<string[]>(OWN_ATTACHMENTS);
-      const ok = after.slice(before.length).some((name) => name === attachmentName);
-      return { kind: ok ? 'sent' : 'unverified', evidence: ok ? `已发送附件简历「${attachmentName}」` : '点确认后会话里没有出现新的本方消息' };
     },
   };
 }

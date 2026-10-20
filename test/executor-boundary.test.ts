@@ -17,7 +17,6 @@ for (const boundary of ['openJob', 'readChat'] as const) {
       async contact() { writes.push('contact'); return { ok: true, evidence: '' }; },
       async readChat() { if (boundary === 'readChat') runner.pause(); return { ourMessages: 0, evidence: '' }; },
       async sendGreeting() { writes.push('greeting'); return { ok: true, evidence: '' }; },
-      async sendResume() { writes.push('resume'); return { kind: 'sent', evidence: '' }; },
     };
     runner = new Executor(state, site);
     await runner.start();

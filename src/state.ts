@@ -18,9 +18,7 @@ import {
   type DiscoveryState,
   type Batch,
   type ContactIdentity,
-  type BatchPatch,
   type BatchStatus,
-  type ResumeDelivery,
   type ResumeFileMeta,
   type ResumeState,
   type StepState,
@@ -53,23 +51,24 @@ export interface StateSnapshot {
 
 const DEFAULT_RESUME: ResumeState = { file: null, text: '', textSource: null };
 const DEFAULT_DISCOVERY: DiscoveryState = { status: 'idle', message: null, questions: [], startedAt: null, finishedAt: null };
-const DEFAULT_DELIVERY: ResumeDelivery = { enabled: false, bossAttachmentName: '', bossAttachmentConfirmed: false };
 const MAX_TARGETS = 50;
 const CRASH_REASON = '上次运行意外中断：中断时正在进行的步骤结果未确认，请到 BOSS 上自行核对。';
 
-const STEP_COLUMN: Record<Step, string> = { contact: 'contact', greeting: 'greeting_state', resume: 'resume' };
+const STEP_COLUMN: Record<Step, string> = { contact: 'contact', greeting: 'greeting_state' };
+/** 已移除的附件简历功能留下的列；旧库启动时删除，否则新目标无法插入。 */
+const REMOVED_COLUMNS = [['batch', 'resume_delivery'], ['targets', 'resume']] as const;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS resume_file (id INTEGER PRIMARY KEY CHECK(id = 1), data BLOB NOT NULL);
 CREATE TABLE IF NOT EXISTS kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS batch (
   id TEXT PRIMARY KEY, version INTEGER NOT NULL, status TEXT NOT NULL, approved_version INTEGER,
-  resume_delivery TEXT NOT NULL, stop_reason TEXT, created_at TEXT NOT NULL);
+  stop_reason TEXT, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS targets (
   id TEXT PRIMARY KEY, batch_id TEXT NOT NULL, ord INTEGER NOT NULL, job_id TEXT NOT NULL,
   company TEXT NOT NULL, title TEXT NOT NULL, salary TEXT NOT NULL, url TEXT NOT NULL,
   reason TEXT NOT NULL, greeting TEXT NOT NULL, removed INTEGER NOT NULL,
-  contact TEXT NOT NULL, greeting_state TEXT NOT NULL, resume TEXT NOT NULL,
+  contact TEXT NOT NULL, greeting_state TEXT NOT NULL,
   evidence TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS contact_identities (target_id TEXT PRIMARY KEY, job_id TEXT NOT NULL, recruiter_url TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS contacts (job_id TEXT PRIMARY KEY, company TEXT NOT NULL, title TEXT NOT NULL, state TEXT NOT NULL, at TEXT NOT NULL);
@@ -80,7 +79,6 @@ interface BatchRow {
   version: number;
   status: BatchStatus;
   approved_version: number | null;
-  resume_delivery: string;
   stop_reason: string | null;
   created_at: string;
 }
@@ -97,7 +95,6 @@ interface TargetRow {
   removed: number;
   contact: StepState;
   greeting_state: StepState;
-  resume: StepState;
   evidence: string;
   updated_at: string;
 }
@@ -116,6 +113,7 @@ export class State {
     try {
       this.#db.exec('PRAGMA locking_mode = EXCLUSIVE; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
       this.#db.exec(SCHEMA);
+      this.#dropRemovedColumns();
       this.#migrateResume(file);
       this.#recover();
     } catch (e) {
@@ -189,32 +187,17 @@ export class State {
       this.#db.exec('DELETE FROM contact_identities; DELETE FROM targets; DELETE FROM batch;');
       const id = crypto.randomUUID();
       this.#db
-        .prepare('INSERT INTO batch (id, version, status, approved_version, resume_delivery, stop_reason, created_at) VALUES (?, ?, ?, NULL, ?, NULL, ?)')
-        .run(id, version, 'draft', JSON.stringify(DEFAULT_DELIVERY), now());
+        .prepare('INSERT INTO batch (id, version, status, approved_version, stop_reason, created_at) VALUES (?, ?, ?, NULL, NULL, ?)')
+        .run(id, version, 'draft', now());
       const insert = this.#db.prepare(
-        `INSERT INTO targets (id, batch_id, ord, job_id, company, title, salary, url, reason, greeting, removed, contact, greeting_state, resume, evidence, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'todo', 'todo', 'todo', '', ?)`,
+        `INSERT INTO targets (id, batch_id, ord, job_id, company, title, salary, url, reason, greeting, removed, contact, greeting_state, evidence, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'todo', 'todo', '', ?)`,
       );
       drafts.forEach((d, i) =>
         insert.run(crypto.randomUUID(), id, i, d.jobId, d.company, d.title, d.salary, d.url, d.reason, greetingText(d.greeting), now()),
       );
     });
     return this.#batch()!;
-  }
-
-  patchBatch(p: BatchPatch): void {
-    const patch = p.resumeDelivery ?? {};
-    this.#editBatch((batch) => {
-      const cur = batch.resumeDelivery;
-      const name = patch.bossAttachmentName === undefined ? cur.bossAttachmentName : str(patch.bossAttachmentName, 'bossAttachmentName', 200).trim();
-      const nameChanged = name !== cur.bossAttachmentName;
-      const next: ResumeDelivery = {
-        enabled: patch.enabled === undefined ? cur.enabled : patch.enabled === true,
-        bossAttachmentName: name,
-        bossAttachmentConfirmed: nameChanged ? patch.bossAttachmentConfirmed === true : (patch.bossAttachmentConfirmed ?? cur.bossAttachmentConfirmed) === true,
-      };
-      this.#db.prepare('UPDATE batch SET resume_delivery = ?').run(JSON.stringify(next));
-    });
   }
 
   patchTarget(id: string, p: TargetPatch): void {
@@ -236,10 +219,6 @@ export class State {
       if (version !== batch.version) throw new AppError('stale_version', '批次已被修改，请刷新后重新核对');
       const active = batch.targets.filter((t) => !t.removed);
       if (active.length === 0) throw new AppError('not_approvable', '批次中没有要执行的目标');
-      const d = batch.resumeDelivery;
-      if (d.enabled && (!d.bossAttachmentName || !d.bossAttachmentConfirmed)) {
-        throw new AppError('not_approvable', '发简历前须填写 BOSS 上的附件简历名并确认');
-      }
       if (batch.status !== 'paused') this.#db.prepare("UPDATE batch SET status = 'approved'").run();
       this.#db.prepare('UPDATE batch SET approved_version = ?').run(version);
     });
@@ -287,6 +266,13 @@ export class State {
 
   // ---------- 内部 ----------
 
+  #dropRemovedColumns(): void {
+    for (const [table, column] of REMOVED_COLUMNS) {
+      const columns = this.#db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+      if (columns.some((c) => c.name === column)) this.#db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
+    }
+  }
+
   #migrateResume(databasePath: string): void {
     const legacyPath = (meta: ResumeFileMeta) => {
       if (!/^[a-f0-9]{64}$/.test(meta.sha256) || !RESUME_EXTENSIONS.includes(meta.extension)) throw new Error('旧简历元数据无效，未删除文件');
@@ -316,7 +302,7 @@ export class State {
       if (discovery.status !== 'idle') this.#setKv('discovery', { ...discovery, status: 'idle', message: '上次发现因进程中断而停止，结束时间为本次恢复检测时间。', finishedAt: now() });
       const legacy = this.#db.prepare("DELETE FROM kv WHERE key IN ('profile', 'criteria')").run();
       if (legacy.changes) this.#invalidate();
-      const stale = this.#db.prepare("SELECT COUNT(*) AS n FROM targets WHERE contact = 'inflight' OR greeting_state = 'inflight' OR resume = 'inflight'").get() as { n: number };
+      const stale = this.#db.prepare("SELECT COUNT(*) AS n FROM targets WHERE contact = 'inflight' OR greeting_state = 'inflight'").get() as { n: number };
       for (const col of Object.values(STEP_COLUMN)) {
         this.#db.prepare(`UPDATE targets SET ${col} = 'unknown', updated_at = ? WHERE ${col} = 'inflight'`).run(now());
       }
@@ -399,7 +385,6 @@ export class State {
       id: row.id,
       version: row.version,
       status: row.status,
-      resumeDelivery: JSON.parse(row.resume_delivery) as ResumeDelivery,
       stopReason: row.stop_reason,
       createdAt: row.created_at,
       targets: rows.map((t) => ({
@@ -413,7 +398,7 @@ export class State {
         reason: t.reason,
         greeting: t.greeting,
         removed: t.removed === 1,
-        steps: { contact: t.contact, greeting: t.greeting_state, resume: t.resume },
+        steps: { contact: t.contact, greeting: t.greeting_state },
         evidence: t.evidence,
         updatedAt: t.updated_at,
       })),

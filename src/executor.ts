@@ -28,8 +28,6 @@ export interface WriteSite {
   /** 读当前会话里本方已发出的消息数（含站点自动发出的默认招呼）。 */
   readChat(t: Target): Promise<{ ourMessages: number; evidence: string }>;
   sendGreeting(t: Target, text: string): Promise<Verified>;
-  /** 发送 BOSS 上名为 attachmentName 的附件简历；对话框里附件名不符时不点确认，返回 mismatch。 */
-  sendResume(t: Target, attachmentName: string): Promise<{ kind: 'sent' | 'mismatch' | 'unverified'; evidence: string }>;
 }
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -67,7 +65,7 @@ export class Executor {
   async #run(batch: Batch): Promise<void> {
     try {
       for (const t of batch.targets) {
-        if (!t.removed) await this.#runTarget(t, batch.resumeDelivery.enabled ? batch.resumeDelivery.bossAttachmentName : null);
+        if (!t.removed) await this.#runTarget(t);
       }
       this.#state.finishRun('done', null);
     } catch (e) {
@@ -85,7 +83,7 @@ export class Executor {
     if (this.#pauseRequested) throw new Stop('');
   }
 
-  #set(t: Target, step: 'contact' | 'greeting' | 'resume', value: Target['steps']['contact'], evidence: string, identity?: ContactIdentity): void {
+  #set(t: Target, step: keyof Target['steps'], value: Target['steps']['contact'], evidence: string, identity?: ContactIdentity): void {
     this.#state.setStep(t, step, value, evidence, identity);
     if (identity) t.contactIdentity = identity;
     t.steps[step] = value;
@@ -94,10 +92,9 @@ export class Executor {
 
   #skipRest(t: Target, evidence: string): void {
     if (t.steps.greeting === 'todo') this.#set(t, 'greeting', 'skipped', evidence);
-    if (t.steps.resume === 'todo') this.#set(t, 'resume', 'skipped', evidence);
   }
 
-  async #runTarget(t: Target, attachment: string | null): Promise<void> {
+  async #runTarget(t: Target): Promise<void> {
     if (t.steps.contact === 'todo') {
       this.#checkpoint();
       if (this.#state.isContacted(t.jobId)) {
@@ -135,23 +132,9 @@ export class Executor {
         this.#set(t, 'greeting', 'inflight', chat.evidence);
         const r = await this.#site.sendGreeting(t, t.greeting).catch((e: unknown) => ({ ok: false, evidence: `发送时出错：${errorText(e)}` }));
         this.#set(t, 'greeting', r.ok ? 'done' : 'unknown', r.evidence);
-        if (!r.ok) {
-          if (t.steps.resume === 'todo') this.#set(t, 'resume', 'skipped', '招呼结果未确认，不继续');
-          throw new Stop(`「${t.company}」招呼发送结果未确认：${r.evidence}`);
-        }
+        if (!r.ok) throw new Stop(`「${t.company}」招呼发送结果未确认：${r.evidence}`);
       }
     }
-
-    if (t.steps.resume !== 'todo') return;
-    if (attachment === null || t.steps.greeting === 'unknown') return this.#set(t, 'resume', 'skipped', '本批未批准发简历');
-    this.#checkpoint();
-    await this.#site.readChat(t);
-    this.#checkpoint();
-    this.#set(t, 'resume', 'inflight', `发送 BOSS 附件简历「${attachment}」`);
-    const r = await this.#site
-      .sendResume(t, attachment)
-      .catch((e: unknown) => ({ kind: 'unverified' as const, evidence: `发送简历时出错：${errorText(e)}` }));
-    this.#set(t, 'resume', r.kind === 'sent' ? 'done' : r.kind === 'mismatch' ? 'failed' : 'unknown', r.evidence);
-    if (r.kind === 'unverified') throw new Stop(`「${t.company}」简历发送结果未确认：${r.evidence}`);
   }
 }
+

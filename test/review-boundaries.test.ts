@@ -32,10 +32,7 @@ function browserFixture() {
   let url = 'https://www.zhipin.com/job_detail/A.html';
   let chatJob = 'A';
   let recruiter = 'hrA';
-  let dialogName = 'resume.pdf';
-  let deliveredName = 'resume.pdf';
   const messages = ['已有招呼'];
-  const attachments: string[] = [];
   const writes: string[] = [];
   const node = (text: string, href?: string) => ({ textContent: text, innerText: text, href, getClientRects: () => [1], checkVisibility: () => true });
   const href = (kind: string, id: string) => `https://www.zhipin.com/${kind}/${id}.html`;
@@ -52,35 +49,30 @@ function browserFixture() {
     querySelectorAll(selector: string) {
       if (selector === '.nav-figure, .user-nav .user-name') return [node('用户')];
       if (selector === '[class*="item-myself"]' || selector === '.chat-conversation .message-list [class*="item-myself"]') return messages.map(x => node(x));
-      if (selector === '[role="dialog"]') return [{ ...node(`确认发送附件 ${dialogName}`), querySelectorAll: (s: string) => s === '[data-file-name]' ? [fileNode(dialogName)] : [] }];
-      if (selector === '.chat-conversation .message-list [class*="item-myself"] [data-file-name]') return attachments.map(fileNode);
       return [];
     },
   };
-  const fileNode = (name: string) => ({ ...node(name), getAttribute: (key: string) => key === 'data-file-name' ? name : null });
   const browser = {
     isOpen: true,
     async eval(expression: string) { return vm.runInNewContext(expression, { document, location: new URL(url), URL }); },
     async open(next: string) { url = next; },
     async waitFor() {},
     async snapshot(scope?: string) {
-      if (scope === '[role="dialog"]') return { refs: { confirm: { role: 'button', name: '确定' } } };
       if (scope === '.chat-conversation') return { refs: { input: { role: 'textbox', name: '消息' } } };
       return { refs: { contact: { role: 'button', name: '立即沟通' } } };
     },
     async click(ref: string) {
       writes.push(`click:${ref}`);
       if (ref === 'contact') url = 'https://www.zhipin.com/web/geek/chat';
-      if (ref === 'confirm') { messages.push(`已发送 ${deliveredName}`); attachments.push(deliveredName); }
     },
     async fill(_ref: string, text: string) { writes.push('fill'); messages.push(text); },
     async press(key: string) { writes.push(`press:${key}`); },
     async close() {},
   } as unknown as Browser;
-  return { browser, writes, switchChat(job: string, hr: string) { chatJob = job; recruiter = hr; }, attachment(shown: string, sent = shown) { dialogName = shown; deliveredName = sent; } };
+  return { browser, writes, switchChat(job: string, hr: string) { chatJob = job; recruiter = hr; } };
 }
 
-const target: Target = { ...draft('A'), id: 'targetA', removed: false, steps: { contact: 'done', greeting: 'todo', resume: 'todo' }, evidence: '', updatedAt: '' };
+const target: Target = { ...draft('A'), id: 'targetA', removed: false, steps: { contact: 'done', greeting: 'todo' }, evidence: '', updatedAt: '' };
 
 async function contact(f: ReturnType<typeof browserFixture>) {
   const site = createBossSite(f.browser);
@@ -91,15 +83,13 @@ async function contact(f: ReturnType<typeof browserFixture>) {
 }
 
 for (const [job, hr] of [['B', 'hrA'], ['A', 'hrB']]) {
-  for (const action of ['greeting', 'resume'] as const) {
-    test(`同公司会话切换为 ${job}/${hr} 时拒绝 ${action}`, async () => {
-      const f = browserFixture();
-      const site = await contact(f);
-      f.switchChat(job!, hr!);
-      await assert.rejects(action === 'greeting' ? site.sendGreeting(target, '你好') : site.sendResume(target, 'resume.pdf'));
-      assert.deepEqual(f.writes, []);
-    });
-  }
+  test(`同公司会话切换为 ${job}/${hr} 时拒绝发招呼`, async () => {
+    const f = browserFixture();
+    const site = await contact(f);
+    f.switchChat(job!, hr!);
+    await assert.rejects(site.sendGreeting(target, '你好'));
+    assert.deepEqual(f.writes, []);
+  });
 }
 
 test('点击沟通后进入错误招聘者会话不算联系已核实', async () => {
@@ -115,26 +105,4 @@ test('正确岗位和招聘者的会话可以发送原文', async () => {
   const site = await contact(f);
   assert.equal((await site.sendGreeting(target, '你好')).ok, true);
   assert.deepEqual(f.writes, ['fill', 'press:Enter']);
-});
-
-test('包含批准名的其他附件不得发送', async () => {
-  const f = browserFixture();
-  const site = await contact(f);
-  f.attachment('secret-resume.pdf');
-  assert.equal((await site.sendResume(target, 'resume.pdf')).kind, 'mismatch');
-  assert.ok(!f.writes.includes('click:confirm'));
-});
-
-test('新增消息中错误附件的子串不能证明批准附件已发送', async () => {
-  const f = browserFixture();
-  const site = await contact(f);
-  f.attachment('resume.pdf', 'secret-resume.pdf');
-  assert.equal((await site.sendResume(target, 'resume.pdf')).kind, 'unverified');
-});
-
-test('只有精确附件名的新增附件证据才能判定发送成功', async () => {
-  const f = browserFixture();
-  const site = await contact(f);
-  assert.equal((await site.sendResume(target, 'resume.pdf')).kind, 'sent');
-  assert.deepEqual(f.writes, ['click:confirm']);
 });

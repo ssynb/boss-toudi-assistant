@@ -40,10 +40,6 @@ function fakeSite(over: Partial<WriteSite> = {}) {
       calls.push(`greet:${t.jobId}`);
       return { ok: true, evidence: '招呼已出现在会话中' };
     },
-    async sendResume(t) {
-      calls.push(`resume:${t.jobId}`);
-      return { kind: 'sent', evidence: '附件简历已发送' };
-    },
     ...over,
   };
   return { site, calls };
@@ -102,7 +98,6 @@ const invalidating: Array<[string, (s: State) => void]> = [
   ['改具体要求', (s) => s.saveInputs({ requirements: '上海后端，薪资不限', resume: { text: null } })],
   ['改简历正文', (s) => s.saveInputs({ requirements: '', resume: { text: '新的简历正文' } })],
   ['删除简历', (s) => s.saveInputs({ requirements: '', resume: { file: null, text: null } })],
-  ['改发简历附件设置', (s) => s.patchBatch({ resumeDelivery: { bossAttachmentName: '另一个附件.pdf' } })],
 ];
 
 for (const [name, mutate] of invalidating) {
@@ -140,48 +135,13 @@ test('执行中拒绝修改具体要求、简历与批次', async () => {
   release();
 });
 
-test('发简历默认关闭；开启须确认 BOSS 站点附件名，改附件名会清除确认', () => {
-  const state = openState(tempDb());
-  const draft = state.replaceBatch([job('a')]);
-  assert.deepEqual(draft.resumeDelivery, { enabled: false, bossAttachmentName: '', bossAttachmentConfirmed: false });
-
-  state.patchBatch({ resumeDelivery: { enabled: true, bossAttachmentName: '张三-前端.pdf' } });
-  assert.equal(codeOf(() => state.approve(state.snapshot().batch!.version)), 'not_approvable');
-
-  state.patchBatch({ resumeDelivery: { bossAttachmentConfirmed: true } });
-  state.patchBatch({ resumeDelivery: { bossAttachmentName: '张三-后端.pdf' } });
-  assert.equal(state.snapshot().batch!.resumeDelivery.bossAttachmentConfirmed, false);
-  assert.equal(codeOf(() => state.approve(state.snapshot().batch!.version)), 'not_approvable');
-
-  state.patchBatch({ resumeDelivery: { bossAttachmentConfirmed: true } });
-  state.approve(state.snapshot().batch!.version);
-  assert.equal(state.snapshot().batch!.status, 'approved');
-});
-
-test('未批准发简历时只联系与招呼，不点发简历', async () => {
+test('执行只联系与发招呼，不发附件简历', async () => {
   const state = approvedState(['a']);
   const { site, calls } = fakeSite();
   await new Executor(state, site).start();
   assert.deepEqual(calls, ['open:a', 'contact:a', 'read:a', 'greet:a']);
-  assert.deepEqual(target(state, 'a').steps, { contact: 'done', greeting: 'done', resume: 'skipped' });
+  assert.deepEqual(target(state, 'a').steps, { contact: 'done', greeting: 'done' });
   assert.equal(state.snapshot().batch?.status, 'done');
-});
-
-test('批准发简历时把确认过的 BOSS 附件名交给站点', async () => {
-  const state = openState(tempDb());
-  state.replaceBatch([job('a')]);
-  state.patchBatch({ resumeDelivery: { enabled: true, bossAttachmentName: '张三.pdf', bossAttachmentConfirmed: true } });
-  state.approve(state.snapshot().batch!.version);
-  const names: string[] = [];
-  const { site } = fakeSite({
-    async sendResume(_t, name) {
-      names.push(name);
-      return { kind: 'sent', evidence: '附件简历已发送' };
-    },
-  });
-  await new Executor(state, site).start();
-  assert.deepEqual(names, ['张三.pdf']);
-  assert.equal(target(state, 'a').steps.resume, 'done');
 });
 
 test('站点已自动发出默认招呼时不再发定制招呼', async () => {

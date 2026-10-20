@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { AppState, BatchPatch, BrowserState, CodexState, DoctorCheck, SaveInputsRequest, TargetPatch } from './contracts.ts';
+import type { AppState, BrowserState, CodexState, DoctorCheck, SaveInputsRequest, TargetPatch } from './contracts.ts';
 import { Browser } from './browser.ts';
 import { createBossSite, type Site } from './boss.ts';
 import { CodexClient } from './codex.ts';
@@ -177,12 +177,6 @@ export class App extends EventEmitter {
   }
 
   // ---------- 批次 ----------
-
-  patchBatch(p: BatchPatch): void {
-    this.#assertDiscoveryIdle();
-    this.#state.patchBatch(p);
-    this.#changed();
-  }
 
   patchTarget(id: string, p: TargetPatch): void {
     this.#assertDiscoveryIdle();

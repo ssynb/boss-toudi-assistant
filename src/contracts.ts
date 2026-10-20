@@ -27,7 +27,7 @@ export type ErrorCode =
   | 'not_found'
   | 'batch_running' // 批次执行中，禁止修改具体要求、简历、批次或开始新的发现
   | 'stale_version' // 批准时提交的 version 与当前批次不符
-  | 'not_approvable' // 批次不满足批准条件（无目标、简历投递未确认等）
+  | 'not_approvable' // 批次不满足批准条件（如没有保留目标）
   | 'not_startable' // 批次未处于有效批准状态
   | 'inputs_incomplete' // 保存缺少无法解析文件的正文，或发现前缺少具体要求/有效简历正文
   | 'codex_signed_out'
@@ -94,8 +94,8 @@ export interface ResumeFileMeta {
 }
 
 /**
- * 本地简历。只用于让模型判断岗位匹配和写招呼语；它不会被上传到 BOSS，
- * 也不是 BOSS 上的「附件简历」（见 ResumeDelivery）。
+ * 本地简历。只用于让模型判断岗位匹配和写招呼语；它不会被上传到 BOSS。
+ * BOSS 附件简历要等双方沟通后由用户本人在站点发送，本应用不发附件。
  */
 export interface ResumeState {
   /** 本地保存的原始文件元数据；未上传为 null。文件保存在本机数据目录，不入 Git。 */
@@ -129,7 +129,7 @@ export interface DiscoveryState {
 
 /**
  * draft     草案：可编辑，未批准，执行器不会做任何联系动作。
- * approved  已批准：批准绑定 version；之后任何改稿、具体要求/简历/附件设置的修改都会退回 draft。
+ * approved  已批准：批准绑定 version；之后任何改稿、具体要求/简历的修改都会退回 draft。
  * running   执行中：拒绝一切修改（batch_running）。
  * paused    已暂停：用户暂停，或遇到登录/验证/结果未确认而自动停下；批准仍有效时可继续，修改则退回 draft。
  * done      全部目标处理完毕。
@@ -140,8 +140,8 @@ export type BatchStatus = 'draft' | 'approved' | 'running' | 'paused' | 'done';
  * todo      未开始
  * inflight  正在进行（已先记账再动手）；进程意外退出后重启会变为 unknown
  * done      已在页面上核实完成
- * skipped   不需要做（如站点已自动发出默认招呼、此前已联系过、未批准发简历）
- * failed    已核实没有发生（如找不到按钮、附件名不符而未点确认），可在新批次重新批准后再试
+ * skipped   不需要做（如站点已自动发出默认招呼、此前已联系过）
+ * failed    已核实没有发生（如找不到沟通按钮），可在新批次重新批准后再试
  * unknown   结果无法核实：永不自动重试，需用户自己去 BOSS 查看
  */
 export type StepState = 'todo' | 'inflight' | 'done' | 'skipped' | 'failed' | 'unknown';
@@ -151,8 +151,6 @@ export interface TargetSteps {
   contact: StepState;
   /** 发送本目标的定制招呼原文；站点已自动发出招呼时为 skipped。 */
   greeting: StepState;
-  /** 在会话页点「发简历」发送 BOSS 上已有的附件简历；未批准发简历时为 skipped。 */
-  resume: StepState;
 }
 
 /** 已从岗位页取得并在目标会话核实的身份；与联系完成状态同事务保存。 */
@@ -176,7 +174,7 @@ export interface Target {
   reason: string;
   /** 将发送的定制招呼原文，逐字发送，≤ GREETING_MAX_CHARS。 */
   greeting: string;
-  /** 用户从本批移除；移除的目标不执行。 */
+  /** 用户从本批移除；移除的目标不执行，UI 不再列出。 */
   removed: boolean;
   steps: TargetSteps;
   /** 最近一步的页面证据或失败原话。 */
@@ -184,25 +182,11 @@ export interface Target {
   updatedAt: string;
 }
 
-/**
- * 发简历设置。默认不发。发送的是用户在 BOSS 网站上已有的「附件简历」，
- * 不是本地上传的文件；开启前用户须填写 BOSS 上显示的附件名并勾选确认。
- * 执行时在 BOSS 的发简历对话框里核对附件名，不一致则不发送（该步骤记为 failed）。
- */
-export interface ResumeDelivery {
-  enabled: boolean;
-  /** BOSS 网站「附件简历」列表里显示的文件名。 */
-  bossAttachmentName: string;
-  /** 用户确认：已在 BOSS 上核对，要发送的是这个站点附件。修改附件名会清除确认。 */
-  bossAttachmentConfirmed: boolean;
-}
-
 export interface Batch {
   id: string;
   /** 在当前数据库内跨批次单调递增；替换批次或修改时 +1，批准时必须提交当前 version。 */
   version: number;
   status: BatchStatus;
-  resumeDelivery: ResumeDelivery;
   targets: Target[];
   /** 自动暂停的原因（人话）；用户暂停或正常时为 null。 */
   stopReason: string | null;
@@ -219,7 +203,6 @@ export interface Batch {
  * POST /api/browser/open           打开本应用独立 profile 的浏览器到 BOSS（用户自行登录/验证）
  * POST /api/discovery/start        需：Codex 已登录、已保存的简历正文/具体要求非空、批次不在执行；实际搜索前才要求浏览器 ready
  * POST /api/discovery/stop
- * PATCH /api/batch                 BatchPatch
  * PATCH /api/batch/targets/:id     TargetPatch
  * POST /api/batch/approve          ApproveRequest
  * POST /api/batch/start            从 approved 或仍有效批准的 paused 开始/继续
@@ -235,7 +218,7 @@ export interface Batch {
  * requirements、简历文件/正文/元数据与旧批准失效必须原子生效；任一校验或存储失败则全部保持原样。
  * 批次 running 返回 batch_running，发现 running/stopping 返回 busy，均不得修改任何已保存数据或批准。
  * 成功清除澄清问题，使未完成批次的旧批准失效并递增一次版本；不改变上轮发现时间。
- * 保存不是对外投递批准；BOSS 附件确认与整批批准仍是独立安全步骤。
+ * 保存不是对外投递批准；整批批准仍是独立安全步骤。
  */
 export interface SaveInputsRequest {
   /** 唯一具体要求自由文本，最多 10000 字；可保存空草稿，但开始发现前必须非空。 */
@@ -259,10 +242,6 @@ export interface SaveInputsRequest {
 
 /** base64 只接受标准 RFC 4648 编码（含所需填充），不含 data: URL 前缀；解码后上限 RESUME_MAX_BYTES。 */
 export const INPUTS_MAX_BYTES = 4 * Math.ceil(RESUME_MAX_BYTES / 3) + 512 * 1024;
-
-export interface BatchPatch {
-  resumeDelivery?: Partial<ResumeDelivery>;
-}
 
 export interface TargetPatch {
   greeting?: string;
