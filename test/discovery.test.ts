@@ -188,6 +188,7 @@ for (const exhausted of [false, true]) test(`100目标不能以4个无解释结�
     const state = await discover(server.url);
     assert.match(JSON.stringify(mock.requests[7]?.input.at(-1)), /100|继续/);
     assert.equal(state.batch?.targets.length ?? 0, exhausted ? 4 : 0);
+    assert.ok(state.discovery.message);
     assert.match(state.discovery.message, exhausted ? /100.*4|4.*100/ : /未.*目标|没有提交/);
     if (exhausted) assert.match(state.discovery.message, /耗尽/);
     assert.deepEqual(fake.writes, []);
