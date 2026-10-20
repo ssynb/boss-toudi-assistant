@@ -92,11 +92,34 @@ test('Network.enable 应答之前发起的请求即使之后完成也不收', as
   try {
     const watch = await watchResponses(browser.url, 'T', ENDPOINT);
     try {
-      assert.deepEqual(await watch.next(), { kind: 'response', url: `${ENDPOINT}?page=armed`, status: 200, body: { requestId: 'A' } });
+      assert.deepEqual(await watch.next(), { kind: 'response', revision: 1, url: `${ENDPOINT}?page=armed`, status: 200, body: { requestId: 'A' } });
     } finally {
       await watch.close();
     }
   } finally {
     browser.stop();
   }
+});
+
+
+test('新请求未完成已递增 revision，旧响应保留自己的开始序号', async () => {
+  const browser = await fakeBrowser((method, id, params, send) => {
+    if (method === 'Network.enable') {
+      send({ id, result: {} });
+      for (const event of requestEvents('first', `${ENDPOINT}?page=first`)) send(event);
+      return;
+    }
+    if (method !== 'Network.getResponseBody') return;
+    send(requestEvents('pending', `${ENDPOINT}?page=pending`)[0]!);
+    send(requestEvents('other', 'https://other.example/wapi/list')[0]!);
+    send({ id, result: { body: JSON.stringify({ requestId: params.requestId }), base64Encoded: false } });
+  });
+  try {
+    const watch = await watchResponses(browser.url, 'T', ENDPOINT);
+    try {
+      const first = await watch.next();
+      assert.deepEqual(first, { kind: 'response', revision: 1, url: `${ENDPOINT}?page=first`, status: 200, body: { requestId: 'first' } });
+      assert.equal(watch.revision, 2, '未完成的新请求已经使旧响应证明失效；其他 origin 不递增');
+    } finally { await watch.close(); }
+  } finally { browser.stop(); }
 });

@@ -31,3 +31,20 @@ test('用真实 CloakBrowser 与 agent-browser 在独立 profile 完成快照、
     await browser.close();
   }
 });
+
+test('按序号点击和容器内双向滚动只作用于指定元素', async () => {
+  const dir = tempDir('boss-browser-actions-');
+  const page = path.join(dir, 'page.html');
+  fs.writeFileSync(page, `<!doctype html><button onclick="document.querySelector('output').textContent='first'">第一项</button><button onclick="document.querySelector('output').textContent='second'">第二项</button><output></output><div id="list" style="height:100px;overflow:auto"><div style="height:1000px">内容</div></div>`);
+  const browser = new Browser({ profileDir: path.join(dir, 'profile'), headed: false, namespace: `actions-${process.pid}` });
+  try {
+    await browser.open(pathToFileURL(page).href);
+    await browser.clickNth('button', 1);
+    assert.equal(await browser.eval("document.querySelector('output').textContent"), 'second');
+    await browser.scrollWithin('#list', 'down', 200);
+    await browser.waitFor("document.querySelector('#list').scrollTop > 0");
+    await browser.scrollWithin('#list', 'up', 1000);
+    await browser.waitFor("document.querySelector('#list').scrollTop === 0");
+    assert.equal(await browser.eval('window.scrollY'), 0);
+  } finally { await browser.close(); }
+});

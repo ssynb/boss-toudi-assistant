@@ -50,9 +50,10 @@ after(async () => {
 test('只按精确 origin+pathname 返回观察后发起的多页响应，成功空数组保留原样', async () => {
   const watch = await browser.watchResponses(endpoint);
   try {
+    assert.equal(watch.revision, 0);
     await pageFetch(['/wapi/other?page=1', `${ENDPOINT_PATH}?page=1`, `${ENDPOINT_PATH}/extra?page=1`, `${ENDPOINT_PATH}?page=2&secret=s`]);
-    assert.deepEqual(await watch.next(), { kind: 'response', url: `${endpoint}?page=1`, status: 200, body: { code: 0, zpData: { page: '1', list: [] } } });
-    assert.deepEqual(await watch.next(), { kind: 'response', url: `${endpoint}?page=2&secret=s`, status: 200, body: { code: 0, zpData: { page: '2', list: [{ id: 'b' }] } } });
+    assert.deepEqual(await watch.next(), { kind: 'response', revision: 1, url: `${endpoint}?page=1`, status: 200, body: { code: 0, zpData: { page: '1', list: [] } } });
+    assert.deepEqual(await watch.next(), { kind: 'response', revision: 2, url: `${endpoint}?page=2&secret=s`, status: 200, body: { code: 0, zpData: { page: '2', list: [{ id: 'b' }] } } });
   } finally {
     await watch.close();
   }
@@ -62,12 +63,14 @@ test('HTTP/业务失败原样交给调用方，网络失败与不可读正文显
   const watch = await browser.watchResponses(endpoint);
   try {
     await pageFetch([`${ENDPOINT_PATH}?kind=error`, `${ENDPOINT_PATH}?kind=drop`, `${ENDPOINT_PATH}?kind=broken`]);
-    assert.deepEqual(await watch.next(), { kind: 'response', url: `${endpoint}?kind=error`, status: 500, body: { code: 5, message: '业务失败' } });
+    assert.deepEqual(await watch.next(), { kind: 'response', revision: 1, url: `${endpoint}?kind=error`, status: 500, body: { code: 5, message: '业务失败' } });
     const dropped = await watch.next();
     assert.equal(dropped.kind, 'failed');
+    assert.equal(dropped.revision, 2);
     assert.equal(dropped.url, `${endpoint}?kind=drop`);
     const broken = await watch.next();
     assert.equal(broken.kind, 'failed');
+    assert.equal(broken.revision, 3);
     assert.equal(broken.url, `${endpoint}?kind=broken`);
   } finally {
     await watch.close();
@@ -96,16 +99,16 @@ test('关闭会拒绝正在等待和之后的 next', async () => {
   const waiting = assert.rejects(watch.next(), /关闭/);
   await watch.close();
   await waiting;
-  await assert.rejects(watch.next(), /关闭/);
+  await assert.rejects(watch.next(), error => { assert.match(String(error), /关闭/); assert.throws(() => watch.revision, actual => actual === error); return true; });
   await watch.close();
 });
 
 test('等待超时拒绝并结束观察', async () => {
   const watch = await browser.watchResponses(endpoint);
   try {
-    await assert.rejects(watch.next(), /超时/);
+    await assert.rejects(watch.next(), error => { assert.match(String(error), /超时/); assert.throws(() => watch.revision, actual => actual === error); return true; });
     await pageFetch([`${ENDPOINT_PATH}?page=late`]);
-    await assert.rejects(watch.next(), /超时/);
+    await assert.rejects(watch.next(), error => { assert.match(String(error), /超时/); assert.throws(() => watch.revision, actual => actual === error); return true; });
   } finally {
     await watch.close();
   }
@@ -123,7 +126,7 @@ test('未消费响应超过队列上限时明确失败', async () => {
 
 test('浏览器断开时拒绝等待', async () => {
   const watch = await browser.watchResponses(endpoint);
-  const waiting = assert.rejects(watch.next(), /断开/);
+  const waiting = assert.rejects(watch.next(), error => { assert.match(String(error), /断开/); assert.throws(() => watch.revision, actual => actual === error); return true; });
   await browser.close();
   await waiting;
 });
