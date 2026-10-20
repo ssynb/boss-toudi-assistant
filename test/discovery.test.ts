@@ -194,3 +194,28 @@ for (const exhausted of [false, true]) test(`100目标不能以4个无解释结�
     assert.deepEqual(fake.writes, []);
   } finally { await server.close(); mock.close(); }
 });
+
+for (const scenario of ['unread-candidates', 'skipped-pages', 'repeated-searches'] as const) {
+  test(`不足目标不得绕过未完成的发现工作：${scenario}`, async () => {
+    const targets = Array.from({ length: 4 }, (_, i) => ({ jobId: `j${i}`, reason: 'React经验匹配实际JD', greeting: '您好，我有React经验' }));
+    const search = (page: number): MockItem[] => [{ type: 'function_call', name: 'boss_search', args: { keyword: '前端', page } }];
+    const script: MockItem[][] = [
+      [{ type: 'function_call', name: 'set_search_plan', args: { ...(plan as Extract<MockItem, { type: 'function_call' }>).args as object, maxTargets: 100 } }],
+      search(1),
+      ...targets.map(t => [{ type: 'function_call' as const, name: 'boss_job_detail', args: { jobId: t.jobId } }]),
+      ...(scenario === 'repeated-searches' ? Array.from({ length: 34 }, () => search(1)) : [search(scenario === 'skipped-pages' ? 5 : 2)]),
+      [{ type: 'function_call', name: 'propose_batch', args: { targets, shortfallReason: '搜索结果耗尽' } }],
+      [{ type: 'message', text: '结束' }],
+    ];
+    const { mock, fake, server } = await setup(script, 'gpt-mock');
+    fake.site.search = async q => q.page === 1
+      ? Array.from({ length: scenario === 'unread-candidates' ? 100 : 4 }, (_, i) => ({ ...cards[0]!, jobId: `j${i}` })) : [];
+    try {
+      await api(server.url, 'PUT', '/api/inputs', { requirements: '北京前端，月薪至少20K，目标100个', resume: { text: null } });
+      const state = await discover(server.url);
+      assert.equal(state.batch, null, '尚有未完成搜索或未读候选，不能接受小批次为成功');
+      assert.match(JSON.stringify(mock.requests.at(-1)?.input.at(-1)), /继续|未读/);
+      assert.deepEqual(fake.writes, []);
+    } finally { await server.close(); mock.close(); }
+  });
+}
