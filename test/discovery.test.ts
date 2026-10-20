@@ -190,7 +190,10 @@ for (const exhausted of [false, true]) test(`100目标不能以4个无解释结�
     assert.equal(state.batch?.targets.length ?? 0, exhausted ? 4 : 0);
     assert.ok(state.discovery.message);
     assert.match(state.discovery.message, exhausted ? /100.*4|4.*100/ : /未.*目标|没有提交/);
-    if (exhausted) assert.match(state.discovery.message, /耗尽/);
+    if (exhausted) {
+      assert.match(state.discovery.message, /计划范围.*5.*不代表全站/);
+      assert.match(state.discovery.message, /模型筛选说明.*耗尽/);
+    }
     assert.deepEqual(fake.writes, []);
   } finally { await server.close(); mock.close(); }
 });
@@ -214,6 +217,10 @@ for (const scenario of ['unread-candidates', 'skipped-pages', 'repeated-searches
       await api(server.url, 'PUT', '/api/inputs', { requirements: '北京前端，月薪至少20K，目标100个', resume: { text: null } });
       const state = await discover(server.url);
       assert.equal(state.batch, null, '尚有未完成搜索或未读候选，不能接受小批次为成功');
+      assert.match(state.discovery.message!, /目标\s*100/);
+      assert.match(state.discovery.message!, /已读.*4/);
+      assert.match(state.discovery.message!, scenario === 'unread-candidates' ? /未读.*96/ : /前端.*[2-5]/);
+      assert.doesNotMatch(state.discovery.message!, /调整具体要求/);
       assert.match(JSON.stringify(mock.requests.at(-1)?.input.at(-1)), /继续|未读/);
       assert.deepEqual(fake.writes, []);
     } finally { await server.close(); mock.close(); }

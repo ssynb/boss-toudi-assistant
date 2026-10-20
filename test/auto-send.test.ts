@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import http from 'node:http';
 import path from 'node:path';
 import { startServer } from '../src/server.ts';
 import type { Site } from '../src/boss.ts';
@@ -74,3 +75,73 @@ test('浏览器窗口被关闭时发现照常搜索（由搜索重新打开浏�
   const { calls } = await run(undefined, 'closed');
   assert.deepEqual(calls, ['search', 'search']);
 });
+
+for (const terminal of ['failed', 'cancelled'] as const) {
+  test(`自动投递草案暂存后${terminal}：保留原批次且不联系`, { timeout: 30_000 }, async () => {
+    const mock = await startMockModel([...script, ...script]);
+    let respond!: (res: http.ServerResponse) => void;
+    const staged = new Promise<http.ServerResponse>(resolve => { respond = resolve; });
+    let requests = 0;
+    let lastInput = '';
+    const provider = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', chunk => { body += chunk; });
+      req.on('end', () => {
+        if (++requests === 12) {
+          lastInput = JSON.stringify(JSON.parse(body).input.at(-1));
+          respond(res);
+          return;
+        }
+        void fetch(`${mock.baseUrl}/responses`, { method: 'POST', headers: { 'content-type': 'application/json' }, body })
+          .then(async upstream => { res.writeHead(upstream.status, { 'content-type': 'text/event-stream' }); res.end(await upstream.text()); })
+          .catch(error => res.destroy(error));
+      });
+    });
+    await new Promise<void>(resolve => provider.listen(0, '127.0.0.1', resolve));
+    const dir = tempDir('boss-staged-');
+    fs.mkdirSync(path.join(dir, 'codex-home'));
+    fs.writeFileSync(path.join(dir, 'codex-home', 'config.toml'), mockProviderToml(`http://127.0.0.1:${(provider.address() as { port: number }).port}/v1`, 'gpt-mock'));
+    const writes: string[] = [];
+    const forbidden = (name: string) => async (): Promise<never> => { writes.push(name); throw new Error('不能联系'); };
+    const site: Site = {
+      open: async () => ({ page: 'ready', url: null }), status: async () => ({ page: 'ready', url: null }), close: async () => {},
+      search: async q => q.page === 1 ? [card] : [], jobDetail: async () => '岗位职责：React前端开发',
+      openJob: forbidden('openJob'), contact: forbidden('contact'), readChat: forbidden('readChat'), sendGreeting: forbidden('sendGreeting'),
+    };
+    const server = await startServer({ dataDir: dir, port: 0, site });
+    const idle = () => new Promise<AppState>((resolve, reject) => {
+      const cleanup = () => { clearTimeout(timer); server.app.off('changed', check); };
+      const check = () => void server.app.getState().then(state => {
+        if (state.discovery.status === 'idle') { cleanup(); resolve(state); }
+      }, error => { cleanup(); reject(error); });
+      const timer = setTimeout(() => { cleanup(); reject(new Error('发现未结束')); }, 10_000);
+      server.app.on('changed', check);
+      check();
+    });
+    try {
+      await api(server.url, 'PUT', '/api/inputs', { requirements: '北京前端，薪资不限，找150个', resume: { text: '五年React经验' } });
+      await server.app.startDiscovery({ autoSend: false });
+      const original = (await idle()).batch;
+      assert.ok(original);
+      await server.app.startDiscovery({ autoSend: true });
+      const response = await staged;
+      assert.match(lastInput, /草案已接收/, '终态发生在真实Codex收到草案接收结果后');
+      const finished = idle();
+      if (terminal === 'cancelled') server.app.stopDiscovery();
+      else {
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(`event: response.failed\ndata: ${JSON.stringify({ type: 'response.failed', response: { id: 'failure', error: { code: 'invalid_prompt', message: 'staged fixture failure' } } })}\n\n`);
+      }
+      const state = await finished;
+      assert.equal(state.discovery.autoSend, true);
+      assert.match(state.discovery.message!, terminal === 'cancelled' ? /停止/ : /staged fixture failure/);
+      assert.deepEqual(state.batch, original, '失败或取消不能替换原批次（含版本、批准状态和目标）');
+      assert.deepEqual(writes, [], '不能批准或执行任何联系动作');
+    } finally {
+      await server.close();
+      provider.closeAllConnections();
+      await new Promise<void>(resolve => provider.close(() => resolve()));
+      mock.close();
+    }
+  });
+}
