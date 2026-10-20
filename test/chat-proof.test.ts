@@ -78,3 +78,19 @@ for (const delivery of ['failed', 'pending'] as const) {
     } finally { await site.close(); await f.close(); }
   });
 }
+
+for (const arrives of ['before-fill', 'during-fill'] as const) {
+  test(`自动招呼${arrives}显示为无编号本方待发送节点时不能再发定制招呼`, async () => {
+    const f = await startBoss({ friends: [TARGET] });
+    const browser = localBrowser('chat-pending-own');
+    const site = createBossSite(bossBrowser(browser, f));
+    try {
+      assert.equal((await site.readChat(target)).ourMessages, 0);
+      const pending = `document.querySelector('.im-list').insertAdjacentHTML('beforeend', '<div class="message-item item-myself"><div class="text-content">默认招呼</div><i class="message-status status-loading"></i></div>')`;
+      await browser.eval(arrives === 'before-fill' ? `(${pending}, true)` : `(document.getElementById('chat-input').addEventListener('input', () => {${pending}}, {once:true}), true)`);
+      const result = await site.sendGreeting(target, '定制招呼');
+      assert.equal(result.skipped, true, result.evidence);
+      assert.deepEqual(f.sends, []);
+    } finally { await site.close(); await f.close(); }
+  });
+}
