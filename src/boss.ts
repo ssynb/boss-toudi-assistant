@@ -222,8 +222,9 @@ export function createBossSite(browser: Browser): Site {
         } catch { return null; }
       })`);
     if (redirects.length) {
+      // 招聘者 ID 是站点的不透明值（含 ~ 等字符），安全边界是来源与身份精确匹配，不是字符白名单。
       const ids = redirects.map(value => value?.origin === ORIGIN && value.path === '/web/geek/chat'
-        && value.jobId === t.jobId && value.recruiterId && /^[\w-]+$/.test(value.recruiterId) ? value.recruiterId : null);
+        && value.jobId === t.jobId && value.recruiterId ? value.recruiterId : null);
       if (!ids[0] || ids.some(id => id !== ids[0])) return null;
       return { kind: 'chatId', jobId: t.jobId, recruiterId: ids[0] };
     }
