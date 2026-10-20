@@ -68,6 +68,24 @@ for (const destination of ['popup', 'route', 'new-tab'] as const) {
   });
 }
 
+test('账本里联系结果未知的岗位：新批次不再打开岗位页或已有会话', async () => {
+  const f = await startBoss({ friends: [TARGET] });
+  const browser = localBrowser('ledger-unknown');
+  const state = openState(path.join(tempDir('boss-ledger-unknown-'), 'state.sqlite'));
+  try {
+    const old = state.replaceBatch([draft()]);
+    state.approve(old.version);
+    state.beginRun();
+    state.setStep(old.targets[0]!, 'contact', 'unknown', '旧结果未确认');
+    state.finishRun('paused', null);
+    state.replaceBatch([draft('新招呼')]);
+    state.approve(state.snapshot().batch!.version);
+    await new Executor(state, createBossSite(bossBrowser(browser, f))).start();
+    assert.deepEqual(state.snapshot().batch!.targets[0]!.steps, { contact: 'skipped', greeting: 'skipped' });
+    assert.deepEqual([f.contacts, f.sends, f.historyRequests], [0, [], []]);
+  } finally { state.close(); await browser.close(); await f.close(); }
+});
+
 test('分页通过真实滚动加载后续岗位；结果耗尽不重复第一页', async () => {
   const dir = tempDir('boss-search-navigation-');
   fs.writeFileSync(path.join(dir, 'page.html'), `<!doctype html><meta charset="utf-8"><div class="nav-figure">账号</div><div class="page-jobs-main"><ul></ul></div><script>

@@ -179,3 +179,41 @@ for (const recruiterId of ['bossA', 'boss~A', 'boss.A']) {
     } finally { await f.close(); }
   });
 }
+
+// ---- 岗位页显示「继续沟通」：不点击，只按真实 ID 进入已有会话，用完整历史区分已发送与仅打开过 ----
+
+const candidate = { ...target, contactIdentity: undefined, steps: { contact: 'todo', greeting: 'todo' } } as Target;
+
+test('继续沟通且历史里已有本方消息：返回已联系，不点击', async () => {
+  const { f, site } = await existing({}, [message(1, true, '早先的招呼'), message(2, false, '你好')]);
+  try {
+    assert.equal((await site.openJob(candidate)).kind, 'alreadyContacted');
+    assert.equal(f.contacts, 0);
+    assert.deepEqual(f.sends, []);
+  } finally { await f.close(); }
+});
+
+test('继续沟通且完整历史证明本方零消息：返回已有会话与身份，不点击，可只读后发送', async () => {
+  const { f, site } = await existing({}, [message(1, false, '你好')]);
+  try {
+    const opened = await site.openJob(candidate) as { kind: string; identity?: unknown };
+    assert.equal(opened.kind, 'existingConversation');
+    assert.deepEqual(opened.identity, identity);
+    assert.equal(f.contacts, 0);
+    const saved = { ...candidate, contactIdentity: identity } as Target;
+    assert.equal((await site.readChat(saved)).ourMessages, 0);
+    const sent = await site.sendGreeting(saved, '定制招呼');
+    assert.equal(sent.ok, true, sent.evidence);
+    assert.deepEqual([f.contacts, f.sends], [0, ['定制招呼']]);
+  } finally { await f.close(); }
+});
+
+test('继续沟通但历史不能完整证明：阻塞，不点击也不当作可联系', async () => {
+  const { f, site } = await existing({ history: () => ({ status: 500, body: {} }) }, []);
+  try {
+    assert.equal((await site.openJob(candidate)).kind, 'blocked');
+    assert.equal(f.contacts, 0);
+    assert.equal((await site.contact(candidate)).ok, false);
+    assert.equal(f.contacts, 0);
+  } finally { await f.close(); }
+});
