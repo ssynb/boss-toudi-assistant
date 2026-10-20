@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
 import path from 'node:path';
@@ -7,69 +7,32 @@ import type { Browser } from '../src/browser.ts';
 import type { Target } from '../src/contracts.ts';
 import { openState } from '../src/state.ts';
 import { tempDir } from './helpers.ts';
+import { bossBrowser, localBrowser, message, startBoss, TARGET, type Message, type Scenario } from './boss-fixture.ts';
 
 const identity = { kind: 'chatId' as const, jobId: 'jobA', recruiterId: 'bossA' };
 const target = { id: 'target', jobId: 'jobA', url: 'https://www.zhipin.com/job_detail/jobA.html', company: '公司', title: '岗位', salary: '', reason: '', greeting: '你好', removed: false, evidence: '', updatedAt: '', steps: { contact: 'done', greeting: 'todo' }, contactIdentity: identity } as Target;
 
-function fixture(recruiterId = 'bossA') {
-  let url = target.url;
-  const selected = { encryptJobId: 'jobA', encryptBossId: recruiterId, friendId: 8, friendSource: 0 };
-  const header = { ...selected, companyName: '公司' };
-  const record = { selectedFriend$: selected, conversation$: header, boss: { ...selected }, loading: false, history: false, isToTop: true, msgMinId: 1,
-    page: 1, lastContentHeight: 100, $refs: { scrollContent: { clientHeight: 100 } },
-    list$: [{ mid: 1, isSelf: true, fromId: 7, toId: 8, friendSource: 0 }] };
-  const messageNode = (m: typeof record.list$[number]) => ({
-    classList: { contains: (name: string) => name === (m.isSelf ? 'item-myself' : 'item-friend') },
-    getAttribute: (name: string) => name === 'data-mid' ? String(m.mid) : null,
-    querySelector: () => ({ innerText: '你好' }),
-  });
-  let redirect = `https://www.zhipin.com/web/geek/chat?id=${encodeURIComponent(recruiterId)}&jobId=jobA&securityId=not-an-identity`;
+function fixture() {
+  let redirect = 'https://www.zhipin.com/web/geek/chat?id=bossA&jobId=jobA&securityId=not-an-identity';
   const writes: string[] = [];
   const document = {
     title: 'BOSS',
-    querySelector(selector: string) {
-      if (selector === '.chat-conversation') return { __vue__: { selectedFriend$: selected } };
-      if (selector === '.chat-conversation .top-info-content') return { __vue__: { conversation$: header } };
-      if (selector === '.chat-conversation .chat-record') return { __vue__: record };
-      return null;
-    },
+    querySelector: () => null,
     querySelectorAll(selector: string) {
       if (selector === '.nav-figure, .user-nav .user-name') return [{ checkVisibility: () => true }];
       if (selector === '.btn-startchat[redirect-url]') return [{ getAttribute: () => redirect }, { getAttribute: () => redirect }];
-      if (selector === '.chat-conversation .chat-record .item-myself') return record.list$.filter(m => m.isSelf).map(messageNode);
-      if (selector === '.chat-conversation .chat-record .im-list > .message-item') return record.list$.map(messageNode);
-      if (selector === '.chat-conversation .message-controls .chat-input[contenteditable="true"]') return [{ checkVisibility: () => true }];
       return [];
     },
   };
   const browser = {
     isOpen: true,
-    async open(next: string) { url = next; },
+    async open() {},
     async waitFor() {},
     async snapshot() { return { refs: { contact: { role: 'link', name: '立即沟通' } } }; },
-    async eval(expression: string) { return vm.runInNewContext(expression, { document, location: new URL(url), URL, window: { _PAGE: { uid: 7 } } }); },
-    async click() { writes.push('contact'); url = 'https://www.zhipin.com/web/geek/chat'; },
-    async fill() { writes.push('fill'); },
-    async press() { writes.push('send'); },
+    async eval(expression: string) { return vm.runInNewContext(expression, { document: { ...document, readyState: 'complete' }, location: new URL(target.url), URL }); },
+    async click() { writes.push('contact'); },
   } as unknown as Browser;
-  return { browser, selected, header, record, writes, redirect(value: string) { redirect = value; }, chat() { url = 'https://www.zhipin.com/web/geek/chat'; } };
-}
-
-for (const recruiterId of ['bossA', 'boss~A', 'boss.A']) {
-  test(`招聘者 ID ${recruiterId} 按原值提取并精确核对，不以字符白名单拒绝`, async () => {
-    const f = fixture(recruiterId);
-    const site = createBossSite(f.browser);
-    const expected = { ...identity, recruiterId };
-    const candidate = { ...target, contactIdentity: undefined };
-    assert.equal((await site.openJob(candidate)).kind, 'canContact');
-    assert.deepEqual(f.writes, []);
-    assert.deepEqual((await site.contact(candidate)).identity, expected);
-    const saved = { ...candidate, contactIdentity: expected };
-    assert.equal((await site.readChat(saved)).ourMessages, 1);
-    f.selected.encryptBossId = recruiterId + 'other';
-    await assert.rejects(site.readChat(saved), /身份/);
-    assert.deepEqual(f.writes, ['contact'], '不匹配时不能开始下一步');
-  });
+  return { browser, writes, redirect(value: string) { redirect = value; } };
 }
 
 for (const redirect of ['https://www.zhipin.com/web/geek/chat?id=bossA&jobId=jobB', 'https://other.example/web/geek/chat?id=bossA&jobId=jobA', 'https://www.zhipin.com/web/geek/chat?jobId=jobA']) {
@@ -88,22 +51,6 @@ test('点击前招聘者变化时不能添加联系人', async () => {
   assert.deepEqual(f.writes, []);
 });
 
-test('真实会话结构只读取本方消息，切换会话或详情未同步时禁止发送前读取', async () => {
-  const f = fixture(); f.chat(); const site = createBossSite(f.browser);
-  assert.equal((await site.readChat(target)).ourMessages, 1);
-  assert.deepEqual(f.writes, []);
-  f.selected.encryptBossId = 'bossB';
-  await assert.rejects(site.readChat(target), /身份/);
-  f.selected.encryptBossId = 'bossA'; f.header.encryptJobId = 'jobB';
-  await assert.rejects(site.sendGreeting(target, '你好'), /身份/);
-  assert.deepEqual(f.writes, []);
-});
-
-test('消息加载未完成时不能将列表当作发送证据', async () => {
-  const f = fixture(); f.chat(); f.record.loading = true;
-  await assert.rejects(createBossSite(f.browser).readChat(target), /消息|加载/);
-});
-
 test('ID 身份重启后保留，旧 URL 身份仍可恢复且联系账本不丢失', () => {
   const file = path.join(tempDir('boss-chat-identity-'), 'state.sqlite');
   let state = openState(file);
@@ -118,50 +65,117 @@ test('ID 身份重启后保留，旧 URL 身份仍可恢复且联系账本不丢
 });
 
 
-test('历史已完整加载且仅有对方消息时，可证明本方消息为零', async () => {
-  const f = fixture(); f.chat();
-  f.record.list$ = [{ mid: 1, isSelf: false, fromId: 8, toId: 7, friendSource: 0 }];
-  assert.equal((await createBossSite(f.browser).readChat(target)).ourMessages, 0);
-  assert.deepEqual(f.writes, []);
+// ---- 真实 CloakBrowser + 本地合成会话：历史完成事实来自被动响应，当前身份与新到消息来自 DOM ----
+
+const browser = localBrowser('chat-history');
+after(() => browser.close());
+
+async function existing(scenario: Partial<Scenario>, history: Message[] = []) {
+  const f = await startBoss({ friends: [{ ...TARGET, jobId: 'jobB' }, TARGET], ...scenario });
+  f.history.set(TARGET.bossId, history);
+  return { f, site: createBossSite(bossBrowser(browser, f)) };
+}
+
+const bossOnly = [message(1, false, '你好'), message(2, false, '在吗'), message(3, false, '方便聊聊')];
+
+for (const [name, scenario, history, expected, pages] of [
+  ['零记录：首批成功空数组且明确没有更多', {}, [], 0, [1]],
+  ['仅对方消息的多页历史：游标连续并到达结束', { pageSize: 2 }, bossOnly, 0, [1, 2]],
+  ['较早一页里的本方消息被计入', { pageSize: 2 }, [message(1, true, '早先的招呼'), ...bossOnly.slice(1), message(4, false, '最新')], 1, [1, 2]],
+] as const) {
+  test(`进入已有会话后按完整历史判定：${name}`, async () => {
+    const { f, site } = await existing(scenario, [...history]);
+    try {
+      assert.equal((await site.readChat(target)).ourMessages, expected);
+      assert.deepEqual(f.historyRequests.filter(r => r.bossId === TARGET.bossId).map(r => r.page), pages);
+      assert.equal(f.contacts, 0);
+      assert.deepEqual(f.sends, []);
+    } finally { await f.close(); }
+  });
+}
+
+const ok = (messages: unknown[], hasMore: unknown = false) => ({ status: 200, body: { code: 0, zpData: { messages, hasMore, minMsgId: 0 } } });
+for (const [name, scenario] of [
+  ['HTTP 失败', { history: () => ({ status: 500, body: { code: 0, zpData: { messages: [], hasMore: false } } }) }],
+  ['业务码失败', { history: () => ({ status: 200, body: { code: 7, zpData: { messages: [], hasMore: false } } }) }],
+  ['缺少消息数组', { history: () => ({ status: 200, body: { code: 0, zpData: { hasMore: false } } }) }],
+  ['没有明确的结束标记', { history: () => ({ status: 200, body: { code: 0, zpData: { messages: [message(1, false, '你好')] } } }) }],
+  ['网络中断', { history: () => 'drop' as const }],
+  ['首批为空却声称还有更多', { history: () => ok([], true) }],
+  ['本方消息发往其他招聘者', { history: () => ok([message(1, true, '发错', 99)]) }],
+  ['第二页游标不连续', { pageSize: 2, cursorGap: true }],
+  ['后续页只有重复消息', { pageSize: 2, history: (q: { page: number }) => q.page === 2 ? ok([message(3, false, '方便聊聊')], true) : undefined }],
+] as const) {
+  test(`历史证据不完整时不能当作零消息：${name}`, async () => {
+    const { f, site } = await existing(scenario as Partial<Scenario>, [...bossOnly]);
+    try {
+      await assert.rejects(site.readChat(target), /历史|归属|游标|进展/);
+      await assert.rejects(site.sendGreeting(target, '定制招呼'), /历史|归属|游标|进展/);
+      assert.deepEqual(f.sends, []);
+    } finally { await f.close(); }
+  });
+}
+
+test('读完历史后被切到同一招聘者的其他岗位会话：发送前重新进入目标会话', async () => {
+  const { f, site } = await existing({}, [message(1, false, '你好')]);
+  try {
+    assert.equal((await site.readChat(target)).ourMessages, 0);
+    await browser.clickSelector('.chat-user .chat-content li[role="listitem"]:nth-child(1)');
+    const result = await site.sendGreeting(target, '定制招呼');
+    assert.equal(result.ok, true, result.evidence);
+    assert.deepEqual(f.sends, ['定制招呼']);
+    assert.equal(await browser.eval('document.querySelector(".chat-conversation").__vue__.selectedFriend$.encryptJobId'), TARGET.jobId);
+  } finally { await f.close(); }
 });
 
-for (const condition of ['history', 'empty', 'ownership', 'stale-payload'] as const) {
-  test(`没有可靠零消息证据时阻塞：${condition}`, async () => {
-    const f = fixture(); f.chat();
-    f.record.list$ = [{ mid: 1, isSelf: false, fromId: 8, toId: 7, friendSource: 0 }];
-    if (condition === 'history') { f.record.history = true; f.record.isToTop = false; }
-    if (condition === 'empty') { f.record.list$ = []; f.record.isToTop = false; f.record.msgMinId = 0; }
-    if (condition === 'ownership') f.record.list$[0]!.isSelf = true;
-    if (condition === 'stale-payload') {
-      f.record.list$ = [{ mid: 1, isSelf: true, fromId: 7, toId: 8, friendSource: 0 }];
-      f.record.boss.encryptBossId = 'other';
-    }
-    await assert.rejects(createBossSite(f.browser).readChat(target), condition === 'ownership' ? /归属/ : condition === 'stale-payload' ? /身份/ : /历史|证明/);
-    assert.deepEqual(f.writes, []);
+test('历史读完后迟到的本方默认招呼：填写前跳过，不填写', async () => {
+  const { f, site } = await existing({ late: 'after-history' }, [message(1, false, '你好')]);
+  try {
+    assert.equal((await site.readChat(target)).ourMessages, 0);
+    await browser.waitFor('Boolean(document.querySelector(".item-myself"))');
+    const result = await site.sendGreeting(target, '定制招呼');
+    assert.equal(result.skipped, true, result.evidence);
+    assert.equal(await browser.eval('document.getElementById("chat-input").innerText'), '');
+    assert.deepEqual(f.sends, []);
+  } finally { await f.close(); }
+});
+
+test('填写时到达的本方默认招呼：提交前跳过，不按 Enter', async () => {
+  const { f, site } = await existing({ late: 'on-input' }, [message(1, false, '你好')]);
+  try {
+    const result = await site.sendGreeting(target, '定制招呼');
+    assert.equal(result.skipped, true, result.evidence);
+    assert.deepEqual(f.sends, []);
+  } finally { await f.close(); }
+});
+
+for (const [name, scenario, pattern] of [
+  ['填写后输入框内容不是批准原文', { mangleInput: true }, /原文/],
+  ['填写后切到了其他会话', { switchOnInput: true }, /身份|会话/],
+] as const) {
+  test(`提交前复核失败不按 Enter：${name}`, async () => {
+    const { f, site } = await existing(scenario, [message(1, false, '你好')]);
+    try {
+      const result = await site.sendGreeting(target, '定制招呼').catch((e: Error) => ({ ok: false, evidence: e.message }));
+      assert.equal(result.ok, false);
+      assert.match(result.evidence, pattern);
+      assert.deepEqual(f.sends, []);
+    } finally { await f.close(); }
   });
 }
 
-for (const condition of ['history-response-before-render', 'multi-page-merge'] as const) {
-  test(`历史完成标志不能早于消息合并放行：${condition}`, async () => {
-    const f = fixture(); f.chat();
-    f.record.list$ = [{ mid: 1, isSelf: false, fromId: 8, toId: 7, friendSource: 0 }];
-    if (condition === 'history-response-before-render') f.record.lastContentHeight = 0;
-    else f.record.page = 2;
-    await assert.rejects(createBossSite(f.browser).readChat(target), /历史|渲染|证明/);
-    assert.deepEqual(f.writes, []);
-  });
-}
-
-for (const arrives of ['before-fill', 'before-submit'] as const) {
-  test(`本方消息在${arrives}出现时跳过招呼，不按Enter`, async () => {
-    const f = fixture(); f.chat();
-    if (arrives === 'before-submit') f.record.list$ = [{ mid: 1, isSelf: false, fromId: 8, toId: 7, friendSource: 0 }];
-    f.browser.fillSelector = async () => {
-      f.writes.push('fill');
-      f.record.list$.push({ mid: 2, isSelf: true, fromId: 7, toId: 8, friendSource: 0 });
-    };
-    const result = await createBossSite(f.browser).sendGreeting(target, '定制招呼');
-    assert.equal(result.skipped, true);
-    assert.deepEqual(f.writes, arrives === 'before-fill' ? [] : ['fill']);
+for (const recruiterId of ['bossA', 'boss~A', 'boss.A']) {
+  test(`招聘者 ID ${recruiterId} 按原值提取、联系后精确进入会话`, async () => {
+    const f = await startBoss({ target: { ...TARGET, bossId: recruiterId }, friends: [{ ...TARGET, jobId: 'jobB', bossId: recruiterId }] });
+    const site = createBossSite(bossBrowser(browser, f));
+    const candidate = { ...target, contactIdentity: undefined, steps: { contact: 'todo', greeting: 'todo' } } as Target;
+    try {
+      assert.equal((await site.openJob(candidate)).kind, 'canContact');
+      const contacted = await site.contact(candidate);
+      assert.equal(contacted.ok, true, contacted.evidence);
+      assert.deepEqual(contacted.identity, { ...identity, recruiterId });
+      assert.equal((await site.readChat({ ...candidate, contactIdentity: contacted.identity })).ourMessages, 0);
+      assert.equal(f.contacts, 1);
+    } finally { await f.close(); }
   });
 }

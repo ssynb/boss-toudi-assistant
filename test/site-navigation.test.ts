@@ -5,8 +5,10 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { Browser } from '../src/browser.ts';
 import { createBossSite } from '../src/boss.ts';
-import type { Target } from '../src/contracts.ts';
 import { tempDir } from './helpers.ts';
+import { openState } from '../src/state.ts';
+import { Executor } from '../src/executor.ts';
+import { bossBrowser, draft, localBrowser, startBoss, TARGET } from './boss-fixture.ts';
 
 function localSite(browser: Browser, dir: string) {
   // 只替换站点来源与导航；DOM、滚动、点击、弹层、新标签页和身份脚本均由真实 Cloak 执行。
@@ -26,35 +28,43 @@ function localSite(browser: Browser, dir: string) {
   }));
 }
 
-const target = { jobId: 'jobA', company: '公司', url: 'https://www.zhipin.com/job_detail/jobA.html' } as Target;
-const chat = `<!doctype html><meta charset="utf-8"><div class="nav-figure">账号</div>
-<div class="chat-user"><div class="chat-content"><ul><li role="listitem"><div class="friend-content-warp">已有会话</div></li></ul></div></div>
-<div class="chat-conversation"><div class="top-info-content"></div><div class="chat-record"></div></div>
-<script>
-const selected={encryptJobId:'jobA',encryptBossId:'bossA'}, header={...selected,companyName:'公司'};
-const item=document.querySelector('li');item.__vue__={$props:{source:selected}};
-function load(){document.querySelector('.chat-conversation').__vue__={selectedFriend$:selected};document.querySelector('.top-info-content').__vue__={conversation$:header};document.querySelector('.chat-record').__vue__={selectedFriend$:selected,conversation$:header};}
-item.onclick=load;
-if(location.hash==='#selected')load();
-</script>`;
-
-for (const mode of ['popup', 'new-tab', 'same-tab'] as const) {
-  test(`联系后 ${mode} 去向能核对原岗位和招聘者，不重复联系`, async () => {
-    const dir = tempDir('boss-contact-navigation-');
-    fs.writeFileSync(path.join(dir, 'chat.html'), chat);
-    const action = mode === 'popup' ? "document.querySelector('.startchat-dialog').hidden=false" : `window.open('chat.html#selected','${mode === 'new-tab' ? '_blank' : '_self'}')`;
-    fs.writeFileSync(path.join(dir, 'page.html'), `<!doctype html><meta charset="utf-8"><div class="nav-figure">账号</div>
-<a class="btn-startchat" href="javascript:;" redirect-url="https://www.zhipin.com/web/geek/chat?id=bossA&jobId=jobA" onclick="sessionStorage.setItem('contacts',String(Number(sessionStorage.getItem('contacts')||0)+1));${action}">立即沟通</a>
-<div class="startchat-dialog" hidden><textarea></textarea></div>`);
-    const browser = new Browser({ profileDir: path.join(dir, 'profile'), headed: false, namespace: `navigation-${process.pid}` });
+for (const destination of ['popup', 'route', 'new-tab'] as const) {
+  test(`完整切片（${destination}）：读岗位→批准→联系→进入确切已有会话→完整空历史→填写复核→发送回显→再次运行不重复`, async () => {
+    const f = await startBoss({ destination, friends: [{ ...TARGET, jobId: 'jobB' }, { ...TARGET, bossId: 'bossB', friendId: 9 }] });
+    const browser = localBrowser(`slice-${destination}`);
+    const site = createBossSite(bossBrowser(browser, f));
+    const dir = tempDir('boss-slice-');
     try {
-      const site = localSite(browser, dir);
-      assert.equal((await site.openJob(target)).kind, 'canContact');
-      const result = await site.contact(target);
-      assert.equal(result.ok, true, result.evidence);
-      assert.deepEqual(result.identity, { kind: 'chatId', jobId: 'jobA', recruiterId: 'bossA' });
-      assert.equal(await browser.eval("sessionStorage.getItem('contacts')"), '1');
-    } finally { await browser.close(); }
+      assert.match(await site.jobDetail({ jobId: TARGET.jobId, url: draft().url }), /岗位职责/);
+      const state = openState(path.join(dir, 'state.sqlite'));
+      state.replaceBatch([draft()]);
+      state.approve(state.snapshot().batch!.version);
+      await new Executor(state, site).start();
+      const done = state.snapshot().batch!;
+      assert.equal(done.status, 'done', done.stopReason ?? '');
+      assert.deepEqual(done.targets[0]!.steps, { contact: 'done', greeting: 'done' });
+      assert.deepEqual(done.targets[0]!.contactIdentity, { kind: 'chatId', jobId: TARGET.jobId, recruiterId: TARGET.bossId });
+      assert.deepEqual([f.contacts, f.sends], [1, ['定制招呼']]);
+
+      // 同一账本再批一次：已联系，不再打开联系入口。
+      state.replaceBatch([draft('另一段招呼')]);
+      state.approve(state.snapshot().batch!.version);
+      await new Executor(state, site).start();
+      assert.deepEqual(state.snapshot().batch!.targets[0]!.steps, { contact: 'skipped', greeting: 'skipped' });
+      state.close();
+
+      // 账本丢失招呼结果（联系已完成、招呼待办）：新进程只读进入已有会话，历史里的本方消息使其跳过。
+      const resumed = openState(path.join(dir, 'resumed.sqlite'));
+      const batch = resumed.replaceBatch([draft('另一段招呼')]);
+      resumed.approve(batch.version);
+      resumed.beginRun();
+      resumed.setStep(batch.targets[0]!, 'contact', 'done', '', done.targets[0]!.contactIdentity);
+      resumed.finishRun('paused', null);
+      await new Executor(resumed, createBossSite(bossBrowser(browser, f))).start();
+      assert.deepEqual(resumed.snapshot().batch!.targets[0]!.steps, { contact: 'done', greeting: 'skipped' });
+      resumed.close();
+      assert.deepEqual([f.contacts, f.sends], [1, ['定制招呼']]);
+    } finally { await browser.close(); await f.close(); }
   });
 }
 
