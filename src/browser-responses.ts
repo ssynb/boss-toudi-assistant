@@ -39,7 +39,7 @@ function endpointOf(url: string): string {
   return parsed.origin + parsed.pathname;
 }
 
-/** 附着到 targetId 对应的标签页；只接受本函数返回后才发起的请求。 */
+/** 附着到 targetId 对应的标签页；Network.enable 成功回复后开始接收新请求，之前发起的请求一律忽略。 */
 export async function watchResponses(cdpUrl: string, targetId: string, endpoint: string): Promise<ResponseWatch> {
   if (!/^https?:$/.test(new URL(endpoint).protocol) || endpointOf(endpoint) !== endpoint) {
     throw new Error('观察的接口必须是不带查询参数的 http(s) origin+pathname');
