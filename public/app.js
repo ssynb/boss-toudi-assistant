@@ -19,14 +19,18 @@ function controls(){
  for(const field of document.querySelectorAll('fieldset')) field.disabled=busy();
  for(const button of document.querySelectorAll('[data-action]')) {
   const action=button.dataset.action;
-  button.disabled=pending || !state || (action==='batch/start' && (dirty.size>0||!['approved','paused'].includes(state.batch?.status))) || (action==='batch/pause' && state.batch?.status!=='running');
+  button.disabled=pending || !state;
  }
- $('approve').disabled=busy()||dirty.size>0||state?.batch?.status!=='draft';
+ const batch=state?.batch;
+ const actionable=batch?.targets.some(t=>!t.removed&&t.steps.contact!=='unknown'&&t.steps.greeting!=='unknown'&&(t.steps.contact==='todo'||t.steps.greeting==='todo'));
+ $('send').hidden=!batch||!['draft','approved','paused'].includes(batch.status)||!actionable||$('auto-send').checked||state.discovery.status!=='idle';
+ $('send').disabled=busy()||dirty.size>0;
+ text('send',batch?.status==='paused'?'继续投递':'确认投递');
  const status=state?.discovery.status;
- text('discover',pendingAction==='discovery/start'?'正在开始…':pendingAction==='discovery/stop'||status==='stopping'?'正在停止…':status==='running'?'停止发现':'开始发现');
- $('discover').disabled=pending||!state||status==='stopping'||(status==='idle'&&(busy()||dirty.size>0||!state.codex.signedIn||!state.requirements.trim()||!state.resume.text.trim()));
+ text('discover',pendingAction==='discovery/start'?'正在开始…':pendingAction==='discovery/stop'||status==='stopping'?'正在停止…':status==='running'?'停止发现':batch?.status==='running'?'暂停执行':'开始发现');
+ $('discover').disabled=pending||!state||status==='stopping'||(status==='idle'&&batch?.status!=='running'&&(busy()||dirty.size>0||!state.codex.signedIn||!state.requirements.trim()||!state.resume.text.trim()));
  text('save',pendingAction==='inputs'?'正在保存…':'保存');
- $('auto-send').disabled=pending||!state||status!=='idle';
+ $('auto-send').disabled=busy();
  if(state&&status!=='idle')$('auto-send').checked=state.discovery.autoSend;
 }
 function elapsed(){
@@ -49,6 +53,7 @@ async function refresh(){
  try{const next=await request('/api/state'); if(ticket===sequence&&!pending) render(next);}catch(error){fail(error);}
 }
 function render(next){
+ if(!state)$('auto-send').checked=Boolean(next.discovery.autoSend);
  state=next;
  fill('inputs',{requirements:state.requirements});
  if(!dirty.has('inputs')){
@@ -86,7 +91,7 @@ function targetRow(target){
 function renderBatch(){
  const batch=state.batch, kept=batch?.targets.filter(t=>!t.removed) ?? [];
  $('batch').hidden=!kept.length; if(!kept.length)return;
- text('batch-state',`${{draft:'待审阅批准',approved:'已批准，尚未执行',running:'正在执行',paused:'已暂停',done:'处理结束'}[batch.status]} · ${kept.length} 个岗位${batch.stopReason?' · '+batch.stopReason:''}`);
+ text('batch-state',`${{draft:'待确认投递',approved:'待投递',running:'正在执行',paused:'已暂停',done:'处理结束'}[batch.status]} · ${kept.length} 个岗位${batch.stopReason?' · '+batch.stopReason:''}`);
  const ids=new Set(kept.map(t=>t.id));
  for(const row of [...$('targets').rows]) if(!ids.has(row.dataset.id)){dirty.delete(row.id);row.remove();}
  for(const target of kept){
@@ -123,13 +128,14 @@ async function inputsBody(){
  return {requirements:form.requirements.value,resume};
 }
 $('inputs').addEventListener('submit',event=>{event.preventDefault();mutate('inputs','PUT',inputsBody,$('inputs'));});
+$('auto-send').addEventListener('change',controls);
 $('discover').onclick=()=>{
  if(state.discovery.status==='running')return mutate('discovery/stop');
+ if(state.batch?.status==='running')return mutate('batch/pause');
  const autoSend=$('auto-send').checked;
- if(autoSend&&!confirm('自动投递会跳过审核：AI 选中的岗位将直接联系 HR 并发送招呼原文，发出后不能撤回。确认开始？'))return;
  mutate('discovery/start','POST',{autoSend});
 };
-$('approve').onclick=()=>{if(confirm('确认批准联系列表中的岗位并发送对应招呼原文？'))mutate('batch/approve','POST',{version:state.batch.version});};
+$('send').onclick=()=>{if(confirm('确认联系列表中尚未处理的岗位并发送对应招呼原文？结果未确认的动作不会重试。'))mutate('batch/start','POST',state.batch.status==='draft'?{version:state.batch.version}:undefined);};
 for(const button of document.querySelectorAll('[data-action]')) button.onclick=()=>mutate(button.dataset.action);
 for(const form of forms) form.addEventListener('input',controls);
 window.addEventListener('focus',()=>{if(!pending)void refresh();});
