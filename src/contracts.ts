@@ -13,6 +13,8 @@
 export const LOCAL_HEADER = 'x-boss-local';
 export const LOCAL_HEADER_VALUE = '1';
 
+/** 每批目标上限，与 BOSS 每日主动沟通上限一致；用户在具体要求里写数量，AI 提取时不超过它。 */
+export const MAX_BATCH_TARGETS = 150;
 /** 定制招呼每段上限（字）。 */
 export const GREETING_MAX_CHARS = 200;
 /** 简历文件上限（字节）。 */
@@ -121,6 +123,8 @@ export interface DiscoveryState {
   /** 缺关键条件时的问题；在同一个具体要求框补充并保存后清除，再重新开始发现。 */
   questions: string[];
   status: 'idle' | 'running' | 'stopping';
+  /** 本轮是否自动投递：发现生成草案后立即视为已批准并执行，不经人工审核。 */
+  autoSend: boolean;
   /** 最近一次发现的结果或失败原因（人话）。 */
   message: string | null;
 }
@@ -201,7 +205,7 @@ export interface Batch {
  * PUT  /api/inputs                 SaveInputsRequest：唯一资料保存入口，成功返回最新 AppState
  *                                 删除旧 /api/requirements、/api/resume/file、/api/resume/text、DELETE /api/resume，不保留兼容写入口
  * POST /api/browser/open           打开本应用独立 profile 的浏览器到 BOSS（用户自行登录/验证）
- * POST /api/discovery/start        需：Codex 已登录、已保存的简历正文/具体要求非空、批次不在执行；实际搜索前才要求浏览器 ready
+ * POST /api/discovery/start        StartDiscoveryRequest（可省略请求体，即不自动投递）；需：Codex 已登录、已保存的简历正文/具体要求非空、批次不在执行；实际搜索前才要求浏览器 ready
  * POST /api/discovery/stop
  * PATCH /api/batch/targets/:id     TargetPatch
  * POST /api/batch/approve          ApproveRequest
@@ -242,6 +246,14 @@ export interface SaveInputsRequest {
 
 /** base64 只接受标准 RFC 4648 编码（含所需填充），不含 data: URL 前缀；解码后上限 RESUME_MAX_BYTES。 */
 export const INPUTS_MAX_BYTES = 4 * Math.ceil(RESUME_MAX_BYTES / 3) + 512 * 1024;
+
+/**
+ * autoSend=true：点击开始即批准本轮 AI 生成的整批草案，发现结束后立即执行联系与招呼，不再停下审核。
+ * 停止发现、需要澄清或没有生成草案时不会执行；执行中仍可暂停，遇到验证/登录/结果未确认照常停下。
+ */
+export interface StartDiscoveryRequest {
+  autoSend: boolean;
+}
 
 export interface TargetPatch {
   greeting?: string;

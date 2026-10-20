@@ -1,4 +1,5 @@
 /** AI 提取结果仅活在本轮发现中，不是可编辑或持久配置。 */
+import { MAX_BATCH_TARGETS } from './contracts.ts';
 import { SUPPORTED_CITIES } from './boss.ts';
 
 export interface SearchPlan {
@@ -16,7 +17,7 @@ export const SEARCH_PLAN_SCHEMA = {
     keywords: { type: 'array', minItems: 1, maxItems: 20, items: { type: 'string' } },
     city: { type: 'string', enum: SUPPORTED_CITIES },
     salaryMinK: { type: ['number', 'null'] },
-    maxTargets: { type: 'integer', minimum: 1, maximum: 50 },
+    maxTargets: { type: 'integer', minimum: 1, maximum: MAX_BATCH_TARGETS },
     excludeCompanies: { type: 'array', items: { type: 'string' } },
     quotes: {
       type: 'object', properties: { direction: { type: 'string' }, city: { type: 'string' }, salary: { type: 'string' } },
@@ -31,7 +32,7 @@ export function readSearchPlan(value: unknown, requirements: string): SearchPlan
   const p = value as SearchPlan;
   const list = (xs: unknown): xs is string[] => Array.isArray(xs) && xs.length <= 20 && xs.every(x => typeof x === 'string' && x.trim().length > 0 && x.length <= 80);
   if (!p || !list(p.keywords) || !p.keywords.length || !list(p.excludeCompanies)
-    || !SUPPORTED_CITIES.includes(p.city) || !Number.isInteger(p.maxTargets) || p.maxTargets < 1 || p.maxTargets > 50
+    || !SUPPORTED_CITIES.includes(p.city) || !Number.isInteger(p.maxTargets) || p.maxTargets < 1 || p.maxTargets > MAX_BATCH_TARGETS
     || !(p.salaryMinK === null || typeof p.salaryMinK === 'number' && Number.isFinite(p.salaryMinK) && p.salaryMinK >= 0 && p.salaryMinK <= 1000)) {
     throw new Error('搜索计划格式无效；无法提取关键条件时请先请求澄清');
   }

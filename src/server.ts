@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { LOCAL_HEADER, LOCAL_HEADER_VALUE, INPUTS_MAX_BYTES, type ApiError, type ErrorCode } from './contracts.ts';
+import { LOCAL_HEADER, LOCAL_HEADER_VALUE, INPUTS_MAX_BYTES, type ApiError, type ErrorCode, type StartDiscoveryRequest } from './contracts.ts';
 import { App, type AppOptions } from './app.ts';
 import { AppError } from './errors.ts';
 
@@ -54,6 +54,8 @@ type Handler = (app: App, body: Body, params: string[]) => unknown;
 
 interface Body {
   json(): unknown;
+  /** 请求体可省略的接口用：空体返回 undefined。 */
+  optionalJson(): unknown;
 }
 
 const ROUTES: Array<[string, RegExp, Handler]> = [
@@ -62,7 +64,7 @@ const ROUTES: Array<[string, RegExp, Handler]> = [
   ['POST', /^\/api\/codex\/logout$/, (a) => a.logout()],
   ['PUT', /^\/api\/inputs$/, (a, b) => a.saveInputs(b.json() as never)],
   ['POST', /^\/api\/browser\/open$/, (a) => a.openBrowser()],
-  ['POST', /^\/api\/discovery\/start$/, (a) => a.startDiscovery()],
+  ['POST', /^\/api\/discovery\/start$/, (a, b) => a.startDiscovery(b.optionalJson() as StartDiscoveryRequest | undefined)],
   ['POST', /^\/api\/discovery\/stop$/, (a) => a.stopDiscovery()],
   ['PATCH', /^\/api\/batch\/targets\/([\w-]+)$/, (a, b, p) => a.patchTarget(p[0]!, b.json() as never)],
   ['POST', /^\/api\/batch\/approve$/, (a, b) => a.approve((b.json() as { version: number }).version)],
@@ -104,6 +106,9 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
           } catch {
             throw new AppError('bad_request', '请求体不是有效 JSON');
           }
+        },
+        optionalJson() {
+          return raw.length === 0 ? undefined : this.json();
         },
       };
       await handler(app, body, m.slice(1));

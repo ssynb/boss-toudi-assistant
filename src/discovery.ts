@@ -9,8 +9,9 @@ import { SiteBlockedError, validateSearchQuery, MAX_SEARCH_PAGE, type JobCard, t
 import { greetingText, type State } from './state.ts';
 import { SEARCH_PLAN_SCHEMA, readSearchPlan, type SearchPlan } from './search-plan.ts';
 
-const MAX_SEARCHES = 20;
-const MAX_DETAILS = 60;
+// 读取预算随目标数增长：每个目标约需两次 JD 读取、每次搜索约贡献三个可用岗位。
+const searchBudget = (targets: number) => Math.max(20, Math.ceil(targets / 3));
+const detailBudget = (targets: number) => Math.max(60, targets * 2);
 const MAX_PAGE = MAX_SEARCH_PAGE;
 
 const INSTRUCTIONS = `你是「boss 投递助手」的岗位筛选助手，替求职者在 BOSS 直聘上挑选岗位并起草招呼语。
@@ -97,7 +98,7 @@ export async function runDiscovery(opts: { codex: CodexClient; site: ReadSite & 
         validateSearchQuery(query);
         query.keyword = query.keyword.trim();
         if (!plan.keywords.includes(query.keyword)) return { success: false, text: '搜索词不在本轮计划中' };
-        if (++searches > MAX_SEARCHES) return { text: '本轮搜索次数已用完，请根据已有结果提交草案', success: false };
+        if (++searches > searchBudget(plan.maxTargets)) return { text: '本轮搜索次数已用完，请根据已有结果提交草案', success: false };
         log(`搜索「${keyword}」第 ${page} 页`);
         const cards = await guardBlocked(async () => {
           // 窗口被关闭时由搜索重新打开浏览器；登录/验证页不导航离开，留给用户本人处理。
@@ -118,7 +119,7 @@ export async function runDiscovery(opts: { codex: CodexClient; site: ReadSite & 
         if (!plan || questions.length) return { success: false, text: '等待完整计划或用户澄清' };
         const card = seen.get(String((args as { jobId: unknown }).jobId));
         if (!card) return { text: '该岗位不在本轮搜索结果中', success: false };
-        if (++details > MAX_DETAILS) return { text: '本轮详情读取次数已用完，请根据已有结果提交草案', success: false };
+        if (++details > detailBudget(plan.maxTargets)) return { text: '本轮详情读取次数已用完，请根据已有结果提交草案', success: false };
         log(`读取岗位详情：${card.company} ${card.title}`);
         const text = await guardBlocked(() => site.jobDetail(card));
         if (!text.trim()) return { success: false, text: '岗位 JD 为空，不能为它生成招呼或草案' };

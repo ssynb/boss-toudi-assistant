@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { AppState, BrowserState, CodexState, DoctorCheck, SaveInputsRequest, TargetPatch } from './contracts.ts';
+import type { AppState, BrowserState, CodexState, DoctorCheck, SaveInputsRequest, StartDiscoveryRequest, TargetPatch } from './contracts.ts';
 import { Browser } from './browser.ts';
 import { createBossSite, type Site } from './boss.ts';
 import { CodexClient } from './codex.ts';
@@ -130,18 +130,19 @@ export class App extends EventEmitter {
 
   // ---------- 发现 ----------
 
-  startDiscovery(): Promise<void> {
+  startDiscovery(request: StartDiscoveryRequest = { autoSend: false }): Promise<void> {
+    if (typeof request?.autoSend !== 'boolean') throw new AppError('bad_request', 'autoSend 须为布尔值');
     const snap = this.#state.snapshot();
     if (snap.batch?.status === 'running') throw new AppError('batch_running', '批次执行中，请先暂停');
     this.#assertDiscoveryIdle();
     if (!snap.resume.text.trim() || !snap.requirements.trim()) throw new AppError('inputs_incomplete', '请先统一保存具体要求和有效简历正文');
     const abort = new AbortController();
     this.#discoveryAbort = abort;
-    this.#starting = this.#launchDiscovery(abort);
+    this.#starting = this.#launchDiscovery(abort, request.autoSend);
     return this.#starting;
   }
 
-  async #launchDiscovery(abort: AbortController): Promise<void> {
+  async #launchDiscovery(abort: AbortController, autoSend: boolean): Promise<void> {
     try {
       await this.#refreshAccount();
       if (abort.signal.aborted) {
@@ -149,18 +150,23 @@ export class App extends EventEmitter {
         return;
       }
       if (!this.#codexState.signedIn) throw new AppError('codex_signed_out', '请先登录 Codex（ChatGPT 账号）');
-      this.#state.beginDiscovery();
+      this.#state.beginDiscovery(autoSend);
       this.#changed();
       this.#discovering = runDiscovery({ codex: this.#codex, site: this.#site, state: this.#state, signal: abort.signal, log: (t) => this.#log(t) })
-        .catch((e: unknown) => ({ message: `发现失败：${e instanceof Error ? e.message : String(e)}`, questions: [] as string[] }))
-        .then(({ message, questions }) => {
+        .catch((e: unknown) => ({ message: `发现失败：${e instanceof Error ? e.message : String(e)}`, questions: [] as string[], proposed: 0 }))
+        .then(({ message, questions, proposed }) => {
           const outcome = abort.signal.aborted ? '已停止发现。' : message;
           this.#state.finishDiscovery(outcome, abort.signal.aborted ? [] : questions);
           this.#log(outcome);
+          return autoSend && !abort.signal.aborted && proposed > 0;
         })
-        .catch((e: unknown) => this.#log(`无法保存发现结束状态，请重启后检查：${e instanceof Error ? e.message : String(e)}`))
-        .finally(() => {
+        .catch((e: unknown) => {
+          this.#log(`无法保存发现结束状态，请重启后检查：${e instanceof Error ? e.message : String(e)}`);
+          return false;
+        })
+        .then((send) => {
           this.#discoveryAbort = null;
+          if (send) this.#autoSend();
           this.#changed();
         });
     } catch (e) {
@@ -206,6 +212,17 @@ export class App extends EventEmitter {
         this.#log(b?.status === 'done' ? '批次已执行完毕' : `批次已暂停${b?.stopReason ? `：${b.stopReason}` : ''}`);
         this.#changed();
       });
+  }
+
+  /** 用户开始自动投递时已预先批准本轮草案：同步批准刚生成的版本并执行，中间没有可插入的修改。 */
+  #autoSend(): void {
+    try {
+      this.#state.approve(this.#state.snapshot().batch!.version);
+      this.#log('自动投递：已按本轮草案开始执行');
+      this.startBatch();
+    } catch (e) {
+      this.#log(`自动投递未能开始：${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   pauseBatch(): void {

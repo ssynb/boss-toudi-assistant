@@ -13,6 +13,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
   GREETING_MAX_CHARS,
+  MAX_BATCH_TARGETS,
   RESUME_EXTENSIONS,
   type SaveInputsRequest,
   type DiscoveryState,
@@ -50,8 +51,7 @@ export interface StateSnapshot {
 }
 
 const DEFAULT_RESUME: ResumeState = { file: null, text: '', textSource: null };
-const DEFAULT_DISCOVERY: DiscoveryState = { status: 'idle', message: null, questions: [], startedAt: null, finishedAt: null };
-const MAX_TARGETS = 50;
+const DEFAULT_DISCOVERY: DiscoveryState = { status: 'idle', message: null, questions: [], startedAt: null, finishedAt: null, autoSend: false };
 const CRASH_REASON = '上次运行意外中断：中断时正在进行的步骤结果未确认，请到 BOSS 上自行核对。';
 
 const STEP_COLUMN: Record<Step, string> = { contact: 'contact', greeting: 'greeting_state' };
@@ -129,7 +129,7 @@ export class State {
   snapshot(): StateSnapshot {
     const count = this.#db.prepare('SELECT COUNT(*) AS n FROM contacts').get() as { n: number };
     return {
-      discovery: this.#kv('discovery', DEFAULT_DISCOVERY),
+      discovery: { ...DEFAULT_DISCOVERY, ...this.#kv('discovery', DEFAULT_DISCOVERY) },
       requirements: this.#kv('requirements', ''),
       resume: this.#kv('resume', DEFAULT_RESUME),
       batch: this.#batch(),
@@ -150,14 +150,14 @@ export class State {
     });
   }
 
-  beginDiscovery(): void {
+  beginDiscovery(autoSend = false): void {
     this.#tx(() => {
       this.#assertNotRunning();
       this.#assertDiscoveryIdle();
       if (!this.#kv('requirements', '').trim() || !this.#kv('resume', DEFAULT_RESUME).text.trim()) {
         throw new AppError('inputs_incomplete', '请先统一保存具体要求和有效简历正文');
       }
-      this.#setKv('discovery', { status: 'running', message: '正在发现岗位…', questions: [], startedAt: now(), finishedAt: null });
+      this.#setKv('discovery', { status: 'running', message: '正在发现岗位…', questions: [], startedAt: now(), finishedAt: null, autoSend });
     });
   }
 
@@ -179,7 +179,7 @@ export class State {
 
   /** 用新的草案替换当前批次（执行中拒绝）。已联系账本不受影响。 */
   replaceBatch(drafts: DraftTarget[]): Batch {
-    if (drafts.length === 0 || drafts.length > MAX_TARGETS) throw new AppError('bad_request', `草案目标数须在 1–${MAX_TARGETS} 之间`);
+    if (drafts.length === 0 || drafts.length > MAX_BATCH_TARGETS) throw new AppError('bad_request', `草案目标数须在 1–${MAX_BATCH_TARGETS} 之间`);
     if (new Set(drafts.map((d) => d.jobId)).size !== drafts.length) throw new AppError('bad_request', '草案中有重复岗位');
     this.#tx(() => {
       this.#assertNotRunning();

@@ -2,12 +2,12 @@
 <header><strong>boss 投递助手</strong><div class="accounts"><button data-action="codex/login" id="codex">Codex 登录</button><a id="login" target="_blank" rel="noopener" hidden>继续官方授权</a><button data-action="browser/open" id="browser">BOSS 登录</button></div></header>
 <main><p id="error" role="alert" hidden></p><p id="notice" role="status"></p>
 <form id="inputs"><fieldset>
-<label for="requirements-text">具体要求</label><textarea id="requirements-text" name="requirements" rows="4" maxlength="10000" placeholder="例如：杭州前端，月薪至少 25K，不考虑外包，先找 10 个岗位。"></textarea>
+<label for="requirements-text">具体要求</label><textarea id="requirements-text" name="requirements" rows="4" maxlength="10000" placeholder="例如：杭州前端，月薪至少 25K，不考虑外包，找 30 个岗位（不写默认 10 个，最多 150 个）。"></textarea>
 <div id="clarification" role="status" hidden><ul id="questions"></ul></div>
 <label class="file-label">简历<input name="file" type="file" accept=".txt,.md,.pdf,.docx"></label><p id="file" class="hint"></p>
 <label id="resume-body" hidden>简历正文<textarea name="resumeText" rows="5" maxlength="50000" placeholder="粘贴 PDF / DOCX 正文，保存即确认用于匹配"></textarea></label>
 <p class="hint">本地简历仅用于匹配，不上传 BOSS。</p><button id="save">保存</button><output></output>
 </fieldset></form>
-<div class="discovery-actions"><button id="discover" class="primary">开始发现</button><span id="elapsed" aria-label="发现耗时"></span><span id="discovery" role="status"></span></div>
+<div class="discovery-actions"><button id="discover" class="primary">开始发现</button><label class="check auto"><input type="checkbox" id="auto-send">发现后自动投递（不审核）</label><span id="elapsed" aria-label="发现耗时"></span><span id="discovery" role="status"></span></div>
 <section id="batch" hidden><p id="batch-state"></p><fieldset><table><thead><tr><th>岗位</th><th>薪资</th><th>介绍</th><th>招呼原文</th><th></th></tr></thead><tbody id="targets"></tbody></table></fieldset><div class="approval"><p>批准后将联系列表中的 HR（「立即沟通」可能自动招呼）并发送招呼原文；附件简历请在双方沟通后到 BOSS 自行发送。批准后再修改需重新批准。</p><button id="approve" class="primary">批准整批</button> <button data-action="batch/start">开始 / 继续执行</button> <button data-action="batch/pause">暂停执行</button></div></section>
 <details><summary>运行记录</summary><ol id="logs"></ol></details></main></body></html>

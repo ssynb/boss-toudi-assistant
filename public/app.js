@@ -26,6 +26,8 @@ function controls(){
  text('discover',pendingAction==='discovery/start'?'正在开始…':pendingAction==='discovery/stop'||status==='stopping'?'正在停止…':status==='running'?'停止发现':'开始发现');
  $('discover').disabled=pending||!state||status==='stopping'||(status==='idle'&&(busy()||dirty.size>0||!state.codex.signedIn||!state.requirements.trim()||!state.resume.text.trim()));
  text('save',pendingAction==='inputs'?'正在保存…':'保存');
+ $('auto-send').disabled=pending||!state||status!=='idle';
+ if(state&&status!=='idle')$('auto-send').checked=state.discovery.autoSend;
 }
 function elapsed(){
  const discovery=state?.discovery;
@@ -121,7 +123,12 @@ async function inputsBody(){
  return {requirements:form.requirements.value,resume};
 }
 $('inputs').addEventListener('submit',event=>{event.preventDefault();mutate('inputs','PUT',inputsBody,$('inputs'));});
-$('discover').onclick=()=>mutate(state.discovery.status==='running'?'discovery/stop':'discovery/start');
+$('discover').onclick=()=>{
+ if(state.discovery.status==='running')return mutate('discovery/stop');
+ const autoSend=$('auto-send').checked;
+ if(autoSend&&!confirm('自动投递会跳过审核：AI 选中的岗位将直接联系 HR 并发送招呼原文，发出后不能撤回。确认开始？'))return;
+ mutate('discovery/start','POST',{autoSend});
+};
 $('approve').onclick=()=>{if(confirm('确认批准联系列表中的岗位并发送对应招呼原文？'))mutate('batch/approve','POST',{version:state.batch.version});};
 for(const button of document.querySelectorAll('[data-action]')) button.onclick=()=>mutate(button.dataset.action);
 for(const form of forms) form.addEventListener('input',controls);
