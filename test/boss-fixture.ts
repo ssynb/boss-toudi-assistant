@@ -78,11 +78,11 @@ function chatPage(f: BossFixture): string {
 <div class="message-controls"><div class="chat-input" contenteditable="true" id="chat-input"></div><button class="btn-send disabled">发送</button></div></div>
 <script>
 window._PAGE={uid:${UID}};
-const conv=document.querySelector('.chat-conversation'),top=document.querySelector('.top-info-content'),record=document.querySelector('.chat-record');
+const conv=document.querySelector(".chat-conversation"),header0=document.querySelector('.top-info-content'),record=document.querySelector('.chat-record');
 const box=document.querySelector('.chat-message'),list=document.querySelector('.im-list'),input=document.getElementById('chat-input'),send=document.querySelector('.btn-send');
 let friends=[],current=null,state=null,inputSeen=false;
 function render(m,prepend){const self=m.from.uid===${UID};const e=document.createElement('div');e.className='message-item '+(self?'item-myself':'item-friend');e.dataset.mid=m.mid;e.innerHTML='<div class="text-content"></div>';e.firstChild.textContent=m.body.text;prepend?list.prepend(e):list.append(e);}
-function select(f){current=f;const header={...f};conv.__vue__={selectedFriend$:f};top.__vue__={conversation$:header};record.__vue__={selectedFriend$:f,conversation$:header};
+function select(f){current=f;const header={...f};conv.__vue__={selectedFriend$:f};header0.__vue__={conversation$:header};record.__vue__={selectedFriend$:f,conversation$:header};
   list.innerHTML='';state={page:1,min:0,hasMore:false,loading:false};load();}
 async function load(){const f=current,st=state;st.loading=true;
   const cursor=${s.cursorGap ? 'st.page>1?st.min+1:st.min' : 'st.min'};
