@@ -9,7 +9,7 @@ import { api, LOCAL, tempDir } from './helpers.ts';
 import { mockProviderToml, startMockModel, type MockItem } from './mock-responses.ts';
 
 const plan: MockItem = { type: 'function_call', name: 'set_search_plan', args: {
-  keywords: ['前端'], city: '北京', salaryMinK: 20, maxTargets: 5, excludeCompanies: ['乙公司'],
+  keywords: ['前端'], city: '北京', salaryMinK: 20, maxTargets: 1, excludeCompanies: ['乙公司'],
   quotes: { direction: '前端', city: '北京', salary: '月薪至少20K' },
 } };
 const cards = [
@@ -51,7 +51,7 @@ async function setup(script: MockItem[][], model: string) {
   fs.writeFileSync(path.join(dataDir, 'codex-home', 'config.toml'), mockProviderToml(mock.baseUrl, model));
   const fake = fakeSite();
   const server = await startServer({ dataDir, port: 0, site: fake.site });
-  const saved = await api(server.url, 'PUT', '/api/inputs', { requirements: '北京前端，月薪至少20K，最多5个，不考虑乙公司', resume: { text: '张三，五年前端经验，React/TypeScript' } });
+  const saved = await api(server.url, 'PUT', '/api/inputs', { requirements: '北京前端，月薪至少20K，最多1个，不考虑乙公司', resume: { text: '张三，五年前端经验，React/TypeScript' } });
   assert.equal(saved.status, 200);
   return { mock, dataDir, fake, server };
 }
@@ -165,5 +165,31 @@ test('缺关键要求先澄清，不搜索；补充同一文本框后清除问�
     assert.deepEqual(saved.json.discovery.questions, []);
     for (const endpoint of ['profile', 'criteria']) assert.equal((await api(server.url, 'PUT', '/api/' + endpoint, {})).status, 404);
     assert.ok(!('profile' in saved.json) && !('criteria' in saved.json));
+  } finally { await server.close(); mock.close(); }
+});
+
+for (const exhausted of [false, true]) test(`100目标不能以4个无解释结束；搜索耗尽=${exhausted}`, async () => {
+  const targets = Array.from({ length: 4 }, (_, i) => ({ jobId: `j${i}`, reason: '实际JD匹配React经验', greeting: '您好，我有React经验' }));
+  const script: MockItem[][] = [
+    [{ ...plan, args: { ...(plan as Extract<MockItem, { type: 'function_call' }>).args as object, maxTargets: 100 } } as MockItem],
+    [{ type: 'function_call', name: 'boss_search', args: { keyword: '前端', page: 1 } }],
+    ...targets.map(t => [{ type: 'function_call' as const, name: 'boss_job_detail', args: { jobId: t.jobId } }]),
+    [{ type: 'function_call', name: 'propose_batch', args: { targets } }],
+  ];
+  if (exhausted) script.push(
+    [{ type: 'function_call', name: 'boss_search', args: { keyword: '前端', page: 2 } }],
+    [{ type: 'function_call', name: 'propose_batch', args: { targets, shortfallReason: '搜索结果已耗尽，仅4个岗位符合实际JD要求' } }],
+  );
+  script.push([{ type: 'message', text: '结束' }]);
+  const { mock, fake, server } = await setup(script, 'gpt-mock');
+  fake.site.search = async q => q.page === 1 ? targets.map(t => ({ ...cards[0]!, jobId: t.jobId })) : [];
+  try {
+    await api(server.url, 'PUT', '/api/inputs', { requirements: '北京前端，月薪至少20K，目标100个', resume: { text: null } });
+    const state = await discover(server.url);
+    assert.match(JSON.stringify(mock.requests[7]?.input.at(-1)), /100|继续/);
+    assert.equal(state.batch?.targets.length ?? 0, exhausted ? 4 : 0);
+    assert.match(state.discovery.message, exhausted ? /100.*4|4.*100/ : /未.*目标|没有提交/);
+    if (exhausted) assert.match(state.discovery.message, /耗尽/);
+    assert.deepEqual(fake.writes, []);
   } finally { await server.close(); mock.close(); }
 });

@@ -16,8 +16,9 @@ const card = { jobId: 'j1', url: 'https://www.zhipin.com/job_detail/j1.html', ti
 const script: MockItem[][] = [
   [plan],
   [{ type: 'function_call', name: 'boss_search', args: { keyword: '前端', page: 1 } }],
+  [{ type: 'function_call', name: 'boss_search', args: { keyword: '前端', page: 2 } }],
   [{ type: 'function_call', name: 'boss_job_detail', args: { jobId: 'j1' } }],
-  [{ type: 'function_call', name: 'propose_batch', args: { targets: [{ jobId: 'j1', reason: 'React 匹配', greeting: '您好，我有五年 React 经验' }] } }],
+  [{ type: 'function_call', name: 'propose_batch', args: { shortfallReason: '搜索结果耗尽，仅一个岗位匹配', targets: [{ jobId: 'j1', reason: 'React 匹配', greeting: '您好，我有五年 React 经验' }] } }],
   [{ type: 'message', text: '已提交' }],
 ];
 
@@ -31,7 +32,7 @@ async function run(body: unknown, page: BrowserPage = 'ready') {
     open: async () => ({ page: 'ready', url: 'https://www.zhipin.com/' }),
     status: async () => ({ page, url: null }),
     close: async () => {},
-    search: async () => { calls.push('search'); return [card]; },
+    search: async q => { calls.push('search'); return q.page === 1 ? [card] : []; },
     jobDetail: async () => '岗位职责：前端开发',
     openJob: async () => { calls.push('open'); return { kind: 'canContact', evidence: '' }; },
     contact: async (t) => { calls.push('contact'); return { ok: true, evidence: '', identity: { jobId: t.jobId, recruiterUrl: 'https://www.zhipin.com/boss_detail/hr.html' } }; },
@@ -58,18 +59,18 @@ async function run(body: unknown, page: BrowserPage = 'ready') {
 
 test('自动投递：一次开始即批准 AI 草案并执行联系与招呼', { timeout: 60_000 }, async () => {
   const { state, calls } = await run({ autoSend: true });
-  assert.deepEqual(calls, ['search', 'open', 'contact', 'greet:您好，我有五年 React 经验']);
+  assert.deepEqual(calls, ['search', 'search', 'open', 'contact', 'greet:您好，我有五年 React 经验']);
   assert.equal(state.batch!.status, 'done');
   assert.equal(state.discovery.autoSend, true);
 });
 
 test('未选自动投递时只生成待审草案，不联系任何人', { timeout: 60_000 }, async () => {
   const { state, calls } = await run({ autoSend: false });
-  assert.deepEqual(calls, ['search']);
+  assert.deepEqual(calls, ['search', 'search']);
   assert.equal(state.batch!.status, 'draft');
 });
 
 test('浏览器窗口被关闭时发现照常搜索（由搜索重新打开浏览器）', { timeout: 60_000 }, async () => {
   const { calls } = await run(undefined, 'closed');
-  assert.deepEqual(calls, ['search']);
+  assert.deepEqual(calls, ['search', 'search']);
 });
