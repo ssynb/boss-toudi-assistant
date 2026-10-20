@@ -203,5 +203,6 @@ export async function runDiscovery(opts: { codex: CodexClient; site: ReadSite & 
   if (result.status === 'interrupted') return { proposed, questions, message: '已停止发现。' };
   if (result.status === 'failed') return { proposed, questions, message: `Codex 运行失败：${result.error ?? '未知原因'}` };
   if (!plan) return { proposed, questions: ['请在具体要求中明确岗位方向、城市、最低月薪或明确不限。'], message: '尚未得到完整搜索计划，请补充具体要求后重新开始。' };
+  if (seen.size === 0) return { proposed, questions, message: 'BOSS 搜索没有返回任何岗位，可换个说法描述岗位方向后重试。' };
   return { proposed, questions, message: '模型没有提交草案，可调整具体要求后重试。' };
 }

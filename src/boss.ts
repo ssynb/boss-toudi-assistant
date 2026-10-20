@@ -57,6 +57,8 @@ const ORIGIN = 'https://www.zhipin.com';
 const HOME_URL = `${ORIGIN}/`;
 const LOGIN_URL = `${ORIGIN}/web/user/`;
 const PAGE_LOADED = 'document.readyState === "complete" && location.origin === "https://www.zhipin.com"';
+/** 搜索页在 load 之后才异步渲染岗位卡或「没有找到相关职位」，在此之前提取只会得到空列表。 */
+const RESULTS_RENDERED = 'Boolean(document.querySelector(".job-card-box, .job-empty-box"))';
 
 /** BOSS 内部查询使用的城市名称到代码映射，用于校验 AI 提取结果，不是 UI 固定选项列表。 */
 const CITY_CODES: Record<string, string> = {
@@ -100,7 +102,7 @@ const EXTRACT_CARDS = `(() => {
       title: q('[class*="job-name"]') || (a.textContent || '').trim().split('\\n')[0],
       company: q('[class*="company-name"], [class*="boss-name"]'),
       salary: digits(q('[class*="salary"]')), area: q('[class*="job-area"], [class*="location"]'),
-      snippet: ((card && card.innerText) || '').replace(/\\s+/g, ' ').slice(0, 300),
+      snippet: digits((card && card.innerText) || '').replace(/\\s+/g, ' ').slice(0, 300),
     });
   }
   return out;
@@ -197,6 +199,7 @@ export function createBossSite(browser: Browser): Site {
       if (!code) throw new Error(`不支持的城市：${q.city}`);
       const params = new URLSearchParams({ query: q.keyword, city: code, page: String(q.page) });
       await goto(`${ORIGIN}/web/geek/jobs?${params}`);
+      await browser.waitFor(RESULTS_RENDERED);
       return browser.eval<JobCard[]>(EXTRACT_CARDS);
     },
 

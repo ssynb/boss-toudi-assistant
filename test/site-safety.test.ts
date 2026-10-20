@@ -71,3 +71,23 @@ for (const [name, home, expected] of [
     assert.deepEqual(await site.open(), expected);
   });
 }
+
+test('搜索等岗位列表异步渲染后再提取，不把加载中当作没有结果', async () => {
+  const dir = tempDir('boss-async-list-');
+  const page = path.join(dir, 'page.html');
+  fs.writeFileSync(page, `<!doctype html><meta charset="utf-8"><div class="nav-figure">求职者</div><ul id="list"></ul><script>
+    setTimeout(() => { document.getElementById('list').innerHTML = '<li class="job-card-box"><a href="https://www.zhipin.com/job_detail/j1.html"><span class="job-name">Agent开发</span></a></li>'; }, 800);
+  </script>`);
+  const browser = new Browser({ profileDir: path.join(dir, 'profile'), headed: false, namespace: `async-list-${process.pid}` });
+  // 本地文件不是 BOSS 来源：只跳过来源域等待，其余等待与提取由真实 CloakBrowser 执行。
+  const site = createBossSite({ get isOpen() { return browser.isOpen; }, open: () => browser.open(pathToFileURL(page).href),
+    waitFor: (expression: string) => expression.includes('location.origin') ? Promise.resolve() : browser.waitFor(expression),
+    async eval(expression: string) {
+      const observed = await browser.eval<unknown>(expression);
+      return Array.isArray(observed) ? observed : { ...(observed as object), url: 'https://www.zhipin.com/web/geek/jobs' };
+    } } as unknown as Browser);
+  try {
+    await browser.open('about:blank');
+    assert.deepEqual((await site.search({ keyword: 'Agent', city: '深圳', page: 1 })).map((c) => c.jobId), ['j1']);
+  } finally { await browser.close(); }
+});
