@@ -106,7 +106,9 @@ class CdpResponseWatch implements ResponseWatch {
     const id = ++this.#lastId;
     const result = new Promise((resolve, reject) => this.#pending.set(id, { resolve, reject }));
     this.#ws.send(JSON.stringify({ id, method, params, ...(scoped ? { sessionId: this.#sessionId } : {}) }));
-    return withTimeout(result, `浏览器调试命令 ${method} 超时`).finally(() => this.#pending.delete(id));
+    // 浏览器不再应答说明连接已不可靠：整个观察以超时终止，由 #end 拒绝本命令与所有等待。
+    const timer = setTimeout(() => void this.#end(new Error(`浏览器调试命令 ${method} 超时`)), TIMEOUT_MS);
+    return result.finally(() => { clearTimeout(timer); this.#pending.delete(id); });
   }
 
   #onMessage(raw: string): void {
@@ -190,8 +192,9 @@ class CdpResponseWatch implements ResponseWatch {
 
   async #release(): Promise<void> {
     if (this.#sessionId && this.#ws.readyState === WebSocket.OPEN) {
-      // 解除失败说明页面已不在；随后关闭连接时浏览器也会释放该连接的全部会话。
-      await this.#send('Target.detachFromTarget', { sessionId: this.#sessionId }, false).catch(() => {});
+      // 解除失败或无应答时页面已不可靠；随后关闭连接时浏览器也会释放该连接的全部会话。
+      // 终止后的命令超时不会再触发 #end，需在此单独限时。
+      await withTimeout(this.#send('Target.detachFromTarget', { sessionId: this.#sessionId }, false), '解除附着超时').catch(() => {});
     }
     if (this.#ws.readyState === WebSocket.CLOSED) return;
     const closed = new Promise(resolve => this.#ws.addEventListener('close', resolve, { once: true }));
