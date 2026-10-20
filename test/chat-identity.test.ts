@@ -38,6 +38,7 @@ function fixture(recruiterId = 'bossA') {
       if (selector === '.btn-startchat[redirect-url]') return [{ getAttribute: () => redirect }, { getAttribute: () => redirect }];
       if (selector === '.chat-conversation .chat-record .item-myself') return record.list$.filter(m => m.isSelf).map(messageNode);
       if (selector === '.chat-conversation .chat-record .im-list > .message-item') return record.list$.map(messageNode);
+      if (selector === '.chat-conversation .message-controls .chat-input[contenteditable="true"]') return [{ checkVisibility: () => true }];
       return [];
     },
   };
@@ -148,5 +149,19 @@ for (const condition of ['history-response-before-render', 'multi-page-merge'] a
     else f.record.page = 2;
     await assert.rejects(createBossSite(f.browser).readChat(target), /历史|渲染|证明/);
     assert.deepEqual(f.writes, []);
+  });
+}
+
+for (const arrives of ['before-fill', 'before-submit'] as const) {
+  test(`本方消息在${arrives}出现时跳过招呼，不按Enter`, async () => {
+    const f = fixture(); f.chat();
+    if (arrives === 'before-submit') f.record.list$ = [{ mid: 1, isSelf: false, fromId: 8, toId: 7, friendSource: 0 }];
+    f.browser.fillSelector = async () => {
+      f.writes.push('fill');
+      f.record.list$.push({ mid: 2, isSelf: true, fromId: 7, toId: 8, friendSource: 0 });
+    };
+    const result = await createBossSite(f.browser).sendGreeting(target, '定制招呼');
+    assert.equal(result.skipped, true);
+    assert.deepEqual(f.writes, arrives === 'before-fill' ? [] : ['fill']);
   });
 }

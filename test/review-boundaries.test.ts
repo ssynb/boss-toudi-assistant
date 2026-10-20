@@ -32,7 +32,8 @@ function browserFixture() {
   let url = 'https://www.zhipin.com/job_detail/A.html';
   let chatJob = 'A';
   let recruiter = 'hrA';
-  const messages = ['已有招呼'];
+  const messages: string[] = [];
+  let draft = '';
   const writes: string[] = [];
   const node = (text: string, href?: string) => ({ textContent: text, innerText: text, href, getClientRects: () => [1], checkVisibility: () => true });
   const href = (kind: string, id: string) => `https://www.zhipin.com/${kind}/${id}.html`;
@@ -48,6 +49,7 @@ function browserFixture() {
     },
     querySelectorAll(selector: string) {
       if (selector === '.nav-figure, .user-nav .user-name') return [node('用户')];
+      if (selector === '.chat-conversation .message-list *' && !messages.length) return [node('暂无聊天记录')];
       if (selector === '[class*="item-myself"]' || selector === '.chat-conversation .message-list [class*="item-myself"]') return messages.map(x => node(x));
       return [];
     },
@@ -65,8 +67,8 @@ function browserFixture() {
       writes.push(`click:${ref}`);
       if (ref === 'contact') url = 'https://www.zhipin.com/web/geek/chat';
     },
-    async fill(_ref: string, text: string) { writes.push('fill'); messages.push(text); },
-    async press(key: string) { writes.push(`press:${key}`); },
+    async fill(_ref: string, text: string) { writes.push('fill'); draft = text; },
+    async press(key: string) { writes.push(`press:${key}`); if (key === 'Enter') messages.push(draft); },
     async close() {},
   } as unknown as Browser;
   return { browser, writes, switchChat(job: string, hr: string) { chatJob = job; recruiter = hr; } };

@@ -254,3 +254,13 @@ test('页面进入登录或安全验证时整批停下，未点击的目标保�
   assert.equal(target(state, 'a').steps.contact, 'todo');
   assert.deepEqual(calls, ['open:a']);
 });
+
+test('发送前才出现本方消息时记为跳过，而非已发送或未知', async () => {
+  const state = approvedState(['a']);
+  try {
+    const { site } = fakeSite({ sendGreeting: async () => ({ ok: true, skipped: true, evidence: '发送前已出现本方消息，未提交招呼' }) });
+    await new Executor(state, site).start();
+    assert.equal(target(state, 'a').steps.greeting, 'skipped');
+    assert.equal(state.snapshot().batch!.status, 'done');
+  } finally { state.close(); }
+});
