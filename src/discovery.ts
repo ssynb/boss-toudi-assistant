@@ -23,7 +23,7 @@ const INSTRUCTIONS = `你是「boss 投递助手」的岗位筛选助手，替�
 - 按求职者的简历与具体要求挑选岗位：薪资低于下限、明显不对口、在排除名单中的不选。
 - 每个拟选目标必须先调用 boss_job_detail 读取完整实际 JD，再结合简历生成匹配理由与招呼，不能只靠标题或岗位卡推测。
 - 每个目标写一段不超过 ${GREETING_MAX_CHARS} 字的中文招呼语，只使用简历里真实存在的经历，不编造。
-- 选定后调用一次 propose_batch 提交整批草案，然后结束本轮。提交草案不会联系任何人，用户批准后才会执行。`;
+- 数量是应尽量达到的目标，不是任意提前结束的上限。未达到目标时继续搜索后续页和计划内其他关键词、读取实际JD。只有搜索耗尽或工具预算耗尽才可提交不足目标的草案，必须在 shortfallReason 说明具体原因。选定后调用 propose_batch 提交整批草案，然后结束本轮。提交草案不会联系任何人，用户批准后才会执行。`;
 
 export interface DiscoveryOutcome {
   proposed: number;
@@ -41,8 +41,13 @@ export async function runDiscovery(opts: { codex: CodexClient; site: ReadSite & 
   let searches = 0;
   let details = 0;
   let proposed = 0;
+  let pending: Parameters<State['replaceBatch']>[0] | null = null;
+  let shortfall = '';
+  const pages = new Map<string, Set<number>>();
+  const exhausted = new Set<string>();
   let blocked: string | null = null;
   const abort = new AbortController();
+  if (opts.signal.aborted) abort.abort();
   opts.signal.addEventListener('abort', () => abort.abort(), { once: true });
 
   const guardBlocked = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -67,7 +72,7 @@ export async function runDiscovery(opts: { codex: CodexClient; site: ReadSite & 
       async handle(args) {
         const q = (args as { questions?: unknown })?.questions;
         if (!Array.isArray(q) || !q.length || q.length > 5 || q.some(x => typeof x !== 'string' || !x.trim() || x.length > 300)) return { success: false, text: '请提供1至5个简洁的澄清问题' };
-        if (proposed) return { success: false, text: '本轮已经提交草案，请结束' };
+        if (pending) return { success: false, text: '本轮已经提交草案，请结束' };
         questions = q;
         return { success: true, text: '问题已记录，请结束本轮；用户在具体要求框补充后重新开始。' };
       },
@@ -106,6 +111,10 @@ export async function runDiscovery(opts: { codex: CodexClient; site: ReadSite & 
           if (browser.page !== 'ready' && browser.page !== 'closed') throw new SiteBlockedError(browser);
           return site.search(query);
         });
+        const visited = pages.get(query.keyword) ?? new Set<number>();
+        visited.add(page);
+        pages.set(query.keyword, visited);
+        if (!cards.length) exhausted.add(query.keyword);
         const fresh = cards.filter((c) => !excluded(c));
         for (const c of fresh) seen.set(c.jobId, c);
         return { text: JSON.stringify(fresh), success: true };
@@ -133,6 +142,7 @@ export async function runDiscovery(opts: { codex: CodexClient; site: ReadSite & 
       inputSchema: {
         type: 'object',
         properties: {
+          shortfallReason: { type: 'string', description: '不足目标时必填：实际筛选不足的具体原因' },
           targets: {
             type: 'array',
             items: {
@@ -147,10 +157,21 @@ export async function runDiscovery(opts: { codex: CodexClient; site: ReadSite & 
         additionalProperties: false,
       },
       async handle(args) {
-        if (!plan || questions.length || proposed) return { success: false, text: '计划未就绪、等待澄清或本轮已提交' };
+        if (!plan || questions.length || pending) return { success: false, text: '计划未就绪、等待澄清或本轮已提交' };
         const items = (args as { targets?: unknown }).targets;
         if (!Array.isArray(items) || items.length === 0) return { text: 'targets 不能为空', success: false };
         if (items.length > plan.maxTargets) return { text: `最多 ${plan.maxTargets} 个目标`, success: false };
+        const unique = new Set(items.map(it => String(it?.jobId)));
+        if (unique.size !== items.length) return { success: false, text: '同一岗位不能重复计入目标数量' };
+        const reason = (args as { shortfallReason?: unknown }).shortfallReason;
+        if (items.length < plan.maxTargets) {
+          const searchedAll = plan.keywords.every(keyword => exhausted.has(keyword)
+            || Array.from({ length: MAX_PAGE }, (_, i) => i + 1).every(page => pages.get(keyword)?.has(page)));
+          if (!searchedAll && searches < searchBudget(plan.maxTargets) && details < detailBudget(plan.maxTargets)) {
+            return { success: false, text: `目标 ${plan.maxTargets} 个，目前仅 ${items.length} 个；请继续搜索未读页和计划内其他关键词、读取实际 JD，不能提前结束。` };
+          }
+          if (typeof reason !== 'string' || !reason.trim() || reason.length > 1000) return { success: false, text: `未达到目标 ${plan.maxTargets} 个，请用 shortfallReason 说明具体不足原因` };
+        }
         const problems: string[] = [];
         const drafts = items.map((raw) => {
           const it = raw as { jobId?: unknown; reason?: unknown; greeting?: unknown };
@@ -167,12 +188,9 @@ export async function runDiscovery(opts: { codex: CodexClient; site: ReadSite & 
           return { card, reason: String(it.reason ?? '').slice(0, 300), greeting };
         });
         if (problems.length) return { text: `草案未提交：${problems.join('；')}`, success: false };
-        const batch = state.replaceBatch(
-          drafts.map(({ card, reason, greeting }) => ({ jobId: card!.jobId, company: card!.company, title: card!.title, salary: card!.salary, url: card!.url, reason, greeting })),
-        );
-        proposed = batch.targets.length;
-        log(`草案已生成：${proposed} 个目标`);
-        return { text: `草案已提交，共 ${proposed} 个目标，等待用户批准。请结束本轮。`, success: true };
+        pending = drafts.map(({ card, reason, greeting }) => ({ jobId: card!.jobId, company: card!.company, title: card!.title, salary: card!.salary, url: card!.url, reason, greeting }));
+        shortfall = items.length < plan.maxTargets ? `目标 ${plan.maxTargets} 个，实际 ${items.length} 个。不足原因：${String(reason).trim()}` : '';
+        return { text: `草案已接收，共 ${items.length} 个目标，正常结束后保存。请结束本轮。`, success: true };
       },
     },
   ];
@@ -199,9 +217,14 @@ export async function runDiscovery(opts: { codex: CodexClient; site: ReadSite & 
   }
   if (questions.length) return { proposed, questions, message: '请在具体要求框补充以下信息，保存后重新开始发现。' };
   if (blocked) return { proposed, questions, message: `${blocked}，完成后重新开始发现。` };
-  if (proposed) return { proposed, questions, message: `草案已生成：${proposed} 个目标，请核对后批准。` };
-  if (result.status === 'interrupted') return { proposed, questions, message: '已停止发现。' };
+  if (opts.signal.aborted || result.status === 'interrupted') return { proposed, questions, message: '已停止发现。' };
   if (result.status === 'failed') return { proposed, questions, message: `Codex 运行失败：${result.error ?? '未知原因'}` };
+  if (pending) {
+    proposed = state.replaceBatch(pending).targets.length;
+    const message = shortfall || `草案已生成：${proposed} 个目标，请核对后批准。`;
+    log(message);
+    return { proposed, questions, message };
+  }
   if (!plan) return { proposed, questions: ['请在具体要求中明确岗位方向、城市、最低月薪或明确不限。'], message: '尚未得到完整搜索计划，请补充具体要求后重新开始。' };
   if (seen.size === 0) return { proposed, questions, message: 'BOSS 搜索没有返回任何岗位，可换个说法描述岗位方向后重试。' };
   return { proposed, questions, message: '模型没有提交草案，可调整具体要求后重试。' };
