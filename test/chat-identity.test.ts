@@ -11,12 +11,12 @@ import { tempDir } from './helpers.ts';
 const identity = { kind: 'chatId' as const, jobId: 'jobA', recruiterId: 'bossA' };
 const target = { id: 'target', jobId: 'jobA', url: 'https://www.zhipin.com/job_detail/jobA.html', company: '公司', title: '岗位', salary: '', reason: '', greeting: '你好', removed: false, evidence: '', updatedAt: '', steps: { contact: 'done', greeting: 'todo' }, contactIdentity: identity } as Target;
 
-function fixture() {
+function fixture(recruiterId = 'bossA') {
   let url = target.url;
-  const selected = { encryptJobId: 'jobA', encryptBossId: 'bossA' };
+  const selected = { encryptJobId: 'jobA', encryptBossId: recruiterId };
   const header = { ...selected, companyName: '公司' };
   const record = { selectedFriend$: selected, conversation$: header, loading: false, history: false, list$: [{ isSelf: true }] };
-  let redirect = 'https://www.zhipin.com/web/geek/chat?id=bossA&jobId=jobA&securityId=not-an-identity';
+  let redirect = `https://www.zhipin.com/web/geek/chat?id=${encodeURIComponent(recruiterId)}&jobId=jobA&securityId=not-an-identity`;
   const writes: string[] = [];
   const document = {
     title: 'BOSS',
@@ -46,13 +46,22 @@ function fixture() {
   return { browser, selected, header, record, writes, redirect(value: string) { redirect = value; }, chat() { url = 'https://www.zhipin.com/web/geek/chat'; } };
 }
 
-test('真实页面没有招聘者链接时，从沟通入口核实岗位及招聘者 ID，联系后返回明确身份', async () => {
-  const f = fixture();
-  const site = createBossSite(f.browser);
-  assert.equal((await site.openJob(target)).kind, 'canContact');
-  assert.deepEqual(f.writes, []);
-  assert.deepEqual((await site.contact(target)).identity, identity);
-});
+for (const recruiterId of ['bossA', 'boss~A', 'boss.A']) {
+  test(`招聘者 ID ${recruiterId} 按原值提取并精确核对，不以字符白名单拒绝`, async () => {
+    const f = fixture(recruiterId);
+    const site = createBossSite(f.browser);
+    const expected = { ...identity, recruiterId };
+    const candidate = { ...target, contactIdentity: undefined };
+    assert.equal((await site.openJob(candidate)).kind, 'canContact');
+    assert.deepEqual(f.writes, []);
+    assert.deepEqual((await site.contact(candidate)).identity, expected);
+    const saved = { ...candidate, contactIdentity: expected };
+    assert.equal((await site.readChat(saved)).ourMessages, 1);
+    f.selected.encryptBossId = recruiterId + 'other';
+    await assert.rejects(site.readChat(saved), /身份/);
+    assert.deepEqual(f.writes, ['contact'], '不匹配时不能开始下一步');
+  });
+}
 
 for (const redirect of ['https://www.zhipin.com/web/geek/chat?id=bossA&jobId=jobB', 'https://other.example/web/geek/chat?id=bossA&jobId=jobA', 'https://www.zhipin.com/web/geek/chat?jobId=jobA']) {
   test(`拒绝不完整或非目标入口 ${redirect}`, async () => {
