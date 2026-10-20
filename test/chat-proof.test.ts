@@ -94,3 +94,24 @@ for (const arrives of ['before-fill', 'during-fill'] as const) {
     } finally { await site.close(); await f.close(); }
   });
 }
+
+test('填写后新历史请求仍在途时，不能用旧空历史证明提交', async () => {
+  const pending = Promise.withResolvers<import('./boss-fixture.ts').HistoryReply>();
+  const requested = Promise.withResolvers<void>();
+  const f = await startBoss({ friends: [TARGET] });
+  const browser = localBrowser('chat-inflight-history');
+  const site = createBossSite(bossBrowser(browser, f));
+  try {
+    assert.equal((await site.readChat(target)).ourMessages, 0);
+    f.scenario.history = () => { requested.resolve(); return pending.promise; };
+    await browser.eval(`(document.getElementById('chat-input').addEventListener('input', () => document.querySelector(${JSON.stringify(items)}).click(), {once:true}), true)`);
+    const result = await site.sendGreeting(target, '不能发送');
+    await requested.promise;
+    assert.equal(result.ok, false, result.evidence);
+    assert.deepEqual(f.sends, []);
+  } finally {
+    pending.resolve({ status: 500, body: {} });
+    await site.close();
+    await f.close();
+  }
+});

@@ -25,7 +25,7 @@ export interface Scenario {
   friends: Friend[];
   pageSize: number;
   /** 改写某一页历史响应；返回 undefined 时用默认分页结果。 */
-  history?: (query: { bossId: string; page: number; maxMsgId: string }, normal: HistoryReply) => HistoryReply | undefined;
+  history?: (query: { bossId: string; page: number; maxMsgId: string }, normal: HistoryReply) => HistoryReply | undefined | Promise<HistoryReply>;
   /** 页面请求第二页时使用错误游标。 */
   cursorGap?: boolean;
   /** 本方消息在历史渲染后/输入时到达（站点自动招呼竞态）。 */
@@ -158,8 +158,11 @@ export async function startBoss(scenario: Partial<Scenario> = {}): Promise<BossF
       f.historyRequests.push(query);
       const normal = historyReply(f, query.bossId, query.maxMsgId);
       const reply = f.scenario.history?.(query, normal) ?? normal;
-      if (reply === 'drop') return req.socket.destroy();
-      return json(reply.status, reply.body);
+      void Promise.resolve(reply).then(value => {
+        if (value === 'drop') req.socket.destroy();
+        else json(value.status, value.body);
+      });
+      return;
     }
     res.writeHead(404).end();
   });
@@ -188,7 +191,7 @@ export function bossBrowser(browser: Browser, f: BossFixture): Browser {
       if (key === 'waitFor') return (expression: string) => object.waitFor(toLocal(expression));
       if (key === 'watchResponses') return async (endpoint: string) => {
         const watch = await object.watchResponses(toLocal(endpoint));
-        return { next: async () => toBoss(await watch.next()), close: () => watch.close() };
+        return { get revision() { return watch.revision; }, next: async () => toBoss(await watch.next()), close: () => watch.close() };
       };
       const value = Reflect.get(object, key, object);
       return typeof value === 'function' ? value.bind(object) : value;
