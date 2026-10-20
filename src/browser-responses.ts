@@ -54,6 +54,12 @@ class CdpResponseWatch implements ResponseWatch {
   readonly #ws: WebSocket;
   readonly #endpoint: string;
   #sessionId = '';
+  /**
+   * Network.enable 应答之后才接收网络事件；应答前发起的请求不属于本次观察。
+   * 同一数据块里的多条消息连续派发、中间不跑微任务，所以在收到应答的消息处理里同步开启。
+   */
+  #armed = false;
+  #enableId = 0;
   #lastId = 0;
   readonly #pending = new Map<number, { resolve: (result: any) => void; reject: (error: Error) => void }>();
   /** 观察开启后发起、尚未完成的目标请求。 */
@@ -79,7 +85,9 @@ class CdpResponseWatch implements ResponseWatch {
         this.#ws.addEventListener('error', () => reject(new Error('无法连接浏览器调试端口')), { once: true });
       }), '连接浏览器调试端口超时');
       this.#sessionId = (await this.#send('Target.attachToTarget', { targetId, flatten: true }, false)).sessionId;
-      await this.#send('Network.enable', {});
+      const enabled = this.#send('Network.enable', {});
+      this.#enableId = this.#lastId;
+      await enabled;
     } catch (error) {
       await this.#end(error as Error);
       throw error;
@@ -115,6 +123,7 @@ class CdpResponseWatch implements ResponseWatch {
     const message = JSON.parse(raw) as CdpMessage;
     if (message.id !== undefined) {
       const call = this.#pending.get(message.id);
+      if (message.id === this.#enableId && !message.error) this.#armed = true;
       if (message.error) call?.reject(new Error(`浏览器调试命令失败：${message.error.message}`));
       else call?.resolve(message.result);
       return;
@@ -124,7 +133,7 @@ class CdpResponseWatch implements ResponseWatch {
       void this.#end(new Error(DISCONNECTED));
       return;
     }
-    if (message.sessionId === this.#sessionId) this.#onNetwork(message.method, message.params);
+    if (this.#armed && message.sessionId === this.#sessionId) this.#onNetwork(message.method, message.params);
   }
 
   #onNetwork(method: string | undefined, params: any): void {
