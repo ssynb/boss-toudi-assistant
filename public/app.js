@@ -101,7 +101,7 @@ function renderBatch(){
   const started=target.steps.contact!=='todo';
   row.querySelector('textarea').readOnly=started;
   row.querySelector('button').hidden=started;
-  row.querySelector('.action span').textContent=started?`联系：${stepNames[target.steps.contact]} / 招呼：${stepNames[target.steps.greeting]}${target.evidence?' · '+target.evidence:''}`:'';
+  row.querySelector('.action span').textContent=started?`会话：${stepNames[target.steps.contact]} / 招呼：${stepNames[target.steps.greeting]}${target.evidence?' · '+target.evidence:''}`:'';
  }
 }
 $('inputs').elements.file.addEventListener('change',()=>{
