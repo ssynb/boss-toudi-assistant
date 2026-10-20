@@ -57,6 +57,10 @@ test('原子保存草稿、文件失败保留输入、停止与权威计时', {t
   assert.equal(await browser('get','value','[name=requirements]'),'杭州前端，至少 25K');
   assert.equal(await browser('get','text','#elapsed'),'2:05');
   await browser('find','label','具体要求','fill','杭州前端，至少 25K，排除外包');
+  state.browser={page:'ready',url:'https://www.zhipin.com/'};
+  await browser('eval',"window.dispatchEvent(new Event('focus'))");
+  await browser('wait','--text','BOSS · 已登录');
+  assert.equal(await browser('get','value','[name=requirements]'),'杭州前端，至少 25K，排除外包');
   state.discovery.questions=['本批最多找几个岗位？'];changed();
   await browser('wait','--text','本批最多找几个岗位？');
   assert.equal(await browser('get','value','[name=requirements]'),'杭州前端，至少 25K，排除外包');
