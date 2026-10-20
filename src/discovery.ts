@@ -23,7 +23,7 @@ const INSTRUCTIONS = `你是「boss 投递助手」的岗位筛选助手，替�
 - 按求职者的简历与具体要求挑选岗位：薪资低于下限、明显不对口、在排除名单中的不选。
 - 每个拟选目标必须先调用 boss_job_detail 读取完整实际 JD，再结合简历生成匹配理由与招呼，不能只靠标题或岗位卡推测。
 - 每个目标写一段不超过 ${GREETING_MAX_CHARS} 字的中文招呼语，只使用简历里真实存在的经历，不编造。
-- 数量是应尽量达到的目标，不是任意提前结束的上限。未达到目标时继续搜索后续页和计划内其他关键词、读取实际JD。只有搜索耗尽或工具预算耗尽才可提交不足目标的草案，必须在 shortfallReason 说明具体原因。选定后调用 propose_batch 提交整批草案，然后结束本轮。提交草案不会联系任何人，用户批准后才会执行。`;
+- 数量是应尽量达到的目标，不是任意提前结束的上限。未达到目标时继续搜索后续页和计划内其他关键词、读取实际JD。必须处理已有候选；连续搜索至空页或页数上限（或搜索预算耗尽）且没有未读候选，或详情读取预算耗尽，才可提交不足目标的草案，必须在 shortfallReason 说明具体原因。选定后调用 propose_batch 提交整批草案，然后结束本轮。提交草案不会联系任何人，用户批准后才会执行。`;
 
 export interface DiscoveryOutcome {
   proposed: number;
@@ -39,12 +39,12 @@ export async function runDiscovery(opts: { codex: CodexClient; site: ReadSite & 
   const readDetails = new Set<string>();
   const seen = new Map<string, JobCard>();
   let searches = 0;
-  let details = 0;
+  const detailAttempts = new Set<string>();
   let proposed = 0;
   let pending: Parameters<State['replaceBatch']>[0] | null = null;
   let shortfall = '';
   const pages = new Map<string, Set<number>>();
-  const exhausted = new Set<string>();
+  const emptyPages = new Map<string, number>();
   let blocked: string | null = null;
   const abort = new AbortController();
   if (opts.signal.aborted) abort.abort();
@@ -103,6 +103,7 @@ export async function runDiscovery(opts: { codex: CodexClient; site: ReadSite & 
         validateSearchQuery(query);
         query.keyword = query.keyword.trim();
         if (!plan.keywords.includes(query.keyword)) return { success: false, text: '搜索词不在本轮计划中' };
+        if (pages.get(query.keyword)?.has(page)) return { success: false, text: '该页已搜索，请继续其他未读页，不重复消耗预算' };
         if (++searches > searchBudget(plan.maxTargets)) return { text: '本轮搜索次数已用完，请根据已有结果提交草案', success: false };
         log(`搜索「${keyword}」第 ${page} 页`);
         const cards = await guardBlocked(async () => {
@@ -114,7 +115,7 @@ export async function runDiscovery(opts: { codex: CodexClient; site: ReadSite & 
         const visited = pages.get(query.keyword) ?? new Set<number>();
         visited.add(page);
         pages.set(query.keyword, visited);
-        if (!cards.length) exhausted.add(query.keyword);
+        if (!cards.length) emptyPages.set(query.keyword, Math.min(emptyPages.get(query.keyword) ?? MAX_PAGE, page));
         const fresh = cards.filter((c) => !excluded(c));
         for (const c of fresh) seen.set(c.jobId, c);
         return { text: JSON.stringify(fresh), success: true };
@@ -128,7 +129,9 @@ export async function runDiscovery(opts: { codex: CodexClient; site: ReadSite & 
         if (!plan || questions.length) return { success: false, text: '等待完整计划或用户澄清' };
         const card = seen.get(String((args as { jobId: unknown }).jobId));
         if (!card) return { text: '该岗位不在本轮搜索结果中', success: false };
-        if (++details > detailBudget(plan.maxTargets)) return { text: '本轮详情读取次数已用完，请根据已有结果提交草案', success: false };
+        if (detailAttempts.has(card.jobId)) return { success: false, text: '该岗位已尝试读取，请继续其他未读候选，不重复消耗预算' };
+        if (detailAttempts.size >= detailBudget(plan.maxTargets)) return { text: '本轮详情读取次数已用完，请根据已有结果提交草案', success: false };
+        detailAttempts.add(card.jobId);
         log(`读取岗位详情：${card.company} ${card.title}`);
         const text = await guardBlocked(() => site.jobDetail(card));
         if (!text.trim()) return { success: false, text: '岗位 JD 为空，不能为它生成招呼或草案' };
@@ -165,9 +168,11 @@ export async function runDiscovery(opts: { codex: CodexClient; site: ReadSite & 
         if (unique.size !== items.length) return { success: false, text: '同一岗位不能重复计入目标数量' };
         const reason = (args as { shortfallReason?: unknown }).shortfallReason;
         if (items.length < plan.maxTargets) {
-          const searchedAll = plan.keywords.every(keyword => exhausted.has(keyword)
-            || Array.from({ length: MAX_PAGE }, (_, i) => i + 1).every(page => pages.get(keyword)?.has(page)));
-          if (!searchedAll && searches < searchBudget(plan.maxTargets) && details < detailBudget(plan.maxTargets)) {
+          const searchedAll = plan.keywords.every(keyword =>
+            Array.from({ length: emptyPages.get(keyword) ?? MAX_PAGE }, (_, i) => i + 1).every(page => pages.get(keyword)?.has(page)));
+          const unread = [...seen.keys()].some(jobId => !detailAttempts.has(jobId));
+          if (detailAttempts.size < detailBudget(plan.maxTargets)
+            && (unread || !searchedAll && searches < searchBudget(plan.maxTargets))) {
             return { success: false, text: `目标 ${plan.maxTargets} 个，目前仅 ${items.length} 个；请继续搜索未读页和计划内其他关键词、读取实际 JD，不能提前结束。` };
           }
           if (typeof reason !== 'string' || !reason.trim() || reason.length > 1000) return { success: false, text: `未达到目标 ${plan.maxTargets} 个，请用 shortfallReason 说明具体不足原因` };
