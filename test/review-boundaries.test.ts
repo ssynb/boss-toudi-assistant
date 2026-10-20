@@ -37,12 +37,11 @@ function browserFixture() {
   const messages = ['已有招呼'];
   const attachments: string[] = [];
   const writes: string[] = [];
-  const node = (text: string, href?: string) => ({ textContent: text, innerText: text, href, getClientRects: () => [1] });
+  const node = (text: string, href?: string) => ({ textContent: text, innerText: text, href, getClientRects: () => [1], checkVisibility: () => true });
   const href = (kind: string, id: string) => `https://www.zhipin.com/${kind}/${id}.html`;
   const document = {
     title: 'BOSS直聘',
     querySelector(selector: string) {
-      if (selector === '.nav-figure, .user-nav .user-name') return node('用户');
       if (selector === '.chat-conversation .company-name') return node('同一公司');
       if (selector === '.chat-conversation .message-list') return node('消息');
       if (selector === '.chat-conversation a[href*="/job_detail/"]') return node('岗位', href('job_detail', chatJob));
@@ -51,6 +50,7 @@ function browserFixture() {
       return null;
     },
     querySelectorAll(selector: string) {
+      if (selector === '.nav-figure, .user-nav .user-name') return [node('用户')];
       if (selector === '[class*="item-myself"]' || selector === '.chat-conversation .message-list [class*="item-myself"]') return messages.map(x => node(x));
       if (selector === '[role="dialog"]') return [{ ...node(`确认发送附件 ${dialogName}`), querySelectorAll: (s: string) => s === '[data-file-name]' ? [fileNode(dialogName)] : [] }];
       if (selector === '.chat-conversation .message-list [class*="item-myself"] [data-file-name]') return attachments.map(fileNode);
