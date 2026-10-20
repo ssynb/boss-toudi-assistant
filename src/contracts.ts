@@ -13,7 +13,7 @@
 export const LOCAL_HEADER = 'x-boss-local';
 export const LOCAL_HEADER_VALUE = '1';
 
-/** 每批目标上限，与 BOSS 每日主动沟通上限一致；用户在具体要求里写数量，AI 提取时不超过它。 */
+/** 本应用每批目标上限；不代表账号在 BOSS 上当日的可用沟通额度。 */
 export const MAX_BATCH_TARGETS = 150;
 /** 定制招呼每段上限（字）。 */
 export const GREETING_MAX_CHARS = 200;
@@ -158,10 +158,9 @@ export interface TargetSteps {
 }
 
 /** 已从岗位页取得并在目标会话核实的身份；与联系完成状态同事务保存。 */
-export interface ContactIdentity {
-  jobId: string;
-  recruiterUrl: string;
-}
+export type ContactIdentity =
+  | { kind?: 'legacyUrl'; jobId: string; recruiterUrl: string }
+  | { kind: 'chatId'; jobId: string; recruiterId: string };
 
 export interface Target {
   /** 老记录可能缺失；缺失时禁止恢复发送，不能用当前页面反推原批准对象。 */
