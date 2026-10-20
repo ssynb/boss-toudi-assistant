@@ -100,8 +100,9 @@ export async function runDiscovery(opts: { codex: CodexClient; site: ReadSite & 
         if (++searches > MAX_SEARCHES) return { text: '本轮搜索次数已用完，请根据已有结果提交草案', success: false };
         log(`搜索「${keyword}」第 ${page} 页`);
         const cards = await guardBlocked(async () => {
+          // 窗口被关闭时由搜索重新打开浏览器；登录/验证页不导航离开，留给用户本人处理。
           const browser = await site.status();
-          if (browser.page !== 'ready') throw new SiteBlockedError(browser);
+          if (browser.page !== 'ready' && browser.page !== 'closed') throw new SiteBlockedError(browser);
           return site.search(query);
         });
         const fresh = cards.filter((c) => !excluded(c));

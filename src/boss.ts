@@ -44,13 +44,19 @@ export type Site = SiteControl & ReadSite & WriteSite;
 export class SiteBlockedError extends Error {
   readonly state: BrowserState;
   constructor(state: BrowserState) {
-    super(state.page === 'verify' ? 'BOSS 要求安全验证，请在浏览器窗口中本人完成' : 'BOSS 未登录或登录已失效，请在浏览器窗口中登录');
+    super({
+      verify: 'BOSS 要求安全验证，请在浏览器窗口中本人完成',
+      loggedOut: 'BOSS 未登录或登录已失效，请在浏览器窗口中登录',
+      closed: 'BOSS 浏览器已关闭，请点「BOSS 登录」重新打开',
+    }[state.page as string] ?? '无法确认 BOSS 登录状态，请在浏览器窗口中打开 BOSS 首页确认已登录');
     this.state = state;
   }
 }
 
 const ORIGIN = 'https://www.zhipin.com';
+const HOME_URL = `${ORIGIN}/`;
 const LOGIN_URL = `${ORIGIN}/web/user/`;
+const PAGE_LOADED = 'document.readyState === "complete" && location.origin === "https://www.zhipin.com"';
 
 /** BOSS 内部查询使用的城市名称到代码映射，用于校验 AI 提取结果，不是 UI 固定选项列表。 */
 const CITY_CODES: Record<string, string> = {
@@ -122,6 +128,11 @@ export function createBossSite(browser: Browser): Site {
     if (!browser.isOpen) return { page: 'closed', url: null };
     const p = await browser.eval<{ url: string; title: string; loginLink: boolean; hasAccount: boolean }>(PAGE_PROBE).catch(() => null);
     if (!p) return { page: 'unknown', url: null };
+    // 用户关掉窗口后 agent-browser 会自建空白页并弹出空白窗口：按已关闭处理并收起它。
+    if (p.url === 'about:blank') {
+      await browser.close();
+      return { page: 'closed', url: null };
+    }
     if (!p.url.startsWith(`${ORIGIN}/`)) return { page: 'unknown', url: p.url };
     if (/\/web\/passport\/zp\/(verify|security)/.test(p.url) || p.title.includes('安全验证')) return { page: 'verify', url: p.url };
     if (p.url.startsWith(LOGIN_URL) || p.loginLink) return { page: 'loggedOut', url: p.url };
@@ -130,7 +141,7 @@ export function createBossSite(browser: Browser): Site {
 
   async function goto(url: string): Promise<void> {
     await browser.open(url);
-    await browser.waitFor('document.readyState === "complete" && location.origin === "https://www.zhipin.com"');
+    await browser.waitFor(PAGE_LOADED);
     const s = await status();
     if (s.page !== 'ready') throw new SiteBlockedError(s);
   }
@@ -168,7 +179,12 @@ export function createBossSite(browser: Browser): Site {
   }
 
   return {
+    // 已登录账号访问登录页会在加载后再跳回首页，所以先看首页，只有未登录才进登录页。
     async open() {
+      await browser.open(HOME_URL);
+      await browser.waitFor(PAGE_LOADED);
+      const s = await status();
+      if (s.page !== 'loggedOut') return s;
       await browser.open(LOGIN_URL);
       return status();
     },

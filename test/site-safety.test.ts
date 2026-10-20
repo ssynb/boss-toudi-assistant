@@ -7,11 +7,13 @@ import { Browser } from '../src/browser.ts';
 import { createBossSite } from '../src/boss.ts';
 import { tempDir } from './helpers.ts';
 
-test('浏览器停在空白页不能当作 BOSS 已登录', async () => {
+// 用户关掉浏览器窗口后，agent-browser 的下一条命令会自建空白页；空白页即视为浏览器已关闭，不能当作已登录。
+test('浏览器停在空白页时视为已关闭并收起空白窗口', async () => {
   const browser = new Browser({ profileDir: path.join(tempDir('boss-blank-'), 'profile'), headed: false, namespace: `blank-${process.pid}` });
   try {
     await browser.open('about:blank');
-    assert.equal((await createBossSite(browser).status()).page, 'unknown');
+    assert.equal((await createBossSite(browser).status()).page, 'closed');
+    assert.equal(browser.isOpen, false);
   } finally {
     await browser.close();
   }
@@ -55,3 +57,17 @@ test('岗位卡薪资的站点混淆数字被还原', async () => {
     assert.equal((await site.search({ keyword: 'Agent', city: '北京', page: 1 }))[0]?.salary, '40-60K·13薪');
   } finally { await browser.close(); }
 });
+
+for (const [name, home, expected] of [
+  ['已登录时打开浏览器直接报告已登录，不停在登录页跳转中途', { hasAccount: true, loginLink: false }, { page: 'ready', url: 'https://www.zhipin.com/' }],
+  ['未登录时打开浏览器进入登录页', { hasAccount: false, loginLink: true }, { page: 'loggedOut', url: 'https://www.zhipin.com/web/user/' }],
+] as const) {
+  test(name, async () => {
+    let url = 'about:blank';
+    // 已登录账号访问登录页会在加载后再跳回首页；探针在跳转前读取只会看到登录页。
+    const site = createBossSite({ isOpen: true, async open(next: string) { url = next; }, async waitFor() {},
+      async eval() { return url.endsWith('/web/user/') ? { url, title: '登录', hasAccount: false, loginLink: false } : { url, title: 'BOSS直聘', ...home }; },
+    } as unknown as Browser);
+    assert.deepEqual(await site.open(), expected);
+  });
+}
