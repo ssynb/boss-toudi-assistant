@@ -74,6 +74,15 @@ export class Browser {
     await this.#run(['click', `@${ref}`]);
   }
 
+  async clickSelector(selector: string): Promise<void> {
+    await this.#run(['click', selector]);
+  }
+
+  async scrollToBottom(): Promise<void> {
+    const height = await this.eval<number>('document.scrollingElement.scrollHeight');
+    await this.#run(['scroll', 'down', String(height)]);
+  }
+
   async fill(ref: string, text: string): Promise<void> {
     await this.#run(['fill', `@${ref}`, text]);
   }

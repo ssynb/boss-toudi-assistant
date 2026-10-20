@@ -125,6 +125,17 @@ function identityUrl(href: string, kind: 'job_detail' | 'boss_detail'): string |
   }
 }
 
+function chatIdentityMatches(t: Target, expected: Extract<ContactIdentity, { kind: 'chatId' }>): string {
+  return `(() => {
+    const selected = document.querySelector('.chat-conversation')?.__vue__?.selectedFriend$;
+    const header = document.querySelector('.chat-conversation .top-info-content')?.__vue__?.conversation$;
+    const record = document.querySelector('.chat-conversation .chat-record')?.__vue__;
+    const matches = value => value?.encryptJobId === ${JSON.stringify(expected.jobId)} && value?.encryptBossId === ${JSON.stringify(expected.recruiterId)};
+    return matches(selected) && matches(header) && matches(record?.selectedFriend$) && matches(record?.conversation$)
+      && header.companyName === ${JSON.stringify(t.company)};
+  })()`;
+}
+
 export function createBossSite(browser: Browser): Site {
   let contactRef: string | null = null;
   const recipients = new Map<string, ContactIdentity>();
@@ -160,14 +171,7 @@ export function createBossSite(browser: Browser): Site {
     const expected = t.contactIdentity ?? recipients.get(t.jobId);
     if (!expected || expected.jobId !== t.jobId) throw new Error('缺少已核实的会话身份：该目标不能自动继续，请到 BOSS 核对并手动完成剩余步骤，不要重新联系');
     if (expected.kind === 'chatId') {
-      const verified = await browser.eval<boolean>(`(() => {
-        const selected = document.querySelector('.chat-conversation')?.__vue__?.selectedFriend$;
-        const header = document.querySelector('.chat-conversation .top-info-content')?.__vue__?.conversation$;
-        const record = document.querySelector('.chat-conversation .chat-record')?.__vue__;
-        const matches = value => value?.encryptJobId === ${JSON.stringify(expected.jobId)} && value?.encryptBossId === ${JSON.stringify(expected.recruiterId)};
-        return matches(selected) && matches(header) && matches(record?.selectedFriend$) && matches(record?.conversation$)
-          && header.companyName === ${JSON.stringify(t.company)};
-      })()`);
+      const verified = await browser.eval<boolean>(chatIdentityMatches(t, expected));
       if (!verified) throw new Error('当前会话的岗位或招聘者身份不符：请在 BOSS 切回原目标会话，再点击继续；不要重新联系');
       return;
     }
@@ -227,6 +231,47 @@ export function createBossSite(browser: Browser): Site {
     return recruiterUrl ? { jobId: t.jobId, recruiterUrl } : null;
   }
 
+  async function enterContactChat(t: Target, identity: ContactIdentity): Promise<void> {
+    // agent-browser 已跟随点击产生的新标签页；站内弹层则不会改变岗位页 URL。
+    await browser.waitFor('location.pathname.startsWith("/web/geek/chat") || Boolean(document.querySelector(".startchat-dialog")?.checkVisibility())');
+    const current = await browser.eval<string>('location.pathname');
+    if (!current.startsWith('/web/geek/chat')) {
+      if (identity.kind !== 'chatId') throw new Error('聊天弹层缺少可核对的招聘者 ID，不能继续');
+      await goto(`${ORIGIN}/web/geek/chat`);
+      const matches = `[...document.querySelectorAll('.chat-user .chat-content li[role="listitem"]')].map((e, index) => ({ source: e.__vue__?.$props?.source, index })).filter(e => e.source?.encryptJobId === ${JSON.stringify(identity.jobId)} && e.source?.encryptBossId === ${JSON.stringify(identity.recruiterId)})`;
+      await browser.waitFor(`(${matches}).length > 0`);
+      const indices = await browser.eval<number[]>(`(${matches}).map(e => e.index)`);
+      if (indices.length !== 1) throw new Error('无法唯一识别已存在的目标会话，停止后续动作');
+      await browser.clickSelector(`.chat-user .chat-content li[role="listitem"]:nth-child(${indices[0]! + 1})`);
+    }
+    if (identity.kind === 'chatId') await browser.waitFor(chatIdentityMatches(t, identity));
+    await verifyChat(t);
+  }
+
+  async function searchPage(q: SearchQuery): Promise<JobCard[]> {
+    const params = new URLSearchParams({ query: q.keyword, city: CITY_CODES[q.city]! });
+    await goto(`${ORIGIN}/web/geek/jobs?${params}`);
+    await browser.waitFor(RESULTS_RENDERED);
+    let cards = await browser.eval<JobCard[]>(EXTRACT_CARDS);
+    let result = cards;
+    // 站点忽略 URL 的 page 参数；每次滚到底部才请求下一批，页面保留已加载岗位。
+    for (let page = 2; page <= q.page; page++) {
+      if (!cards.length) return [];
+      const more = await browser.eval<boolean | null>(`document.querySelector('.page-jobs-main')?.__vue__?.hasMore ?? null`);
+      if (more === false) return [];
+      if (more !== true) throw new Error('无法核实岗位列表的分页状态，停止搜索');
+      const previous = new Set(cards.map(card => card.jobId));
+      await browser.scrollToBottom();
+      await browser.waitFor(`(() => {
+        const pageState = document.querySelector('.page-jobs-main')?.__vue__;
+        return pageState?.pageVo?.page >= ${page} && pageState.loading === false && pageState.moreLoading === false;
+      })()`);
+      cards = await browser.eval<JobCard[]>(EXTRACT_CARDS);
+      result = cards.filter(card => !previous.has(card.jobId));
+    }
+    return result;
+  }
+
   return {
     // 已登录账号访问登录页会在加载后再跳回首页，所以先看首页，只有未登录才进登录页。
     async open() {
@@ -242,12 +287,7 @@ export function createBossSite(browser: Browser): Site {
 
     async search(q) {
       validateSearchQuery(q);
-      const code = CITY_CODES[q.city];
-      if (!code) throw new Error(`不支持的城市：${q.city}`);
-      const params = new URLSearchParams({ query: q.keyword, city: code, page: String(q.page) });
-      await goto(`${ORIGIN}/web/geek/jobs?${params}`);
-      await browser.waitFor(RESULTS_RENDERED);
-      return browser.eval<JobCard[]>(EXTRACT_CARDS);
+      return searchPage(q);
     },
 
     async jobDetail(card) {
@@ -282,9 +322,8 @@ export function createBossSite(browser: Browser): Site {
       if (!recruiter || JSON.stringify(recruiter) !== JSON.stringify(recipients.get(t.jobId))) return { ok: false, evidence: '招聘者身份已变化，未点击沟通' };
       await browser.click(contactRef);
       contactRef = null;
-      await browser.waitFor('location.pathname.startsWith("/web/geek/chat")');
       try {
-        await verifyChat(t);
+        await enterContactChat(t, recruiter);
         return { ok: true, evidence: '已进入对应岗位和招聘者的会话页', identity: recipients.get(t.jobId)! };
       } catch (e) {
         return { ok: false, evidence: (e as Error).message };
