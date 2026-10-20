@@ -93,9 +93,9 @@ test('观察开启前已完成或已发起的请求不混入', async () => {
 
 test('关闭会拒绝正在等待和之后的 next', async () => {
   const watch = await browser.watchResponses(endpoint);
-  const waiting = watch.next();
+  const waiting = assert.rejects(watch.next(), /关闭/);
   await watch.close();
-  await assert.rejects(waiting, /关闭/);
+  await waiting;
   await assert.rejects(watch.next(), /关闭/);
   await watch.close();
 });
@@ -123,7 +123,7 @@ test('未消费响应超过队列上限时明确失败', async () => {
 
 test('浏览器断开时拒绝等待', async () => {
   const watch = await browser.watchResponses(endpoint);
-  const waiting = watch.next();
+  const waiting = assert.rejects(watch.next(), /断开/);
   await browser.close();
-  await assert.rejects(waiting, /断开/);
+  await waiting;
 });
