@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import type { AppState, BrowserState, CodexState, DoctorCheck, SaveInputsRequest, StartDiscoveryRequest, TargetPatch } from './contracts.ts';
+import type { AppState, ApproveRequest, BrowserState, CodexState, DoctorCheck, SaveInputsRequest, StartDiscoveryRequest, TargetPatch } from './contracts.ts';
 import { Browser } from './browser.ts';
 import { createBossSite, type Site } from './boss.ts';
 import { CodexClient } from './codex.ts';
@@ -196,9 +196,13 @@ export class App extends EventEmitter {
     this.#changed();
   }
 
-  startBatch(): void {
+  startBatch(request?: ApproveRequest): void {
     this.#assertDiscoveryIdle();
     if (this.#executor) throw new AppError('batch_running', '批次已在执行');
+    if (request !== undefined) {
+      if (!request || !Number.isSafeInteger(request.version)) throw new AppError('bad_request', 'version 须为整数');
+      this.#state.approve(request.version);
+    }
     const executor = new Executor(this.#state, this.#site, () => this.#changed());
     const run = executor.start();
     this.#executor = executor;
@@ -217,9 +221,8 @@ export class App extends EventEmitter {
   /** 用户开始自动投递时已预先批准本轮草案：同步批准刚生成的版本并执行，中间没有可插入的修改。 */
   #autoSend(): void {
     try {
-      this.#state.approve(this.#state.snapshot().batch!.version);
+      this.startBatch({ version: this.#state.snapshot().batch!.version });
       this.#log('自动投递：已按本轮草案开始执行');
-      this.startBatch();
     } catch (e) {
       this.#log(`自动投递未能开始：${e instanceof Error ? e.message : String(e)}`);
     }

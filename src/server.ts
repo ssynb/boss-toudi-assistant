@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { LOCAL_HEADER, LOCAL_HEADER_VALUE, INPUTS_MAX_BYTES, type ApiError, type ErrorCode, type StartDiscoveryRequest } from './contracts.ts';
+import { LOCAL_HEADER, LOCAL_HEADER_VALUE, INPUTS_MAX_BYTES, type ApiError, type ApproveRequest, type ErrorCode, type StartDiscoveryRequest } from './contracts.ts';
 import { App, type AppOptions } from './app.ts';
 import { AppError } from './errors.ts';
 
@@ -68,7 +68,7 @@ const ROUTES: Array<[string, RegExp, Handler]> = [
   ['POST', /^\/api\/discovery\/stop$/, (a) => a.stopDiscovery()],
   ['PATCH', /^\/api\/batch\/targets\/([\w-]+)$/, (a, b, p) => a.patchTarget(p[0]!, b.json() as never)],
   ['POST', /^\/api\/batch\/approve$/, (a, b) => a.approve((b.json() as { version: number }).version)],
-  ['POST', /^\/api\/batch\/start$/, (a) => a.startBatch()],
+  ['POST', /^\/api\/batch\/start$/, (a, b) => a.startBatch(b.optionalJson() as ApproveRequest | undefined)],
   ['POST', /^\/api\/batch\/pause$/, (a) => a.pauseBatch()],
 ];
 

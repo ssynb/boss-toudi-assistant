@@ -208,7 +208,7 @@ export interface Batch {
  * POST /api/discovery/stop
  * PATCH /api/batch/targets/:id     TargetPatch
  * POST /api/batch/approve          ApproveRequest
- * POST /api/batch/start            从 approved 或仍有效批准的 paused 开始/继续
+ * POST /api/batch/start            可选 ApproveRequest：传 version 即核对并批准该版本、直接开始投递；省略请求体仅开始/恢复已有有效批准的批次
  * POST /api/batch/pause            当前 inflight 步骤收尾后停下，不再开始新动作
  *
  * 具体要求、简历、批次的任何修改：批次 running 时返回 batch_running；
@@ -259,6 +259,7 @@ export interface TargetPatch {
   removed?: boolean;
 }
 
+/** 手动确认绑定用户已查看的批次版本；/api/batch/start 接收此请求时一次完成批准与启动，版本过期不执行。 */
 export interface ApproveRequest {
   version: number;
 }
