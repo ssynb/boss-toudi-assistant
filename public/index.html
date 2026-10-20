@@ -8,7 +8,7 @@
 <label id="resume-body" hidden>简历正文<textarea name="resumeText" rows="5" maxlength="50000" placeholder="粘贴 PDF / DOCX 正文，保存即确认用于匹配"></textarea></label>
 <p class="hint">本地简历仅用于匹配，不上传 BOSS。</p><button id="save">保存</button><output></output>
 </fieldset></form>
-<div class="discovery-actions"><button id="discover" class="primary">开始发现</button><button id="send" class="primary" hidden>确认投递</button><label class="check auto"><input type="checkbox" id="auto-send">发现后自动投递（不审核）</label><span id="elapsed" aria-label="发现耗时"></span><span id="discovery" role="status"></span></div>
+<div class="discovery-actions"><button id="discover" class="primary">开始发现</button><button id="send" class="primary" hidden>确认投递</button><label class="check auto"><input type="checkbox" id="auto-send">下次发现后自动投递（不审核）</label><span id="elapsed" aria-label="发现耗时"></span><span id="discovery" role="status"></span></div>
 <p class="hint">自动投递会直接联系 HR 并发送招呼，发出后不能撤回；结果未确认的动作不会自动重试。</p>
 <section id="batch" hidden><p id="batch-state"></p><fieldset><table><thead><tr><th>岗位</th><th>薪资</th><th>介绍</th><th>招呼原文</th><th></th></tr></thead><tbody id="targets"></tbody></table></fieldset></section>
 <details><summary>运行记录</summary><ol id="logs"></ol></details></main></body></html>
