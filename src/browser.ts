@@ -78,6 +78,10 @@ export class Browser {
     await this.#run(['fill', `@${ref}`, text]);
   }
 
+  async fillSelector(selector: string, text: string): Promise<void> {
+    await this.#run(['fill', selector, text]);
+  }
+
   async press(key: string): Promise<void> {
     await this.#run(['press', key]);
   }

@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS targets (
   reason TEXT NOT NULL, greeting TEXT NOT NULL, removed INTEGER NOT NULL,
   contact TEXT NOT NULL, greeting_state TEXT NOT NULL,
   evidence TEXT NOT NULL, updated_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS contact_identities (target_id TEXT PRIMARY KEY, job_id TEXT NOT NULL, recruiter_url TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS contact_identities (target_id TEXT PRIMARY KEY, job_id TEXT NOT NULL, recruiter_value TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'legacyUrl');
 CREATE TABLE IF NOT EXISTS contacts (job_id TEXT PRIMARY KEY, company TEXT NOT NULL, title TEXT NOT NULL, state TEXT NOT NULL, at TEXT NOT NULL);
 `;
 
@@ -113,6 +113,7 @@ export class State {
     try {
       this.#db.exec('PRAGMA locking_mode = EXCLUSIVE; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
       this.#db.exec(SCHEMA);
+      this.#migrateIdentity();
       this.#dropRemovedColumns();
       this.#migrateResume(file);
       this.#recover();
@@ -247,8 +248,8 @@ export class State {
       if (step !== 'contact') return;
       if (value === 'done' && identity) {
         if (identity.jobId !== target.jobId) throw new AppError('bad_request', '核实身份的岗位与目标不符');
-        this.#db.prepare('INSERT INTO contact_identities (target_id, job_id, recruiter_url) VALUES (?, ?, ?) ON CONFLICT(target_id) DO UPDATE SET job_id = excluded.job_id, recruiter_url = excluded.recruiter_url')
-          .run(target.id, identity.jobId, identity.recruiterUrl);
+        this.#db.prepare('INSERT INTO contact_identities (target_id, job_id, recruiter_value, kind) VALUES (?, ?, ?, ?) ON CONFLICT(target_id) DO UPDATE SET job_id = excluded.job_id, recruiter_value = excluded.recruiter_value, kind = excluded.kind')
+          .run(target.id, identity.jobId, identity.kind === 'chatId' ? identity.recruiterId : identity.recruiterUrl, identity.kind ?? 'legacyUrl');
       }
       if (value === 'inflight' || value === 'unknown' || value === 'done') {
         this.#db
@@ -372,9 +373,20 @@ export class State {
     return batch;
   }
 
+  #migrateIdentity(): void {
+    const columns = this.#db.prepare('PRAGMA table_info(contact_identities)').all() as { name: string }[];
+    if (!columns.some(c => c.name === 'recruiter_url')) return;
+    this.#tx(() => {
+      this.#db.exec("ALTER TABLE contact_identities RENAME COLUMN recruiter_url TO recruiter_value; ALTER TABLE contact_identities ADD COLUMN kind TEXT NOT NULL DEFAULT 'legacyUrl';");
+    });
+  }
+
   #identity(targetId: string): { contactIdentity?: ContactIdentity } {
-    const row = this.#db.prepare('SELECT job_id, recruiter_url FROM contact_identities WHERE target_id = ?').get(targetId) as { job_id: string; recruiter_url: string } | undefined;
-    return row ? { contactIdentity: { jobId: row.job_id, recruiterUrl: row.recruiter_url } } : {};
+    const row = this.#db.prepare('SELECT job_id, recruiter_value, kind FROM contact_identities WHERE target_id = ?').get(targetId) as { job_id: string; recruiter_value: string; kind: string } | undefined;
+    if (!row) return {};
+    if (row.kind === 'chatId') return { contactIdentity: { kind: 'chatId', jobId: row.job_id, recruiterId: row.recruiter_value } };
+    if (row.kind !== 'legacyUrl') throw new Error('无法识别已保存的招聘者身份类型');
+    return { contactIdentity: { jobId: row.job_id, recruiterUrl: row.recruiter_value } };
   }
 
   #batch(): Batch | null {
