@@ -11,6 +11,7 @@ import os from 'node:os';
 import { createHash } from 'node:crypto';
 import { resolveCloak, profileArgs, defaultCloakCache } from './cloak.ts';
 import { fileURLToPath } from 'node:url';
+import { watchResponses, type ResponseWatch } from './browser-responses.ts';
 
 const require = createRequire(import.meta.url);
 export const AGENT_BROWSER_BIN = path.join(path.dirname(require.resolve('agent-browser/package.json')), 'bin', 'agent-browser.js');
@@ -99,6 +100,18 @@ export class Browser {
     await this.#run(['wait', '--fn', expression]);
   }
 
+  /** 只读观察当前标签页对 endpoint 的响应；定位与附着占用命令队列，期间不会有其他命令切换标签页。 */
+  watchResponses(endpoint: string): Promise<ResponseWatch> {
+    if (!this.#open) return Promise.reject(new Error('浏览器未打开，无法观察接口响应'));
+    return this.#serial(async () => {
+      const { cdpUrl } = (await this.#exec(['get', 'cdp-url'])) as { cdpUrl: string };
+      const { tabs } = (await this.#exec(['tab'])) as { tabs: { active: boolean; targetId: string }[] };
+      const active = tabs.filter(tab => tab.active);
+      if (active.length !== 1) throw new Error('无法确定当前标签页，未开始观察接口响应');
+      return watchResponses(cdpUrl, active[0]!.targetId, endpoint);
+    });
+  }
+
   async close(): Promise<void> {
     if (!this.#open) return;
     this.#open = false;
@@ -106,7 +119,11 @@ export class Browser {
   }
 
   #run(args: string[]): Promise<unknown> {
-    const next = this.#queue.then(() => this.#exec(args));
+    return this.#serial(() => this.#exec(args));
+  }
+
+  #serial<T>(task: () => Promise<T>): Promise<T> {
+    const next = this.#queue.then(task);
     this.#queue = next.catch(() => {});
     return next;
   }
