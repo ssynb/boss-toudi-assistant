@@ -7,7 +7,7 @@
  */
 import type { BrowserState, Target, ContactIdentity } from './contracts.ts';
 import type { Browser } from './browser.ts';
-import type { OpenJobResult, Verified, WriteSite } from './executor.ts';
+import type { GreetingResult, OpenJobResult, Verified, WriteSite } from './executor.ts';
 
 export interface JobCard {
   jobId: string;
@@ -114,6 +114,45 @@ const OWN_MESSAGES = `[...document.querySelectorAll('.chat-conversation .message
 
 const CHAT_MESSAGES = `[...document.querySelectorAll('.chat-conversation .chat-record .item-myself')].map(e => (e.querySelector('.text-content')?.innerText || '').trim())`;
 const CHAT_INPUT = '.chat-conversation .message-controls .chat-input[contenteditable="true"]';
+// history/loading 初始也为 false；非空历史响应设置 isToTop/msgMinId 后，消息仍可能尚未合并。
+// 首批清空旧列表，lastContentHeight 在合并后的 nextTick 设置；多页合并、零记录响应尚无可靠零消息证据。
+const CHAT_MESSAGE_STATE = `(() => {
+  const record = document.querySelector('.chat-conversation .chat-record')?.__vue__;
+  const uid = window._PAGE?.uid;
+  if (!record || !Array.isArray(record.list$) || uid == null) return {status:'unsupported'};
+  if (record.loading === true) return {status:'loading'};
+  if (record.loading !== false || record.boss?.friendId == null || record.boss.friendSource == null) return {status:'unsupported'};
+  if (record.boss.encryptJobId !== record.selectedFriend$?.encryptJobId
+    || record.boss.encryptBossId !== record.selectedFriend$?.encryptBossId) return {status:'identity'};
+  const list = record.list$;
+  const belongs = m => typeof m.isSelf === 'boolean' && m.isSelf === (m.fromId === uid)
+    && m.friendSource === record.boss.friendSource
+    && (m.isSelf ? m.toId === record.boss.friendId && m.fromId === uid : m.fromId === record.boss.friendId && m.toId === uid);
+  if (!list.every(belongs)) return {status:'ownership'};
+  const nodes = [...document.querySelectorAll('.chat-conversation .chat-record .im-list > .message-item')];
+  const messages = new Map(list.map(m => [String(m.mid), m]));
+  if (messages.size !== list.length || list.some(m => !m.mid)) return {status:'unsupported'};
+  if (nodes.length !== list.length || nodes.some(e => {
+    const m = messages.get(e.getAttribute('data-mid'));
+    return !m || !e.classList.contains(m.isSelf ? 'item-myself' : 'item-friend');
+  })) return {status:'rendering'};
+  const own = nodes.filter(e => messages.get(e.getAttribute('data-mid')).isSelf);
+  if (!own.length) {
+    if (record.page !== 1 || !list.length || record.history !== false || record.isToTop !== true
+      || !Number.isFinite(record.msgMinId) || record.msgMinId <= 0) return {status:'history'};
+    if (!(record.lastContentHeight > 0) || record.lastContentHeight !== record.$refs?.scrollContent?.clientHeight) return {status:'rendering'};
+  }
+  return {status:'ready', messages:own.map(e => (e.querySelector('.text-content')?.innerText || '').trim())};
+})()`;
+const CHAT_READ_ERRORS = {
+  unsupported: '当前消息读取结构不支持或账号依据缺失，不能当作空会话',
+  loading: '当前会话消息尚未加载完成，停止发送',
+  rendering: '当前会话消息尚未渲染一致，停止发送',
+  identity: '消息历史请求的岗位或招聘者身份尚未同步，停止发送',
+  ownership: '消息发送者、接收者与本方归属不一致，停止发送',
+  history: '尚未取得完整历史证据，不能证明会话没有本方消息，停止发送',
+} as const;
+type ChatMessageState = { status: 'ready'; messages: string[] } | { status: keyof typeof CHAT_READ_ERRORS };
 
 function identityUrl(href: string, kind: 'job_detail' | 'boss_detail'): string | null {
   try {
@@ -196,17 +235,18 @@ export function createBossSite(browser: Browser): Site {
     await verifyChat(t);
     const expression = messageExpression(t);
     if (expression === CHAT_MESSAGES) {
-      const loaded = await browser.eval<boolean>(`(() => {
-        const record = document.querySelector('.chat-conversation .chat-record')?.__vue__;
-        return record?.loading === false && Array.isArray(record.list$)
-          && record.list$.filter(m => m.isSelf === true).length === document.querySelectorAll('.chat-conversation .chat-record .item-myself').length;
-      })()`);
-      if (!loaded) throw new Error('当前会话消息尚未加载完成，停止发送');
+      let read = await browser.eval<ChatMessageState>(CHAT_MESSAGE_STATE);
+      if (read.status === 'loading' || read.status === 'rendering') {
+        await browser.waitFor(`!['loading', 'rendering'].includes((${CHAT_MESSAGE_STATE}).status)`);
+        read = await browser.eval<ChatMessageState>(CHAT_MESSAGE_STATE);
+      }
+      if (read.status !== 'ready') throw new Error(CHAT_READ_ERRORS[read.status]);
+      await verifyChat(t);
+      return read.messages;
     }
     const messages = await browser.eval<string[]>(expression);
     if (messages.length === 0) {
-      // 未实证空记录/历史分页的完成语义，不把缺少本方节点当作没有发送过。
-      const empty = expression === OWN_MESSAGES && await browser.eval<boolean>(`Boolean([...document.querySelectorAll('.chat-conversation .message-list *')].find(e => e.textContent?.trim() === '暂无聊天记录'))`);
+      const empty = await browser.eval<boolean>(`Boolean([...document.querySelectorAll('.chat-conversation .message-list *')].find(e => e.textContent?.trim() === '暂无聊天记录'))`);
       if (!empty) throw new Error('尚不能证明会话没有本方消息，停止发送');
     }
     await verifyChat(t);
@@ -336,8 +376,8 @@ export function createBossSite(browser: Browser): Site {
       return { ourMessages: mine.length, evidence: mine.length ? `会话里已有 ${mine.length} 条本方消息` : '会话里没有本方消息' };
     },
 
-    async sendGreeting(t, text): Promise<Verified> {
-      await ownMessages(t);
+    async sendGreeting(t, text): Promise<GreetingResult> {
+      if ((await ownMessages(t)).length) return { ok: true, skipped: true, evidence: '填写前已有本方消息，未发送本次招呼' };
       if (messageExpression(t) === CHAT_MESSAGES) {
         const inputReady = await browser.eval<boolean>(`(() => {
           const inputs = [...document.querySelectorAll(${JSON.stringify(CHAT_INPUT)})];
@@ -352,6 +392,7 @@ export function createBossSite(browser: Browser): Site {
         if (!input) return { ok: false, evidence: '会话页找不到输入框' };
         await browser.fill(input, text);
       }
+      if ((await ownMessages(t)).length) return { ok: true, skipped: true, evidence: '提交前出现本方消息，未发送本次招呼' };
       await verifyChat(t);
       await browser.press('Enter');
       await browser.waitFor(`(${messageExpression(t)}).some((m) => m === ${JSON.stringify(text)})`);

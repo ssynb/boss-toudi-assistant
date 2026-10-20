@@ -14,6 +14,11 @@ export interface Verified {
   evidence: string;
 }
 
+export interface GreetingResult extends Verified {
+  /** 提交前发现已有本方消息：没有发送本次招呼，执行器应记为 skipped。 */
+  skipped?: true;
+}
+
 export type OpenJobResult =
   | { kind: 'canContact'; evidence: string } // 岗位页有「立即沟通」
   | { kind: 'alreadyContacted'; evidence: string } // 岗位页显示「继续沟通」等：站点上已有会话
@@ -27,7 +32,7 @@ export interface WriteSite {
   contact(t: Target): Promise<Verified>;
   /** 读当前会话里本方已发出的消息数（含站点自动发出的默认招呼）。 */
   readChat(t: Target): Promise<{ ourMessages: number; evidence: string }>;
-  sendGreeting(t: Target, text: string): Promise<Verified>;
+  sendGreeting(t: Target, text: string): Promise<GreetingResult>;
 }
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -130,8 +135,8 @@ export class Executor {
       } else {
         this.#checkpoint();
         this.#set(t, 'greeting', 'inflight', chat.evidence);
-        const r = await this.#site.sendGreeting(t, t.greeting).catch((e: unknown) => ({ ok: false, evidence: `发送时出错：${errorText(e)}` }));
-        this.#set(t, 'greeting', r.ok ? 'done' : 'unknown', r.evidence);
+        const r: GreetingResult = await this.#site.sendGreeting(t, t.greeting).catch((e: unknown) => ({ ok: false, evidence: `发送时出错：${errorText(e)}` }));
+        this.#set(t, 'greeting', r.ok ? (r.skipped ? 'skipped' : 'done') : 'unknown', r.evidence);
         if (!r.ok) throw new Stop(`「${t.company}」招呼发送结果未确认：${r.evidence}`);
       }
     }
