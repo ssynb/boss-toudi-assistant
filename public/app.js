@@ -125,6 +125,7 @@ $('discover').onclick=()=>mutate(state.discovery.status==='running'?'discovery/s
 $('approve').onclick=()=>{if(confirm('确认批准本批保留目标的联系、招呼原文及附件设置？'))mutate('batch/approve','POST',{version:state.batch.version});};
 for(const button of document.querySelectorAll('[data-action]')) button.onclick=()=>mutate(button.dataset.action);
 for(const form of forms) form.addEventListener('input',controls);
+window.addEventListener('focus',()=>{if(!pending)void refresh();});
 window.addEventListener('beforeunload',event=>{if(dirty.size){event.preventDefault();event.returnValue='';}});
 controls();
 await refresh();

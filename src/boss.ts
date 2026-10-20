@@ -69,12 +69,15 @@ export function validateSearchQuery(q: SearchQuery): void {
   }
 }
 
-const PAGE_PROBE = `(() => ({
-  url: location.href,
-  title: document.title,
-  hasAccount: Boolean(document.querySelector('.nav-figure, .user-nav .user-name')),
-  loginLink: [...document.querySelectorAll('a,button')].some((e) => /^(登录|登录\\/注册)$/.test((e.textContent || '').trim())),
-}))()`;
+const PAGE_PROBE = `(() => {
+  const visible = e => e.checkVisibility({checkVisibilityCSS:true,checkOpacity:true});
+  return {
+    url: location.href,
+    title: document.title,
+    hasAccount: [...document.querySelectorAll('.nav-figure, .user-nav .user-name')].some(visible),
+    loginLink: [...document.querySelectorAll('a,button')].some(e => visible(e) && /^(登录|登录\\/注册)$/.test((e.textContent || '').trim())),
+  };
+})()`;
 
 const EXTRACT_CARDS = `(() => {
   const seen = new Set(); const out = [];
