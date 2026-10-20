@@ -9,10 +9,12 @@ const CLOSED = '响应观察已关闭';
 const DISCONNECTED = '浏览器页面已断开，响应观察结束';
 
 export type ResponseObservation =
-  | { kind: 'response'; url: string; status: number; body: unknown }
-  | { kind: 'failed'; url: string; error: string };
+  | { kind: 'response'; revision: number; url: string; status: number; body: unknown }
+  | { kind: 'failed'; revision: number; url: string; error: string };
 
 export interface ResponseWatch {
+  /** 已开启的目标请求序号；观察结束后抛出终止错误。 */
+  readonly revision: number;
   /** 按完成顺序返回下一个响应；关闭、断开、超时或队列溢出后拒绝。 */
   next(): Promise<ResponseObservation>;
   close(): Promise<void>;
@@ -61,9 +63,10 @@ class CdpResponseWatch implements ResponseWatch {
   #armed = false;
   #enableId = 0;
   #lastId = 0;
+  #revision = 0;
   readonly #pending = new Map<number, { resolve: (result: any) => void; reject: (error: Error) => void }>();
   /** 观察开启后发起、尚未完成的目标请求。 */
-  readonly #requests = new Map<string, { url: string; status?: number }>();
+  readonly #requests = new Map<string, { url: string; revision: number; status?: number }>();
   readonly #ready: Promise<ResponseObservation>[] = [];
   readonly #waiters: ((observation: Promise<ResponseObservation>) => void)[] = [];
   readonly #ended = Promise.withResolvers<never>();
@@ -92,6 +95,11 @@ class CdpResponseWatch implements ResponseWatch {
       await this.#end(error as Error);
       throw error;
     }
+  }
+
+  get revision(): number {
+    if (this.#failure) throw this.#failure;
+    return this.#revision;
   }
 
   async next(): Promise<ResponseObservation> {
@@ -144,8 +152,8 @@ class CdpResponseWatch implements ResponseWatch {
     if (method === 'Network.responseReceived') request.status = params.response.status;
     if (method !== 'Network.loadingFinished' && method !== 'Network.loadingFailed') return;
     this.#requests.delete(requestId);
-    if (method === 'Network.loadingFailed') this.#push(Promise.resolve({ kind: 'failed', url: request.url, error: params.errorText }));
-    else this.#push(this.#readBody(requestId, request.url, request.status));
+    if (method === 'Network.loadingFailed') this.#push(Promise.resolve({ kind: 'failed', revision: request.revision, url: request.url, error: params.errorText }));
+    else this.#push(this.#readBody(requestId, request.url, request.status, request.revision));
   }
 
   #onRequest(requestId: string, url: string, redirected: boolean): void {
@@ -153,28 +161,28 @@ class CdpResponseWatch implements ResponseWatch {
     // 重定向沿用原 requestId；起点不是本次观察内的目标请求时不追认。
     if (redirected) {
       if (!this.#requests.has(requestId)) return;
-      if (matches) this.#requests.get(requestId)!.url = url;
+      if (matches) this.#requests.set(requestId, { url, revision: ++this.#revision });
       else this.#requests.delete(requestId);
       return;
     }
     if (!matches) return;
     if (this.#requests.size >= QUEUE_LIMIT) return void this.#end(new Error(`进行中的接口请求超过上限 ${QUEUE_LIMIT}`));
-    this.#requests.set(requestId, { url });
+    this.#requests.set(requestId, { url, revision: ++this.#revision });
   }
 
-  async #readBody(requestId: string, url: string, status: number | undefined): Promise<ResponseObservation> {
-    if (status === undefined) return { kind: 'failed', url, error: '请求结束但没有收到响应头' };
+  async #readBody(requestId: string, url: string, status: number | undefined, revision: number): Promise<ResponseObservation> {
+    if (status === undefined) return { kind: 'failed', revision, url, error: '请求结束但没有收到响应头' };
     let text: string;
     try {
       const result = await this.#send('Network.getResponseBody', { requestId });
       text = result.base64Encoded ? Buffer.from(result.body, 'base64').toString('utf8') : result.body;
     } catch (error) {
-      return { kind: 'failed', url, error: `响应正文不可读：${(error as Error).message}` };
+      return { kind: 'failed', revision, url, error: `响应正文不可读：${(error as Error).message}` };
     }
     try {
-      return { kind: 'response', url, status, body: JSON.parse(text) };
+      return { kind: 'response', revision, url, status, body: JSON.parse(text) };
     } catch {
-      return { kind: 'failed', url, error: `响应正文不是 JSON（HTTP ${status}）` };
+      return { kind: 'failed', revision, url, error: `响应正文不是 JSON（HTTP ${status}）` };
     }
   }
 

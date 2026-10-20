@@ -79,6 +79,14 @@ export class Browser {
     await this.#run(['click', selector]);
   }
 
+  async clickNth(selector: string, index: number): Promise<void> {
+    await this.#run(['find', 'nth', String(index), selector, 'click']);
+  }
+
+  async scrollWithin(selector: string, direction: 'up' | 'down', amount: number): Promise<void> {
+    await this.#run(['scroll', direction, String(amount), '--selector', selector]);
+  }
+
   async scrollToBottom(): Promise<void> {
     const height = await this.eval<number>('document.scrollingElement.scrollHeight');
     await this.#run(['scroll', 'down', String(height)]);
