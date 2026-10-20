@@ -62,6 +62,12 @@ export async function runDiscovery(opts: { codex: CodexClient; site: ReadSite & 
     }
   };
 
+  const remainingSearch = (p: SearchPlan) => p.keywords.flatMap(keyword => {
+    const missing = Array.from({ length: emptyPages.get(keyword) ?? MAX_PAGE }, (_, i) => i + 1)
+      .filter(page => !pages.get(keyword)?.has(page));
+    return missing.length ? [`「${keyword}」第 ${missing.join('、')} 页`] : [];
+  });
+
   const excluded = (c: JobCard) => state.isContacted(c.jobId) || (plan?.excludeCompanies ?? []).some((x) => c.company.includes(x));
 
   const tools: DynamicTool[] = [
@@ -168,8 +174,7 @@ export async function runDiscovery(opts: { codex: CodexClient; site: ReadSite & 
         if (unique.size !== items.length) return { success: false, text: '同一岗位不能重复计入目标数量' };
         const reason = (args as { shortfallReason?: unknown }).shortfallReason;
         if (items.length < plan.maxTargets) {
-          const searchedAll = plan.keywords.every(keyword =>
-            Array.from({ length: emptyPages.get(keyword) ?? MAX_PAGE }, (_, i) => i + 1).every(page => pages.get(keyword)?.has(page)));
+          const searchedAll = remainingSearch(plan).length === 0;
           const unread = [...seen.keys()].some(jobId => !detailAttempts.has(jobId));
           if (detailAttempts.size < detailBudget(plan.maxTargets)
             && (unread || !searchedAll && searches < searchBudget(plan.maxTargets))) {
@@ -194,7 +199,11 @@ export async function runDiscovery(opts: { codex: CodexClient; site: ReadSite & 
         });
         if (problems.length) return { text: `草案未提交：${problems.join('；')}`, success: false };
         pending = drafts.map(({ card, reason, greeting }) => ({ jobId: card!.jobId, company: card!.company, title: card!.title, salary: card!.salary, url: card!.url, reason, greeting }));
-        shortfall = items.length < plan.maxTargets ? `目标 ${plan.maxTargets} 个，实际 ${items.length} 个。不足原因：${String(reason).trim()}` : '';
+        if (items.length < plan.maxTargets) {
+          const stopped = detailAttempts.size >= detailBudget(plan.maxTargets) ? '详情读取预算已用完'
+            : remainingSearch(plan).length ? '搜索预算已用完' : '计划范围已搜完';
+          shortfall = `目标 ${plan.maxTargets} 个，实际 ${items.length} 个。程序停止依据：${stopped}（仅计划关键词，每词最多 ${MAX_PAGE} 页，不代表全站无岗位）。模型筛选说明：${String(reason).trim()}`;
+        }
         return { text: `草案已接收，共 ${items.length} 个目标，正常结束后保存。请结束本轮。`, success: true };
       },
     },
@@ -230,7 +239,9 @@ export async function runDiscovery(opts: { codex: CodexClient; site: ReadSite & 
     log(message);
     return { proposed, questions, message };
   }
-  if (!plan) return { proposed, questions: ['请在具体要求中明确岗位方向、城市、最低月薪或明确不限。'], message: '尚未得到完整搜索计划，请补充具体要求后重新开始。' };
-  if (seen.size === 0) return { proposed, questions, message: 'BOSS 搜索没有返回任何岗位，可换个说法描述岗位方向后重试。' };
-  return { proposed, questions, message: '模型没有提交草案，可调整具体要求后重试。' };
+  const finalPlan = plan as SearchPlan | null;
+  if (!finalPlan) return { proposed, questions: ['请在具体要求中明确岗位方向、城市、最低月薪或明确不限。'], message: '尚未得到完整搜索计划，请补充具体要求后重新开始。' };
+  const remaining = remainingSearch(finalPlan);
+  const unread = [...seen.keys()].filter(jobId => !detailAttempts.has(jobId)).length;
+  return { proposed, questions, message: `模型没有提交有效草案，本轮未完成目标 ${finalPlan.maxTargets} 个。已读实际 JD ${readDetails.size} 个，未读候选 ${unread} 个。未完成搜索：${remaining.join('；') || '无（仅计划关键词，每词最多 ' + MAX_PAGE + ' 页，不代表全站无岗位）'}。搜索预算 ${Math.min(searches, searchBudget(finalPlan.maxTargets))}/${searchBudget(finalPlan.maxTargets)}，详情预算 ${detailAttempts.size}/${detailBudget(finalPlan.maxTargets)}。可重新开始发现。` };
 }
