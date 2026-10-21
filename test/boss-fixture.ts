@@ -24,6 +24,8 @@ export interface Scenario {
   continued?: boolean;
   windowSize?: number;
   hasMoreFriends?: boolean;
+  friendPages?: Friend[][];
+  newFriendDelay?: number;
   omitTargetRow?: boolean;
   /** 已有会话（不含尚未联系的目标）。 */
   friends: Friend[];
@@ -111,12 +113,16 @@ input.addEventListener('keydown',async e=>{if(e.key!=='Enter')return;e.preventDe
   ${s.delivery === 'pending' ? '' : `queueMicrotask(()=>{status.className='message-status ${s.delivery === 'failed' ? 'status-error' : 'status-delivery'}';});`}
 });
 (async()=>{friends=await (await fetch('/wapi/friends')).json();const ul=document.querySelector('.chat-content ul');
-  document.querySelector('.chat-user').__vue__={list$:friends,topList$:[],hasMore$:${Boolean(s.hasMoreFriends)}};
+  document.querySelector('.chat-user').__vue__={list$:friends,topList$:[],hasMore$:${Boolean(s.hasMoreFriends || s.friendPages?.length)}};
   const viewport=document.querySelector('.user-list-content'),windowSize=${s.windowSize ?? 10000};
   function renderFriends(){const start=Math.min(Math.floor(viewport.scrollTop/60),Math.max(0,friends.length-windowSize));ul.innerHTML='';
     ul.style.paddingTop=(start*60)+'px';ul.style.paddingBottom=(Math.max(0,friends.length-start-windowSize)*60)+'px';
     friends.slice(start,start+windowSize).forEach(f=>{${s.omitTargetRow ? `if(f.encryptJobId===${JSON.stringify(s.target.jobId)}&&f.encryptBossId===${JSON.stringify(s.target.bossId)})return;` : ''}const li=document.createElement('li');li.style.height='60px';li.setAttribute('role','listitem');li.textContent=f.companyName;li.__vue__={$props:{source:f}};li.onclick=()=>select(f);ul.append(li);});}
-  renderFriends();viewport.addEventListener('scroll',renderFriends);
+  let friendPage=0,friendLoading=false;
+  async function moreFriends(){if(friendLoading||!document.querySelector('.chat-user').__vue__.hasMore$||viewport.scrollTop+viewport.clientHeight<viewport.scrollHeight-1)return;
+    friendLoading=true;const r=await(await fetch('/wapi/friend-page?page='+friendPage++)).json();friends.push(...r.friends);document.querySelector('.chat-user').__vue__.hasMore$=r.hasMore;friendLoading=false;renderFriends();}
+  renderFriends();viewport.addEventListener('scroll',()=>{renderFriends();moreFriends();});
+  ${s.newFriendDelay ? `setTimeout(()=>{friends.push(${JSON.stringify(friendJson(s.target))});renderFriends();},${s.newFriendDelay});` : ''}
   const p=new URLSearchParams(location.search),auto=friends.find(f=>f.encryptBossId===p.get('id')&&f.encryptJobId===p.get('jobId'));if(auto)select(auto);})();
 </script>`;
 }
@@ -141,7 +147,12 @@ export async function startBoss(scenario: Partial<Scenario> = {}): Promise<BossF
     const job = url.pathname.match(/^\/job_detail\/([^/]+)\.html$/);
     if (job) return html(jobPage(f, job[1]!));
     if (url.pathname === '/web/geek/chat') return html(chatPage(f));
-    if (url.pathname === '/wapi/friends') return json(200, f.scenario.friends.map(friendJson));
+    if (url.pathname === '/wapi/friends') return json(200, f.scenario.friends.filter(x => !f.scenario.newFriendDelay || x.jobId !== f.scenario.target.jobId).map(friendJson));
+    if (url.pathname === '/wapi/friend-page') {
+      const page = Number(url.searchParams.get('page'));
+      const pages = f.scenario.friendPages ?? [];
+      return json(200, {friends:(pages[page] ?? []).map(friendJson),hasMore:page+1<pages.length});
+    }
     if (url.pathname === '/wapi/contact') {
       f.contacts++;
       const { target, friends, createsFriend } = f.scenario;
