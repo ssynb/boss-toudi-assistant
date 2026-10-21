@@ -49,7 +49,7 @@ export interface AppState {
   doctor: DoctorCheck[];
   codex: CodexState;
   browser: BrowserState;
-  /** 唯一可编辑求职要求，AI 提取结果仅用于本轮发现。 */
+  /** 可选的求职偏好（个人信息页），作为对话与筛选的背景；具体投哪些方向、各多少个以对话为准。 */
   requirements: string;
   resume: ResumeState;
   discovery: DiscoveryState;
@@ -63,6 +63,8 @@ export interface AppState {
   chat: ChatState;
   /** 可搜索的城市（调研、发现共用），唯一来源为站点适配层。 */
   supportedCities: string[];
+  /** 本地时区今天已记入联系账本的岗位数；与 DAILY_CONTACT_LIMIT 比较。 */
+  contactedToday: number;
 }
 
 export interface DoctorCheck {
@@ -126,17 +128,26 @@ export interface DiscoveryState {
   startedAt: string | null;
   /** 后端记录的结束时间（ISO 8601）；运行/正在停止时为 null，完成、停止或失败后固定保留。 */
   finishedAt: string | null;
-  /** 缺关键条件时的问题；在同一个具体要求框补充并保存后清除，再重新开始发现。 */
-  questions: string[];
   status: 'idle' | 'running' | 'stopping';
-  /** 本轮是否自动投递：发现生成草案后立即视为已批准并执行，不经人工审核。 */
+  /** 本轮是否找到就投：true 时正常结束后立即执行联系与招呼；false 时只保存草稿，之后在对话里说「投吧」或在投递记录里继续。 */
   autoSend: boolean;
+  /** 本轮各方向的目标数与已入选数；未开始过为空数组。 */
+  directions: DiscoveryDirectionProgress[];
   /** 最近一次发现的结果或失败原因（人话）。 */
   message: string | null;
 }
 
+export interface DiscoveryDirectionProgress {
+  name: string;
+  /** 用户在对话里给这个方向定的数量。 */
+  count: number;
+  selected: number;
+}
+
 // ---------- 岗位方向调研与求职顾问对话 ----------
 
+/** 每日主动联系上限（用户告知的 BOSS 额度）；一句话投递的总数不能超过今日剩余。 */
+export const DAILY_CONTACT_LIMIT = 150;
 /** 调研每个方向抽样读取的实际 JD 上限。 */
 export const RESEARCH_SAMPLE_PER_DIRECTION = 10;
 /** 对话单条消息上限（字）与保留的最近消息数。 */
@@ -182,6 +193,12 @@ export interface ChatMessage {
   at: string;
 }
 
+/**
+ * 对话是唯一的任务入口。AI 只有受限工具：回复文本；在指定城市调研方向（只读）；
+ * 按用户最新消息开始投递；开始投递已保存的草稿。开始类工具须附用户最新消息中的原文引用（程序逐字核对），
+ * 投递按方向给出关键词与数量，总数不超过 MAX_BATCH_TARGETS 和今日剩余额度；sendNow=false 时只找不投。
+ * 用户已明确选择「一句话直接开始」，不再弹确认卡；进度与结果由程序写回对话。
+ */
 export interface ChatState {
   /** 正在等待 AI 回复；期间不能再发消息。 */
   pending: boolean;
@@ -264,15 +281,13 @@ export interface Batch {
  * PUT  /api/inputs                 SaveInputsRequest：唯一资料保存入口，成功返回最新 AppState
  *                                 删除旧 /api/requirements、/api/resume/file、/api/resume/text、DELETE /api/resume，不保留兼容写入口
  * POST /api/browser/open           打开本应用独立 profile 的浏览器到 BOSS（用户自行登录/验证）
- * POST /api/discovery/start        StartDiscoveryRequest（可省略请求体，即不自动投递）；需：Codex 已登录、已保存的简历正文/具体要求非空、批次不在执行；实际搜索前才要求浏览器 ready
  * POST /api/discovery/stop
  * PATCH /api/batch/targets/:id     TargetPatch
  * POST /api/batch/approve          ApproveRequest
  * POST /api/batch/start            可选 ApproveRequest：传 version 即核对并批准该版本、直接开始投递；省略请求体仅开始/恢复已有有效批准的批次
  * POST /api/batch/pause            当前 inflight 步骤收尾后停下，不再开始新动作
- * POST /api/research/start        ResearchRequest；需 Codex 已登录、已保存简历正文；实际搜索前才要求浏览器 ready
  * POST /api/research/stop
- * POST /api/chat                   ChatRequest；立即返回（chat.pending=true），回复写入后经 SSE changed 通知
+ * POST /api/chat                   ChatRequest；立即返回（chat.pending=true），回复写入后经 SSE changed 通知；调研与投递只经对话启动
  * POST /api/chat/clear             清空对话记录
  *
  * 具体要求、简历、批次的任何修改：批次 running 时返回 batch_running；
@@ -309,19 +324,6 @@ export interface SaveInputsRequest {
 
 /** base64 只接受标准 RFC 4648 编码（含所需填充），不含 data: URL 前缀；解码后上限 RESUME_MAX_BYTES。 */
 export const INPUTS_MAX_BYTES = 4 * Math.ceil(RESUME_MAX_BYTES / 3) + 512 * 1024;
-
-/**
- * autoSend=true：点击开始即批准本轮 AI 生成的整批草案，发现结束后立即执行联系与招呼，不再停下审核。
- * 停止发现、需要澄清或没有生成草案时不会执行；执行中仍可暂停，遇到验证/登录/结果未确认照常停下。
- */
-export interface StartDiscoveryRequest {
-  autoSend: boolean;
-}
-
-/** city 必须是 AppState.supportedCities 之一。 */
-export interface ResearchRequest {
-  city: string;
-}
 
 /** message 去掉首尾空白后非空，不超过 CHAT_MESSAGE_MAX_CHARS 字。 */
 export interface ChatRequest {
