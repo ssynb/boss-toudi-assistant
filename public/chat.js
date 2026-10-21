@@ -4,11 +4,13 @@ import {delivered, keptTargets} from './outcome.js';
 /** 合同 DAILY_CONTACT_LIMIT：每日主动联系上限。 */
 const DAILY_CONTACT_LIMIT = 150;
 
-/** 当前运行中的任务及其停止接口；对话是唯一开始入口，这里只提供停止。 */
+/** 当前运行中的任务（含等待 AI 决定）及其停止接口；对话是唯一开始入口，这里只提供停止。 */
 function runningTask(state) {
  if (state.research.status !== 'idle') return {status:state.research.status, stop:'research/stop', label:`正在调研${state.research.city ? ` · ${state.research.city}` : ''} · 已完成 ${state.research.directions.length} 个方向`};
  if (state.discovery.status !== 'idle') return {status:state.discovery.status, stop:'discovery/stop', label:['正在找岗位', ...state.discovery.directions.map(d => `${d.name} ${d.selected}/${d.count}`)].join(' · ')};
  if (state.batch?.status === 'running') return {status:'running', stop:'batch/pause', label:`正在投递 · 已送达 ${delivered(state.batch)}/${keptTargets(state.batch).length}`};
+ // AI 可能正决定开始调研或投递；服务端在对话等待期间的 discovery/stop 会中止这一回合。
+ if (state.chat.pending) return {status:'running', stop:'discovery/stop', label:'AI 正在决定下一步'};
  return null;
 }
 
