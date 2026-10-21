@@ -22,6 +22,8 @@ export interface Scenario {
   /** 点击立即沟通后站点是否建立会话。 */
   createsFriend: boolean;
   continued?: boolean;
+  windowSize?: number;
+  hasMoreFriends?: boolean;
   /** 已有会话（不含尚未联系的目标）。 */
   friends: Friend[];
   pageSize: number;
@@ -74,7 +76,7 @@ function chatPage(f: BossFixture): string {
   const s = f.scenario;
   return `<!doctype html><meta charset="utf-8"><title>聊天</title><div class="nav-figure">账号</div>
 <style>.chat-message{height:200px;overflow:auto}.message-item{height:120px}</style>
-<div class="chat-user"><div class="chat-content"><ul></ul></div></div>
+<div class="chat-user"><div class="chat-content"><div class="user-list-content" style="height:240px;overflow:auto"><ul style="margin:0;padding:0"></ul></div></div></div>
 <div class="chat-conversation"><div class="top-info-content"></div>
 <div class="chat-record"><div class="chat-message"><div class="im-list"></div></div></div>
 <div class="message-controls"><div class="chat-input" contenteditable="true" id="chat-input"></div><button class="btn-send disabled">发送</button></div></div>
@@ -108,7 +110,12 @@ input.addEventListener('keydown',async e=>{if(e.key!=='Enter')return;e.preventDe
   ${s.delivery === 'pending' ? '' : `queueMicrotask(()=>{status.className='message-status ${s.delivery === 'failed' ? 'status-error' : 'status-delivery'}';});`}
 });
 (async()=>{friends=await (await fetch('/wapi/friends')).json();const ul=document.querySelector('.chat-content ul');
-  friends.forEach(f=>{const li=document.createElement('li');li.setAttribute('role','listitem');li.textContent=f.companyName;li.__vue__={$props:{source:f}};li.onclick=()=>select(f);ul.append(li);});
+  document.querySelector('.chat-user').__vue__={list$:friends,topList$:[],hasMore$:${Boolean(s.hasMoreFriends)}};
+  const viewport=document.querySelector('.user-list-content'),windowSize=${s.windowSize ?? 10000};
+  function renderFriends(){const start=Math.min(Math.floor(viewport.scrollTop/60),Math.max(0,friends.length-windowSize));ul.innerHTML='';
+    ul.style.paddingTop=(start*60)+'px';ul.style.paddingBottom=(Math.max(0,friends.length-start-windowSize)*60)+'px';
+    friends.slice(start,start+windowSize).forEach(f=>{const li=document.createElement('li');li.style.height='60px';li.setAttribute('role','listitem');li.textContent=f.companyName;li.__vue__={$props:{source:f}};li.onclick=()=>select(f);ul.append(li);});}
+  renderFriends();viewport.addEventListener('scroll',renderFriends);
   const p=new URLSearchParams(location.search),auto=friends.find(f=>f.encryptBossId===p.get('id')&&f.encryptJobId===p.get('jobId'));if(auto)select(auto);})();
 </script>`;
 }
