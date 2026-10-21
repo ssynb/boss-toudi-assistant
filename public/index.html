@@ -1,14 +1,53 @@
-<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>boss 投递助手</title><link rel="stylesheet" href="/style.css"><script type="module" src="/app.js"></script></head><body>
-<header><strong>boss 投递助手</strong><div class="accounts"><button data-action="codex/login" id="codex">Codex 登录</button><a id="login" target="_blank" rel="noopener" hidden>继续官方授权</a><button data-action="browser/open" id="browser">BOSS 登录</button></div></header>
-<main><p id="error" role="alert" hidden></p><p id="notice" role="status"></p>
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="light"><title>boss 投递助手</title><link rel="stylesheet" href="/style.css"><script type="module" src="/app.js"></script></head><body>
+<header class="topbar"><strong class="brand"><span class="logo" aria-hidden="true"></span>boss 投递助手</strong><div class="accounts"><button data-action="codex/login" id="codex" class="chip">Codex 登录</button><a id="login" class="chip" target="_blank" rel="noopener" hidden>继续官方授权</a><button data-action="browser/open" id="browser" class="chip">BOSS 登录</button></div></header>
+<main>
+<div class="alerts"><p id="error" role="alert" hidden></p><p id="notice" role="status"></p></div>
+<div class="layout">
+<div class="primary-column">
+
+<section class="card" aria-labelledby="inputs-title"><h2 id="inputs-title">求职资料</h2>
 <form id="inputs"><fieldset>
 <label for="requirements-text">具体要求</label><textarea id="requirements-text" name="requirements" rows="4" maxlength="10000" placeholder="例如：杭州前端，月薪至少 25K，不考虑外包，找 30 个岗位（不写默认 10 个，最多 150 个）。"></textarea>
-<div id="clarification" role="status" hidden><ul id="questions"></ul></div>
+<div id="clarification" class="callout" role="status" hidden><ul id="questions"></ul></div>
 <label class="file-label">简历<input name="file" type="file" accept=".txt,.md,.pdf,.docx"></label><p id="file" class="hint"></p>
 <label id="resume-body" hidden>简历正文<textarea name="resumeText" rows="5" maxlength="50000" placeholder="粘贴 PDF / DOCX 正文，保存即确认用于匹配"></textarea></label>
-<p class="hint">本地简历仅用于匹配，不上传 BOSS。</p><button id="save">保存</button><output></output>
+<div class="form-foot"><button id="save">保存</button><output></output><p class="hint">本地简历仅用于匹配，不上传 BOSS。</p></div>
 </fieldset></form>
-<div class="discovery-actions"><button id="discover" class="primary">开始发现</button><button id="send" class="primary" hidden>确认投递</button><label class="check auto"><input type="checkbox" id="auto-send">下次发现后自动投递（不审核）</label><span id="elapsed" aria-label="发现耗时"></span><span id="discovery" role="status"></span></div>
-<p class="hint">自动投递会直接联系 HR 并发送招呼，发出后不能撤回；结果未确认的动作不会自动重试。</p>
-<section id="batch" hidden><p id="batch-state"></p><fieldset><table><thead><tr><th>岗位</th><th>薪资</th><th>介绍</th><th>招呼原文</th><th></th></tr></thead><tbody id="targets"></tbody></table></fieldset></section>
-<details><summary>运行记录</summary><ol id="logs"></ol></details></main></body></html>
+</section>
+
+<section class="card focus" aria-labelledby="discover-title"><h2 id="discover-title">发现与投递</h2>
+<div class="modes" role="radiogroup" aria-label="发现方式">
+<div class="mode"><label class="mode-name"><input type="radio" name="mode" id="draft-only" checked aria-describedby="draft-only-hint">只找岗位，稍后投递</label><p class="mode-hint" id="draft-only-hint">结果保存为草稿，下次打开审阅后点「确认投递」</p></div>
+<div class="mode danger"><label class="mode-name"><input type="radio" name="mode" id="auto-send" aria-describedby="auto-send-hint">找到就投</label><p class="mode-hint" id="auto-send-hint">只作用本轮：不审核，直接联系 HR 并发送招呼，发出后不能撤回</p></div>
+</div>
+<div class="discovery-actions"><button id="discover" class="primary">开始发现</button><button id="send" class="primary" hidden>确认投递</button><span id="elapsed" aria-label="发现耗时"></span><span id="discovery" role="status"></span></div>
+<div class="activity" id="discovery-activity" hidden><span></span></div>
+<p class="hint">结果未确认的动作不会自动重试，需到 BOSS 本人核查。</p>
+</section>
+
+<section class="card" id="batch" aria-labelledby="batch-title" hidden><div class="card-head"><h2 id="batch-title">本批岗位</h2><p id="batch-state"></p></div>
+<div class="meter" id="batch-meter" aria-hidden="true"><span class="done"></span><span class="unknown"></span><span class="failed"></span></div>
+<fieldset><table><thead><tr><th>岗位</th><th>薪资</th><th>介绍</th><th>招呼原文</th><th>结果</th></tr></thead><tbody id="targets"></tbody></table></fieldset></section>
+
+</div>
+<div class="side-column">
+
+<section class="card" id="research" aria-labelledby="research-title"><h2 id="research-title">岗位方向调研</h2>
+<p class="hint">按城市抽样读取各方向实际 JD，评估与简历的匹配度。</p>
+<div class="research-actions"><label class="inline">城市<select name="city" id="research-city"></select></label><button id="research-toggle" class="accent">开始调研</button></div>
+<p id="research-message" class="status-line" role="status"></p>
+<div class="activity research-activity" id="research-activity" hidden><span></span></div>
+<ul id="directions" class="directions"></ul>
+<div class="fill-row" id="fill-row" hidden><button id="fill-requirements">填入具体要求</button><span id="fill-status" class="hint" role="status"></span></div>
+</section>
+
+<section class="card chat" aria-labelledby="chat-title"><div class="card-head"><h2 id="chat-title">求职顾问</h2><button id="chat-clear" class="quiet" hidden>清空对话</button></div>
+<p class="callout advice">顾问只给建议，不会投递，也不会操作 BOSS。</p>
+<ol id="chat-log" role="log" aria-live="polite" aria-label="对话记录"></ol>
+<form id="chat-form"><label for="chat-input">问顾问</label><textarea id="chat-input" name="message" rows="2" maxlength="2000" placeholder="例如：我更适合先投哪个方向？"></textarea><div class="chat-foot"><span class="hint">Enter 发送，Shift + Enter 换行</span><button id="chat-send" class="primary">发送</button></div></form>
+</section>
+
+</div>
+</div>
+<details><summary>运行记录</summary><ol id="logs"></ol></details>
+</main></body></html>
