@@ -9,7 +9,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { LOCAL_HEADER, LOCAL_HEADER_VALUE, INPUTS_MAX_BYTES, type ApiError, type ApproveRequest, type ErrorCode, type StartDiscoveryRequest } from './contracts.ts';
+import { LOCAL_HEADER, LOCAL_HEADER_VALUE, INPUTS_MAX_BYTES, type ApiError, type ApproveRequest, type ErrorCode } from './contracts.ts';
 import { App, type AppOptions } from './app.ts';
 import { AppError } from './errors.ts';
 
@@ -64,9 +64,7 @@ const ROUTES: Array<[string, RegExp, Handler]> = [
   ['POST', /^\/api\/codex\/logout$/, (a) => a.logout()],
   ['PUT', /^\/api\/inputs$/, (a, b) => a.saveInputs(b.json() as never)],
   ['POST', /^\/api\/browser\/open$/, (a) => a.openBrowser()],
-  ['POST', /^\/api\/discovery\/start$/, (a, b) => a.startDiscovery(b.optionalJson() as StartDiscoveryRequest | undefined)],
   ['POST', /^\/api\/discovery\/stop$/, (a) => a.stopDiscovery()],
-  ['POST', /^\/api\/research\/start$/, (a, b) => a.startResearch(b.json() as never)],
   ['POST', /^\/api\/research\/stop$/, (a) => a.stopResearch()],
   ['POST', /^\/api\/chat$/, (a, b) => a.startChat(b.json() as never)],
   ['POST', /^\/api\/chat\/clear$/, (a) => a.clearChat()],

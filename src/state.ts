@@ -18,7 +18,7 @@ import {
   MAX_BATCH_TARGETS,
   RESUME_EXTENSIONS,
   type SaveInputsRequest,
-  type DiscoveryState,
+  type DiscoveryState, type DiscoveryDirectionProgress,
   type Batch,
   type ContactIdentity,
   type BatchStatus,
@@ -52,10 +52,11 @@ export interface StateSnapshot {
   resume: ResumeState;
   batch: Batch | null;
   contactedCount: number;
+  contactedToday: number;
 }
 
 const DEFAULT_RESUME: ResumeState = { file: null, text: '', textSource: null };
-const DEFAULT_DISCOVERY: DiscoveryState = { status: 'idle', message: null, questions: [], startedAt: null, finishedAt: null, autoSend: false };
+const DEFAULT_DISCOVERY: DiscoveryState = { status: 'idle', message: null, directions: [], startedAt: null, finishedAt: null, autoSend: false };
 const DEFAULT_RESEARCH: ResearchState = { status: 'idle', city: null, startedAt: null, finishedAt: null, message: null, directions: [] };
 const DEFAULT_CHAT: ChatState = { pending: false, messages: [] };
 const FIT_ORDER = { high: 0, medium: 1, low: 2 };
@@ -144,6 +145,7 @@ export class State {
       resume: this.#kv('resume', DEFAULT_RESUME),
       batch: this.#batch(),
       contactedCount: count.n,
+      contactedToday: this.#contactedToday(),
     };
   }
 
@@ -156,19 +158,25 @@ export class State {
       else if (input.data !== undefined) this.#db.prepare('INSERT INTO resume_file (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data').run(input.data);
       this.#setKv('requirements', input.requirements);
       this.#setKv('resume', input.resume);
-      this.#setKv('discovery', { ...this.#kv('discovery', DEFAULT_DISCOVERY), message: null, questions: [] });
+      this.#setKv('discovery', { ...this.#kv('discovery', DEFAULT_DISCOVERY), message: null });
     });
   }
 
-  beginDiscovery(autoSend = false): void {
+  beginDiscovery(autoSend = false, directions: DiscoveryDirectionProgress[] = []): void {
     this.#tx(() => {
       this.#assertNotRunning();
       this.#assertIdle();
-      if (!this.#kv('requirements', '').trim() || !this.#kv('resume', DEFAULT_RESUME).text.trim()) {
+      if (!this.#kv('resume', DEFAULT_RESUME).text.trim()) {
         throw new AppError('inputs_incomplete', '请先统一保存具体要求和有效简历正文');
       }
-      this.#setKv('discovery', { status: 'running', message: '正在发现岗位…', questions: [], startedAt: now(), finishedAt: null, autoSend });
+      this.#setKv('discovery', { status: 'running', message: '正在发现岗位…', directions, startedAt: now(), finishedAt: null, autoSend });
     });
+  }
+
+  updateDiscoveryDirections(directions: DiscoveryDirectionProgress[]): void {
+    const current = this.#kv('discovery', DEFAULT_DISCOVERY);
+    if (current.status !== 'running') throw new AppError('busy', '发现已停止');
+    this.#setKv('discovery', { ...current, directions });
   }
 
   requestDiscoveryStop(): void {
@@ -178,10 +186,10 @@ export class State {
     });
   }
 
-  finishDiscovery(message: string, questions: string[] = []): void {
+  finishDiscovery(message: string): void {
     this.#tx(() => {
       const current = this.#kv('discovery', DEFAULT_DISCOVERY);
-      if (current.status !== 'idle') this.#setKv('discovery', { ...current, status: 'idle', message, questions, finishedAt: now() });
+      if (current.status !== 'idle') this.#setKv('discovery', { ...current, status: 'idle', message, finishedAt: now() });
     });
   }
 
@@ -233,6 +241,12 @@ export class State {
   finishChat(message: string): void {
     const text = chatText(message);
     this.#tx(() => this.#completeChat(text));
+  }
+
+  appendAssistant(message: string): void {
+    const text = chatText(message);
+    const current = this.#kv('chat', DEFAULT_CHAT);
+    this.#setKv('chat', { ...current, messages: [...current.messages, { role: 'assistant', text, at: now() }].slice(-CHAT_HISTORY_LIMIT) });
   }
 
   clearChat(): void {
@@ -372,10 +386,21 @@ export class State {
   #recover(): void {
     this.#tx(() => {
       const research = this.#kv('research', DEFAULT_RESEARCH);
-      if (research.status !== 'idle') this.#setKv('research', { ...research, status: 'idle', finishedAt: now(), message: '上次调研因进程中断而停止，已完成方向保留。' });
+      if (research.status !== 'idle') {
+        const message = '上次调研因进程中断而停止，已完成方向保留。';
+        this.#setKv('research', { ...research, status: 'idle', finishedAt: now(), message });
+        this.appendAssistant(message);
+      }
       this.#completeChat('上次对话因进程中断未完成，请重新提问。');
-      const discovery = this.#kv('discovery', DEFAULT_DISCOVERY);
-      if (discovery.status !== 'idle') this.#setKv('discovery', { ...discovery, status: 'idle', message: '上次发现因进程中断而停止，结束时间为本次恢复检测时间。', finishedAt: now() });
+      const previous = this.#kv('discovery', DEFAULT_DISCOVERY) as DiscoveryState & { questions?: unknown };
+      const { questions: obsoleteQuestions, ...saved } = previous;
+      const discovery = { ...DEFAULT_DISCOVERY, ...saved };
+      if (obsoleteQuestions !== undefined || !previous.directions) this.#setKv('discovery', discovery);
+      if (discovery.status !== 'idle') {
+        const message = '上次发现因进程中断而停止，结束时间为本次恢复检测时间，未自动发送。';
+        this.#setKv('discovery', { ...discovery, status: 'idle', message, finishedAt: now() });
+        this.appendAssistant(message);
+      }
       const legacy = this.#db.prepare("DELETE FROM kv WHERE key IN ('profile', 'criteria')").run();
       if (legacy.changes) this.#invalidate();
       const stale = this.#db.prepare("SELECT COUNT(*) AS n FROM targets WHERE contact = 'inflight' OR greeting_state = 'inflight'").get() as { n: number };
@@ -430,6 +455,15 @@ export class State {
       this.#db.exec('ROLLBACK');
       throw e;
     }
+  }
+
+  #contactedToday(): number {
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+    const row = this.#db.prepare('SELECT COUNT(*) AS n FROM contacts WHERE at >= ? AND at < ?').get(start.toISOString(), end.toISOString()) as { n: number };
+    return row.n;
   }
 
   #kv<T>(key: string, fallback: T): T {

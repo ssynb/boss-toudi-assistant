@@ -7,13 +7,14 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { CHAT_MESSAGE_MAX_CHARS, type ResearchRequest, type ChatRequest, type AppState, type ApproveRequest, type BrowserState, type CodexState, type DoctorCheck, type SaveInputsRequest, type StartDiscoveryRequest, type TargetPatch } from './contracts.ts';
+import { CHAT_MESSAGE_MAX_CHARS, type ChatRequest, type AppState, type ApproveRequest, type BrowserState, type CodexState, type DoctorCheck, type SaveInputsRequest, type TargetPatch } from './contracts.ts';
 import { Browser } from './browser.ts';
 import { SUPPORTED_CITIES, createBossSite, type Site } from './boss.ts';
 import { CodexClient } from './codex.ts';
 import { runDiscovery } from './discovery.ts';
 import { runResearch } from './research.ts';
-import { askAdvisor } from './advisor.ts';
+import { askAdvisor, type AdvisorAction } from './advisor.ts';
+import { requireQuota, type SearchPlan } from './search-plan.ts';
 import { runDoctor } from './doctor.ts';
 import { AppError } from './errors.ts';
 import { Executor } from './executor.ts';
@@ -55,13 +56,10 @@ export class App extends EventEmitter {
   readonly #site: Site;
   #doctor: Promise<DoctorCheck[]>;
   #codexState: CodexState = { signedIn: false, email: null, plan: null, pendingLoginUrl: null, error: null };
-  #discoveryAbort: AbortController | null = null;
   #assistantAbort: AbortController | null = null;
   #assistantTask: Promise<void> | null = null;
   #executor: Executor | null = null;
   #execution: Promise<void> | null = null;
-  #discovering: Promise<void> | null = null;
-  #starting: Promise<void> | null = null;
 
   constructor(opts: AppOptions) {
     super();
@@ -82,11 +80,9 @@ export class App extends EventEmitter {
 
   async close(): Promise<void> {
     this.#executor?.pause();
-    this.#discoveryAbort?.abort();
     this.#assistantAbort?.abort();
     this.#codex.close();
-    await Promise.allSettled([this.#starting]);
-    await Promise.allSettled([this.#execution, this.#discovering, this.#assistantTask]);
+    await Promise.allSettled([this.#execution, this.#assistantTask]);
     try {
       await this.#site.close();
     } finally {
@@ -136,95 +132,54 @@ export class App extends EventEmitter {
     this.#changed();
   }
 
-  // ---------- 发现 ----------
+  // ---------- 对话驱动任务 ----------
 
-  startDiscovery(request: StartDiscoveryRequest = { autoSend: false }): Promise<void> {
-    if (typeof request?.autoSend !== 'boolean') throw new AppError('bad_request', 'autoSend 须为布尔值');
-    const snap = this.#state.snapshot();
-    if (snap.batch?.status === 'running') throw new AppError('batch_running', '批次执行中，请先暂停');
-    this.#assertIdle();
-    if (!snap.resume.text.trim() || !snap.requirements.trim()) throw new AppError('inputs_incomplete', '请先统一保存具体要求和有效简历正文');
-    const abort = new AbortController();
-    this.#discoveryAbort = abort;
-    this.#starting = this.#launchDiscovery(abort, request.autoSend);
-    return this.#starting;
+  async #deliver(plan: SearchPlan, abort: AbortController): Promise<void> {
+    requireQuota(plan.directions.reduce((sum, direction) => sum + direction.count, 0), this.#state.snapshot().contactedToday);
+    this.#state.beginDiscovery(plan.sendNow, plan.directions.map(({ name, count }) => ({ name, count, selected: 0 })));
+    this.#changed();
+    const outcome = await runDiscovery({
+      codex: this.#codex, site: this.#site, state: this.#state, plan, signal: abort.signal,
+      log: text => { this.#log(text); this.#changed(); }, node: text => this.#chatNode(text),
+    });
+    this.#state.finishDiscovery(outcome.message);
+    const send = !abort.signal.aborted && plan.sendNow && outcome.proposed > 0;
+    if (!send) this.#assistantAbort = null;
+    this.#chatNode(outcome.message);
+    if (send) {
+      this.#executeBatch({ version: this.#state.snapshot().batch!.version });
+      await this.#execution;
+    }
   }
 
-  async #launchDiscovery(abort: AbortController, autoSend: boolean): Promise<void> {
+  async #research(city: string, abort: AbortController): Promise<void> {
+    this.#state.beginResearch(city);
+    this.#changed();
     try {
-      await this.#refreshAccount();
-      if (abort.signal.aborted) {
-        this.#discoveryAbort = null;
-        return;
-      }
-      if (!this.#codexState.signedIn) throw new AppError('codex_signed_out', '请先登录 Codex（ChatGPT 账号）');
-      this.#state.beginDiscovery(autoSend);
-      this.#changed();
-      this.#discovering = runDiscovery({ codex: this.#codex, site: this.#site, state: this.#state, signal: abort.signal, log: (t) => this.#log(t) })
-        .catch((e: unknown) => ({ message: `发现失败：${e instanceof Error ? e.message : String(e)}`, questions: [] as string[], proposed: 0 }))
-        .then(({ message, questions, proposed }) => {
-          const outcome = abort.signal.aborted ? '已停止发现。' : message;
-          this.#state.finishDiscovery(outcome, abort.signal.aborted ? [] : questions);
-          this.#log(outcome);
-          return autoSend && !abort.signal.aborted && proposed > 0;
-        })
-        .catch((e: unknown) => {
-          this.#log(`无法保存发现结束状态，请重启后检查：${e instanceof Error ? e.message : String(e)}`);
-          return false;
-        })
-        .then((send) => {
-          this.#discoveryAbort = null;
-          if (send) this.#autoSend();
-          this.#changed();
-        });
-    } catch (e) {
-      this.#discoveryAbort = null;
-      throw e;
+      await runResearch({
+        codex: this.#codex, site: this.#site, state: this.#state, city, signal: abort.signal,
+        progress: text => { this.#state.researchProgress(text); this.#chatNode(text); },
+        completed: direction => { this.#state.addResearchDirection(direction); this.#chatNode(`${direction.name}：样本 ${direction.sampled} 个，匹配 ${direction.matched} 个。`); },
+      });
+      this.#state.finishResearch('调研完成，结果仅代表本轮实际 JD 抽样。');
+    } catch (error) {
+      this.#state.finishResearch(abort.signal.aborted ? '已停止调研，已完成方向保留。' : `调研失败：${error instanceof Error ? error.message : String(error)}；已完成方向保留。`);
     }
+    this.#assistantAbort = null;
+    this.#chatNode(this.#state.snapshot().research.message!);
   }
 
   stopDiscovery(): void {
-    if (!this.#discoveryAbort) return;
+    const state = this.#state.snapshot();
+    if (state.discovery.status === 'idle' && !state.chat.pending) return;
     this.#state.requestDiscoveryStop();
-    this.#discoveryAbort.abort();
+    this.#assistantAbort?.abort();
     this.#changed();
   }
 
-  // ---------- 调研与对话 ----------
-
-  startResearch(request: ResearchRequest): Promise<void> {
-    if (!request || !SUPPORTED_CITIES.includes(request.city)) throw new AppError('bad_request', '请选择支持的调研城市');
-    this.#assertAssistantIdle();
-    if (!this.#state.snapshot().resume.text.trim()) throw new AppError('inputs_incomplete', '请先保存有效简历正文');
-    const abort = new AbortController();
-    this.#assistantAbort = abort;
-    this.#starting = this.#launchResearch(abort, request.city);
-    return this.#starting;
-  }
-
-  async #launchResearch(abort: AbortController, city: string): Promise<void> {
-    try {
-      await this.#refreshAccount();
-      if (abort.signal.aborted) { this.#assistantAbort = null; return; }
-      if (!this.#codexState.signedIn) throw new AppError('codex_signed_out', '请先登录 Codex（ChatGPT 账号）');
-      this.#state.beginResearch(city);
-      this.#changed();
-      this.#assistantTask = runResearch({
-        codex: this.#codex, site: this.#site, state: this.#state, city, signal: abort.signal,
-        progress: message => { this.#state.researchProgress(message); this.#log(message); this.#changed(); },
-        completed: direction => { this.#state.addResearchDirection(direction); this.#changed(); },
-      }).then(() => this.#state.finishResearch('调研完成，结果仅代表本轮实际 JD 抽样。'), error => {
-        this.#state.finishResearch(abort.signal.aborted ? '已停止调研，已完成方向保留。' : `调研失败：${error instanceof Error ? error.message : String(error)}；已完成方向保留。`);
-      }).catch(error => { this.#log(`无法保存调研终态，请重启后检查：${String(error)}`); })
-        .finally(() => { this.#assistantAbort = null; this.#changed(); });
-    } catch (error) {
-      this.#assistantAbort = null;
-      throw error;
-    }
-  }
-
   stopResearch(): void {
-    if (this.#state.snapshot().chat.pending) return;
+    const state = this.#state.snapshot();
+    if (state.research.status === 'idle' && !state.chat.pending) return;
     this.#state.requestResearchStop();
     this.#assistantAbort?.abort();
     this.#changed();
@@ -238,7 +193,7 @@ export class App extends EventEmitter {
     this.#changed();
     this.#assistantTask = this.#answerChat(abort)
       .catch(error => { this.#log(`无法保存对话终态，请重启后检查：${String(error)}`); })
-      .finally(() => { this.#assistantAbort = null; this.#changed(); });
+      .finally(() => { if (this.#assistantAbort === abort) this.#assistantAbort = null; this.#changed(); });
   }
 
   async #answerChat(abort: AbortController): Promise<void> {
@@ -246,12 +201,30 @@ export class App extends EventEmitter {
       await this.#refreshAccount();
       abort.signal.throwIfAborted();
       if (!this.#codexState.signedIn) throw new AppError('codex_signed_out', '请先登录 Codex（ChatGPT 账号）');
-      const reply = await askAdvisor(this.#codex, abort.signal, this.#state.snapshot());
-      this.#state.finishChat(reply);
+      const action = await askAdvisor(this.#codex, abort.signal, this.#state.snapshot());
+      abort.signal.throwIfAborted();
+      if (action.kind === 'reply') { this.#state.finishChat(action.text); this.#assistantAbort = null; return; }
+      this.#state.finishChat(action.kind === 'research' ? '开始只读调研。' : action.kind === 'delivery' ? '开始按方向配额查找岗位。' : '开始投递已保存的批次。');
+      await this.#runAction(action, abort);
     } catch (error) {
-      const message = abort.signal.aborted ? '对话已停止，请重新提问。' : `回复失败：${error instanceof Error ? error.message : String(error)}`;
-      this.#state.finishChat(message.slice(0, CHAT_MESSAGE_MAX_CHARS));
+      const message = abort.signal.aborted ? '任务已停止，未开始新的联系。' : `任务失败：${error instanceof Error ? error.message : String(error)}`;
+      if (this.#assistantAbort === abort) this.#assistantAbort = null;
+      if (this.#state.snapshot().chat.pending) this.#state.finishChat(message.slice(0, CHAT_MESSAGE_MAX_CHARS));
+      else this.#chatNode(message);
     }
+  }
+
+  async #runAction(action: Exclude<AdvisorAction, { kind: 'reply' }>, abort: AbortController): Promise<void> {
+    if (action.kind === 'delivery') return this.#deliver(action.plan, abort);
+    if (action.kind === 'research') return this.#research(action.city, abort);
+    this.#executeBatch({ version: this.#state.snapshot().batch!.version });
+    await this.#execution;
+  }
+
+  #chatNode(text: string): void {
+    this.#state.appendAssistant(text.slice(0, CHAT_MESSAGE_MAX_CHARS));
+    this.#log(text);
+    this.#changed();
   }
 
   clearChat(): void {
@@ -281,7 +254,13 @@ export class App extends EventEmitter {
 
   startBatch(request?: ApproveRequest): void {
     this.#assertIdle();
+    this.#executeBatch(request);
+  }
+
+  #executeBatch(request?: ApproveRequest): void {
     if (this.#executor) throw new AppError('batch_running', '批次已在执行');
+    const snapshot = this.#state.snapshot();
+    requireQuota(snapshot.batch?.targets.filter(target => !target.removed && target.steps.contact === 'todo' && !this.#state.isContacted(target.jobId)).length ?? 0, snapshot.contactedToday);
     if (request !== undefined) {
       if (!request || !Number.isSafeInteger(request.version)) throw new AppError('bad_request', 'version 须为整数');
       this.#state.approve(request.version);
@@ -295,20 +274,11 @@ export class App extends EventEmitter {
       })
       .finally(() => {
         this.#executor = null;
+        this.#assistantAbort = null;
         const b = this.#state.snapshot().batch;
-        this.#log(b?.status === 'done' ? '批次已执行完毕' : `批次已暂停${b?.stopReason ? `：${b.stopReason}` : ''}`);
+        this.#chatNode(b?.status === 'done' ? '批次已执行完毕。' : `批次已暂停${b?.stopReason ? `：${b.stopReason}` : ''}`);
         this.#changed();
       });
-  }
-
-  /** 用户开始自动投递时已预先批准本轮草案：同步批准刚生成的版本并执行，中间没有可插入的修改。 */
-  #autoSend(): void {
-    try {
-      this.startBatch({ version: this.#state.snapshot().batch!.version });
-      this.#log('自动投递：已按本轮草案开始执行');
-    } catch (e) {
-      this.#log(`自动投递未能开始：${e instanceof Error ? e.message : String(e)}`);
-    }
   }
 
   pauseBatch(): void {
@@ -319,7 +289,7 @@ export class App extends EventEmitter {
 
   #assertIdle(): void {
     const state = this.#state.snapshot();
-    if (this.#discoveryAbort || this.#assistantAbort || state.discovery.status !== 'idle' || state.research.status !== 'idle' || state.chat.pending) {
+    if (this.#assistantAbort || state.discovery.status !== 'idle' || state.research.status !== 'idle' || state.chat.pending) {
       throw new AppError('busy', '发现、调研或对话正在运行，请先等待结束或停止');
     }
   }
