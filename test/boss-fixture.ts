@@ -115,7 +115,8 @@ input.addEventListener('keydown',async e=>{if(e.key!=='Enter')return;e.preventDe
 (async()=>{friends=await (await fetch('/wapi/friends')).json();const ul=document.querySelector('.chat-content ul');
   document.querySelector('.chat-user').__vue__={list$:friends,topList$:[],hasMore$:${Boolean(s.hasMoreFriends || s.friendPages?.length)}};
   const viewport=document.querySelector('.user-list-content'),windowSize=${s.windowSize ?? 10000};
-  function renderFriends(){const start=Math.min(Math.floor(viewport.scrollTop/60),Math.max(0,friends.length-windowSize));ul.innerHTML='';
+  let renderedWindow='';
+  function renderFriends(){const start=Math.min(Math.floor(viewport.scrollTop/60),Math.max(0,friends.length-windowSize));const key=start+':'+friends.length;if(key===renderedWindow)return;renderedWindow=key;ul.innerHTML='';
     ul.style.paddingTop=(start*60)+'px';ul.style.paddingBottom=(Math.max(0,friends.length-start-windowSize)*60)+'px';
     friends.slice(start,start+windowSize).forEach(f=>{${s.omitTargetRow ? `if(f.encryptJobId===${JSON.stringify(s.target.jobId)}&&f.encryptBossId===${JSON.stringify(s.target.bossId)})return;` : ''}const li=document.createElement('li');li.style.height='60px';li.setAttribute('role','listitem');li.textContent=f.companyName;li.__vue__={$props:{source:f}};li.onclick=()=>select(f);ul.append(li);});}
   let friendPage=0,friendLoading=false;
