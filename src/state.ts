@@ -12,6 +12,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
+  CHAT_HISTORY_LIMIT, CHAT_MESSAGE_MAX_CHARS,
+  type ResearchState, type ResearchDirection, type ChatState,
   GREETING_MAX_CHARS,
   MAX_BATCH_TARGETS,
   RESUME_EXTENSIONS,
@@ -43,6 +45,8 @@ export interface DraftTarget {
 export type Step = keyof TargetSteps;
 
 export interface StateSnapshot {
+  research: ResearchState;
+  chat: ChatState;
   discovery: DiscoveryState;
   requirements: string;
   resume: ResumeState;
@@ -52,6 +56,9 @@ export interface StateSnapshot {
 
 const DEFAULT_RESUME: ResumeState = { file: null, text: '', textSource: null };
 const DEFAULT_DISCOVERY: DiscoveryState = { status: 'idle', message: null, questions: [], startedAt: null, finishedAt: null, autoSend: false };
+const DEFAULT_RESEARCH: ResearchState = { status: 'idle', city: null, startedAt: null, finishedAt: null, message: null, directions: [] };
+const DEFAULT_CHAT: ChatState = { pending: false, messages: [] };
+const FIT_ORDER = { high: 0, medium: 1, low: 2 };
 const CRASH_REASON = '上次运行意外中断：中断时正在进行的步骤结果未确认，请到 BOSS 上自行核对。';
 
 const STEP_COLUMN: Record<Step, string> = { contact: 'contact', greeting: 'greeting_state' };
@@ -130,6 +137,8 @@ export class State {
   snapshot(): StateSnapshot {
     const count = this.#db.prepare('SELECT COUNT(*) AS n FROM contacts').get() as { n: number };
     return {
+      research: this.#kv('research', DEFAULT_RESEARCH),
+      chat: this.#kv('chat', DEFAULT_CHAT),
       discovery: { ...DEFAULT_DISCOVERY, ...this.#kv('discovery', DEFAULT_DISCOVERY) },
       requirements: this.#kv('requirements', ''),
       resume: this.#kv('resume', DEFAULT_RESUME),
@@ -154,7 +163,7 @@ export class State {
   beginDiscovery(autoSend = false): void {
     this.#tx(() => {
       this.#assertNotRunning();
-      this.#assertDiscoveryIdle();
+      this.#assertIdle();
       if (!this.#kv('requirements', '').trim() || !this.#kv('resume', DEFAULT_RESUME).text.trim()) {
         throw new AppError('inputs_incomplete', '请先统一保存具体要求和有效简历正文');
       }
@@ -174,6 +183,69 @@ export class State {
       const current = this.#kv('discovery', DEFAULT_DISCOVERY);
       if (current.status !== 'idle') this.#setKv('discovery', { ...current, status: 'idle', message, questions, finishedAt: now() });
     });
+  }
+
+  // ---------- 调研与对话 ----------
+
+  beginResearch(city: string): void {
+    this.#tx(() => {
+      this.#assertNotRunning();
+      this.#assertIdle();
+      if (!this.#kv('resume', DEFAULT_RESUME).text.trim()) throw new AppError('inputs_incomplete', '请先保存有效简历正文');
+      this.#setKv('research', { ...DEFAULT_RESEARCH, city, status: 'running', startedAt: now(), message: '正在提出候选方向…' });
+    });
+  }
+
+  researchProgress(message: string): void {
+    const current = this.#kv('research', DEFAULT_RESEARCH);
+    if (current.status === 'running') this.#setKv('research', { ...current, message });
+  }
+
+  addResearchDirection(direction: ResearchDirection): void {
+    this.#tx(() => {
+      const current = this.#kv('research', DEFAULT_RESEARCH);
+      if (current.status !== 'running') throw new AppError('busy', '调研已停止，不能写入新方向');
+      const directions = [...current.directions, direction].sort((a, b) => FIT_ORDER[a.fit] - FIT_ORDER[b.fit]);
+      this.#setKv('research', { ...current, directions, message: `已完成 ${directions.length} 个方向，最近完成：${direction.name}` });
+    });
+  }
+
+  requestResearchStop(): void {
+    const current = this.#kv('research', DEFAULT_RESEARCH);
+    if (current.status === 'running') this.#setKv('research', { ...current, status: 'stopping', message: '正在停止调研，等待在途读取结束…' });
+  }
+
+  finishResearch(message: string): void {
+    const current = this.#kv('research', DEFAULT_RESEARCH);
+    if (current.status !== 'idle') this.#setKv('research', { ...current, status: 'idle', finishedAt: now(), message });
+  }
+
+  beginChat(message: string): void {
+    const text = chatText(message);
+    this.#tx(() => {
+      this.#assertNotRunning();
+      this.#assertIdle();
+      const current = this.#kv('chat', DEFAULT_CHAT);
+      this.#setKv('chat', { pending: true, messages: [...current.messages, { role: 'user', text, at: now() }].slice(-CHAT_HISTORY_LIMIT) });
+    });
+  }
+
+  finishChat(message: string): void {
+    const text = chatText(message);
+    this.#tx(() => this.#completeChat(text));
+  }
+
+  clearChat(): void {
+    this.#tx(() => {
+      this.#assertNotRunning();
+      this.#assertIdle();
+      this.#setKv('chat', DEFAULT_CHAT);
+    });
+  }
+
+  #completeChat(text: string): void {
+    const current = this.#kv('chat', DEFAULT_CHAT);
+    if (current.pending) this.#setKv('chat', { pending: false, messages: [...current.messages, { role: 'assistant', text, at: now() }].slice(-CHAT_HISTORY_LIMIT) });
   }
 
   // ---------- 批次 ----------
@@ -214,7 +286,7 @@ export class State {
 
   approve(version: number): void {
     this.#tx(() => {
-      this.#assertDiscoveryIdle();
+      this.#assertIdle();
       const batch = this.#requireBatch();
       if (batch.status === 'running' || batch.status === 'done') throw new AppError('not_approvable', '当前批次不可批准');
       if (version !== batch.version) throw new AppError('stale_version', '批次已被修改，请刷新后重新核对');
@@ -229,7 +301,7 @@ export class State {
 
   beginRun(): Batch {
     this.#tx(() => {
-      this.#assertDiscoveryIdle();
+      this.#assertIdle();
       const row = this.#batchRow();
       const valid = row && row.approved_version === row.version && (row.status === 'approved' || row.status === 'paused');
       if (!valid) throw new AppError('not_startable', '批次未处于有效批准状态，请先核对并批准');
@@ -299,6 +371,9 @@ export class State {
 
   #recover(): void {
     this.#tx(() => {
+      const research = this.#kv('research', DEFAULT_RESEARCH);
+      if (research.status !== 'idle') this.#setKv('research', { ...research, status: 'idle', finishedAt: now(), message: '上次调研因进程中断而停止，已完成方向保留。' });
+      this.#completeChat('上次对话因进程中断未完成，请重新提问。');
       const discovery = this.#kv('discovery', DEFAULT_DISCOVERY);
       if (discovery.status !== 'idle') this.#setKv('discovery', { ...discovery, status: 'idle', message: '上次发现因进程中断而停止，结束时间为本次恢复检测时间。', finishedAt: now() });
       const legacy = this.#db.prepare("DELETE FROM kv WHERE key IN ('profile', 'criteria')").run();
@@ -314,7 +389,7 @@ export class State {
   #edit(fn: () => void): void {
     this.#tx(() => {
       this.#assertNotRunning();
-      this.#assertDiscoveryIdle();
+      this.#assertIdle();
       fn();
       this.#invalidate();
     });
@@ -323,7 +398,7 @@ export class State {
   #editBatch(fn: (batch: Batch) => void): void {
     this.#tx(() => {
       this.#assertNotRunning();
-      this.#assertDiscoveryIdle();
+      this.#assertIdle();
       const batch = this.#requireBatch();
       if (batch.status === 'done') throw new AppError('bad_request', '批次已完成，请重新发现生成新批次');
       fn(batch);
@@ -335,8 +410,11 @@ export class State {
     this.#db.prepare("UPDATE batch SET status = 'draft', version = version + 1, approved_version = NULL WHERE status != 'done'").run();
   }
 
-  #assertDiscoveryIdle(): void {
-    if (this.#kv('discovery', DEFAULT_DISCOVERY).status !== 'idle') throw new AppError('busy', '发现运行中，请先停止');
+  #assertIdle(): void {
+    if (this.#kv('discovery', DEFAULT_DISCOVERY).status !== 'idle'
+      || this.#kv('research', DEFAULT_RESEARCH).status !== 'idle' || this.#kv('chat', DEFAULT_CHAT).pending) {
+      throw new AppError('busy', '发现、调研或对话正在运行，请先等待结束或停止');
+    }
   }
 
   #assertNotRunning(): void {
@@ -427,4 +505,12 @@ export function greetingText(v: unknown): string {
   const text = str(v, 'greeting', GREETING_MAX_CHARS).trim();
   if (!text) throw new AppError('bad_request', '招呼原文不能为空');
   return text;
+}
+
+
+export function chatText(value: unknown): string {
+  if (typeof value !== 'string' || !value.trim() || value.trim().length > CHAT_MESSAGE_MAX_CHARS) {
+    throw new AppError('bad_request', `消息须为1至${CHAT_MESSAGE_MAX_CHARS}字的文本`);
+  }
+  return value.trim();
 }
