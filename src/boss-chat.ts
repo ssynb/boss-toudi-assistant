@@ -21,6 +21,8 @@ export const CHAT_URL = `${ORIGIN}/web/geek/chat`;
 const HISTORY_ENDPOINT = `${ORIGIN}/wapi/zpchat/geek/historyMsg`;
 /** 历史超过这么多页仍未见本方消息或结束标记时停止，不无限翻页。 */
 const MAX_HISTORY_PAGES = 30;
+const MAX_LIST_SCROLLS = 80;
+const LIST_VIEWPORT = '.chat-user .user-list-content';
 /** 站点输入框的启用状态在内容变化 100ms 防抖后才更新；安静时长须覆盖它，否则 Enter 会被吞掉。 */
 const QUIET_MS = 300;
 
@@ -224,23 +226,42 @@ export function createChatSession(browser: ChatBrowser, goto: (url: string) => P
     if (height) await browser.scrollWithin('.chat-conversation .chat-message', 'up', height);
   }
 
+  async function locateConversation(id: ChatIdentity): Promise<number> {
+    await browser.waitFor(`Array.isArray(document.querySelector('.chat-user')?.__vue__?.list$)`);
+    const data = await browser.eval<{ exact: number; otherJob: boolean; complete: boolean }>(`(() => {
+      const state = document.querySelector('.chat-user').__vue__;
+      const complete = Array.isArray(state.topList$) && state.hasMore$ === false;
+      const friends = [...state.list$, ...(state.topList$ || [])];
+      return { complete,
+        exact: friends.filter(s => s.encryptJobId === ${js(id.jobId)} && s.encryptBossId === ${js(id.recruiterId)}).length,
+        otherJob: friends.some(s => s.encryptBossId === ${js(id.recruiterId)} && Boolean(s.encryptJobId) && s.encryptJobId !== ${js(id.jobId)}) };
+    })()`);
+    if (!data.complete) throw new Error('会话列表尚未完整加载，不能确认目标会话是否唯一或不存在');
+    if (!data.exact && data.otherJob) throw new OtherJobConversationError();
+    if (data.exact !== 1) throw new Error('无法唯一识别已存在的目标会话，停止后续动作');
+    for (let step = 0; step <= MAX_LIST_SCROLLS; step++) {
+      const indices = await browser.eval<number[]>(matchingIndices(id));
+      if (indices.length === 1) return indices[0]!;
+      if (indices.length > 1) throw new Error('目标会话渲染出多个匹配行，停止后续动作');
+      const scroll = await browser.eval<{ top: number; height: number; total: number } | null>(`(() => {
+        const e = document.querySelector(${js(LIST_VIEWPORT)});
+        return e ? {top:e.scrollTop,height:e.clientHeight,total:e.scrollHeight} : null;
+      })()`);
+      if (!scroll || !scroll.height || scroll.top + scroll.height >= scroll.total || step === MAX_LIST_SCROLLS) break;
+      await browser.scrollWithin(LIST_VIEWPORT, 'down', scroll.height);
+      await browser.waitFor(quiet('.chat-user', QUIET_MS));
+    }
+    throw new Error('会话列表滚动到底或达到上限，目标行仍未渲染，停止后续动作');
+  }
+
   async function enter(t: Target, id: ChatIdentity): Promise<void> {
     await close();
-    // 观察附着在当前标签页：先打开会话页，再开始观察，最后才选中目标触发首批历史请求。
+    // 先确认完整列表里的身份并滚动定位，再开启观察，最后选择目标触发首批历史请求。
     await goto(CHAT_URL);
-    await browser.waitFor(`document.querySelectorAll(${js(LIST_ITEMS)}).length > 0`);
-    const indices = await browser.eval<number[]>(matchingIndices(id));
-    if (!indices.length) {
-      const otherJob = await browser.eval<boolean>(`[...document.querySelectorAll(${js(LIST_ITEMS)})].some(e => {
-        const source = e.__vue__?.$props?.source;
-        return source?.encryptBossId === ${js(id.recruiterId)} && Boolean(source.encryptJobId) && source.encryptJobId !== ${js(id.jobId)};
-      })`);
-      if (otherJob) throw new OtherJobConversationError();
-    }
-    if (indices.length !== 1) throw new Error('无法唯一识别已存在的目标会话，停止后续动作');
+    const index = await locateConversation(id);
     const watch = await browser.watchResponses(HISTORY_ENDPOINT);
     try {
-      await browser.clickNth(LIST_ITEMS, indices[0]!);
+      await browser.clickNth(LIST_ITEMS, index);
       await browser.waitFor(`(${pageState(t, id)}).identity`);
       const page = await read(t, id);
       if (page.uid === null || page.friendId === null) throw new Error('会话缺少账号或招聘者编号，不能核对消息归属');
