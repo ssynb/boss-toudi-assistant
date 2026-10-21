@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { CHAT_MESSAGE_MAX_CHARS, type ChatRequest, type AppState, type ApproveRequest, type BrowserState, type CodexState, type DoctorCheck, type SaveInputsRequest, type TargetPatch } from './contracts.ts';
+import { CHAT_MESSAGE_MAX_CHARS, DAILY_CONTACT_LIMIT, type ChatRequest, type AppState, type ApproveRequest, type BrowserState, type CodexState, type DoctorCheck, type SaveInputsRequest, type TargetPatch } from './contracts.ts';
 import { Browser } from './browser.ts';
 import { SUPPORTED_CITIES, createBossSite, type Site } from './boss.ts';
 import { CodexClient } from './codex.ts';
@@ -95,6 +95,7 @@ export class App extends EventEmitter {
     return {
       doctor,
       supportedCities: [...SUPPORTED_CITIES],
+      dailyContactLimit: DAILY_CONTACT_LIMIT,
       codex: { ...this.#codexState, pendingLoginUrl: this.#codex.pendingLoginUrl },
       browser,
       ...this.#state.snapshot(),

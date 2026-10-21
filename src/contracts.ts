@@ -65,6 +65,8 @@ export interface AppState {
   supportedCities: string[];
   /** 本地时区今天已记入联系账本的岗位数；与 DAILY_CONTACT_LIMIT 比较。 */
   contactedToday: number;
+  /** 每日主动联系上限，等于 DAILY_CONTACT_LIMIT；UI 只读这个字段，不另写一份。 */
+  dailyContactLimit: number;
 }
 
 export interface DoctorCheck {
