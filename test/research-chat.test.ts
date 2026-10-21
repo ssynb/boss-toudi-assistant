@@ -218,7 +218,7 @@ test('对话pending期间与发现、调研、投递和clear互斥，超长模�
     assert.equal(posted.status, 200);
     assert.equal(posted.json.chat.pending, true);
     for (const [endpoint, body] of [
-      ['/api/chat', { message: '调研北京方向' }], ['/api/discovery/start', undefined], ['/api/batch/start', undefined], ['/api/chat', { message: '再次' }], ['/api/chat/clear', undefined],
+      ['/api/chat', { message: '调研北京方向' }], ['/api/chat', { message: '北京前端，薪资不限，投递10个' }], ['/api/batch/start', undefined], ['/api/chat', { message: '再次' }], ['/api/chat/clear', undefined],
     ] as const) assert.equal((await api(server.url, 'POST', endpoint, body)).status, 409, endpoint);
     release();
     const state = await waitState(server, s => !s.chat.pending);
