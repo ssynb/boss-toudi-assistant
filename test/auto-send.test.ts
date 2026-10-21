@@ -9,20 +9,21 @@ import type { AppState, BrowserPage } from '../src/contracts.ts';
 import { api, LOCAL, tempDir } from './helpers.ts';
 import { mockProviderToml, startMockModel, type MockItem } from './mock-responses.ts';
 
-const plan: MockItem = { type: 'function_call', name: 'set_search_plan', args: {
-  keywords: ['前端'], city: '北京', salaryMinK: null, maxTargets: 150, excludeCompanies: [],
-  quotes: { direction: '前端', city: '北京', salary: '薪资不限' },
-} };
+const requestText = '北京前端，薪资不限，找150个';
+const plan = (sendNow: boolean): MockItem => ({ type: 'function_call', name: 'start_delivery', args: {
+  city: '北京', salaryMinK: null, criteria: '前端', sendNow, quote: requestText,
+  directions: [{ name: '前端', keywords: ['前端'], count: 150 }],
+} });
 const card = { jobId: 'j1', url: 'https://www.zhipin.com/job_detail/j1.html', title: '前端工程师', company: '甲公司', salary: '25-35K', area: '北京', snippet: 'React' };
-const script: MockItem[][] = [
-  [plan],
+const script = (sendNow: boolean): MockItem[][] => [
+  [plan(sendNow)],
   [{ type: 'message', text: '计划完成' }],
   [{ type: 'function_call', name: 'submit_decisions', args: { decisions: [{ jobId: 'j1', decision: 'select', reason: 'React 匹配', greeting: '您好，我有五年 React 经验' }] } }],
   [{ type: 'message', text: '判定完成' }],
 ];
 
 async function run(body: unknown, page: BrowserPage = 'ready') {
-  const mock = await startMockModel(script);
+  const mock = await startMockModel(script(Boolean((body as { autoSend?: boolean })?.autoSend)));
   const dataDir = tempDir('boss-auto-');
   fs.mkdirSync(path.join(dataDir, 'codex-home'), { recursive: true });
   fs.writeFileSync(path.join(dataDir, 'codex-home', 'config.toml'), mockProviderToml(mock.baseUrl, 'gpt-mock'));
@@ -43,9 +44,9 @@ async function run(body: unknown, page: BrowserPage = 'ready') {
     await api(server.url, 'PUT', '/api/inputs', { requirements: '北京前端，薪资不限，找 150 个', resume: { text: '五年 React 经验' } });
     const controller = new AbortController();
     const reader = (await fetch(`${server.url}/api/events`, { headers: LOCAL, signal: controller.signal })).body!.getReader();
-    const started = await api<AppState>(server.url, 'POST', '/api/discovery/start', body);
+    const started = await api<AppState>(server.url, 'POST', '/api/chat', { message: requestText });
     assert.equal(started.status, 200, JSON.stringify(started.json));
-    const finished = (s: AppState) => s.discovery.status === 'idle' && (body === undefined || !(body as { autoSend: boolean }).autoSend || ['done', 'paused'].includes(s.batch?.status ?? ''));
+    const finished = (s: AppState) => !s.chat.pending && s.discovery.status === 'idle' && (body === undefined || !(body as { autoSend: boolean }).autoSend || ['done', 'paused'].includes(s.batch?.status ?? ''));
     try {
       for (;;) {
         const { done } = await reader.read();
@@ -76,7 +77,7 @@ test('浏览器窗口被关闭时发现照常搜索（由搜索重新打开浏�
 
 for (const terminal of ['failed', 'cancelled'] as const) {
   test(`自动投递草案暂存后${terminal}：保留原批次且不联系`, { timeout: 30_000 }, async () => {
-    const mock = await startMockModel([...script, ...script]);
+    const mock = await startMockModel([...script(false), ...script(true)]);
     let respond!: (res: http.ServerResponse) => void;
     const staged = new Promise<http.ServerResponse>(resolve => { respond = resolve; });
     let requests = 0;
@@ -114,7 +115,7 @@ for (const terminal of ['failed', 'cancelled'] as const) {
     const idle = () => new Promise<AppState>((resolve, reject) => {
       const cleanup = () => { clearTimeout(timer); server.app.off('changed', check); };
       const check = () => void server.app.getState().then(state => {
-        if (state.discovery.status === 'idle') { cleanup(); resolve(state); }
+        if (!state.chat.pending && state.discovery.status === 'idle') { cleanup(); resolve(state); }
       }, error => { cleanup(); reject(error); });
       const timer = setTimeout(() => { cleanup(); reject(new Error('发现未结束')); }, 10_000);
       server.app.on('changed', check);
@@ -122,10 +123,10 @@ for (const terminal of ['failed', 'cancelled'] as const) {
     });
     try {
       await api(server.url, 'PUT', '/api/inputs', { requirements: '北京前端，薪资不限，找150个', resume: { text: '五年React经验' } });
-      await server.app.startDiscovery({ autoSend: false });
+      server.app.startChat({ message: requestText });
       const original = (await idle()).batch;
       assert.ok(original);
-      await server.app.startDiscovery({ autoSend: true });
+      server.app.startChat({ message: requestText });
       const response = await staged;
       assert.match(lastInput, /判定已接收/, '终态发生在真实Codex收到草案接收结果后');
       const finished = idle();

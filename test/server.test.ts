@@ -109,9 +109,9 @@ test('简历超过大小上限被拒绝', async () => {
   assert.equal(json.error.code, 'file_too_large');
 });
 
-test('没有已保存的有效正文时不能开始发现', async () => {
+test('旧的独立开始发现入口已移除', async () => {
   await api(server.url, 'PUT', '/api/inputs', { requirements: '', resume: { file: null, text: null } });
   const res = await api<ApiError>(server.url, 'POST', '/api/discovery/start');
-  assert.equal(res.status, 409);
-  assert.equal(res.json.error.code, 'inputs_incomplete');
+  assert.equal(res.status, 404);
+  assert.equal(res.json.error.code, 'not_found');
 });

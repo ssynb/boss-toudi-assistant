@@ -21,10 +21,10 @@ test('调研认证预检查期间已互斥，停止正常返回且不启动任�
   const app = new App({ dataDir: dir, site });
   try {
     app.saveInputs({ requirements: '', resume: { text: 'Python开发经验' } });
-    const started = app.startResearch({ city: '北京' });
+    app.startChat({ message: '调研北京方向' });
     assert.throws(() => app.startChat({ message: '建议？' }), { code: 'busy' });
     app.stopResearch();
-    await assert.doesNotReject(started);
+    await new Promise<void>(resolve => { const check = () => void app.getState().then(s => { if (!s.chat.pending) { app.off('changed', check); resolve(); } }); app.on('changed', check); check(); });
     assert.equal((await app.getState()).research.status, 'idle');
     assert.deepEqual(calls, []);
     assert.equal(mock.requests.length, 0);

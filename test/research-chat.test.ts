@@ -13,6 +13,7 @@ import { mockProviderToml, startMockModel, type MockItem } from './mock-response
 const names = ['AI开发', 'Agent开发', 'AI产品', 'FDE', '后端'];
 const end: MockItem[] = [{ type: 'message', text: '完成' }];
 const call = (name: string, args: unknown): MockItem[] => [{ type: 'function_call', name, args }];
+const researchAction = call('start_research', { city: '北京', quote: '调研北京方向' });
 const plan = call('suggest_directions', { directions: names.map(name => ({ name, keywords: [name] })) });
 const evaluation = (fit: string, matched = 2) => call('evaluate_direction', { fit, reason: '实际JD需要已有Python与Agent经验', gaps: '需要补充生产项目规模经验', matched });
 const reply = (text: string) => call('reply', { text });
@@ -49,7 +50,7 @@ function waitState(server: RunningServer, predicate: (s: AppState) => boolean): 
 }
 
 test('调研逐方向保存并排序：实际JD、程序薪资、独立模型上下文、重启保留', async () => {
-  const script = [plan, end, evaluation('low'), end, evaluation('high'), end, evaluation('medium'), end, evaluation('high'), end, evaluation('low'), end];
+  const script = [researchAction, end, plan, end, evaluation('low'), end, evaluation('high'), end, evaluation('medium'), end, evaluation('high'), end, evaluation('low'), end];
   const { mock, dir, server, reads, writes } = await fixture(script);
   let closed = false;
   const progress: number[] = [];
@@ -57,9 +58,9 @@ test('调研逐方向保存并排序：实际JD、程序薪资、独立模型上
   const observe = () => { updates = updates.then(async () => { const s = await server.app.getState(); if (s.research) progress.push(s.research.directions.length); }); };
   server.app.on('changed', observe);
   try {
-    const started = await api<AppState>(server.url, 'POST', '/api/research/start', { city: '北京' });
+    const started = await api<AppState>(server.url, 'POST', '/api/chat', { message: '调研北京方向' });
     assert.equal(started.status, 200);
-    const state = await waitState(server, s => s.research.status === 'idle');
+    const state = await waitState(server, s => !s.chat.pending && s.research.status === 'idle');
     assert.deepEqual(state.supportedCities, SUPPORTED_CITIES);
     assert.deepEqual(state.research.directions.map(d => d.fit), ['high', 'high', 'medium', 'low', 'low']);
     assert.ok(progress.includes(1) && progress.includes(4), '完成一个方向即可观察，不等整轮结束');
@@ -70,7 +71,7 @@ test('调研逐方向保存并排序：实际JD、程序薪资、独立模型上
     }
     assert.equal(reads.filter(s => s.startsWith('detail:')).length, 10);
     assert.deepEqual(writes, []);
-    for (let i = 2; i < mock.requests.length; i += 2) {
+    for (let i = 4; i < mock.requests.length; i += 2) {
       const text = JSON.stringify(mock.requests[i]?.input);
       const sampledNames = names.filter(name => text.includes(`实际JD-${name}-`));
       assert.equal(sampledNames.length, 1, '判定回合只包含当前方向的实际JD');
@@ -85,7 +86,7 @@ test('调研逐方向保存并排序：实际JD、程序薪资、独立模型上
 });
 
 for (const ending of ['stop', 'blocked'] as const) test(`调研${ending}保留已完成方向且等待在途读取`, async () => {
-  const { mock, server, site, writes } = await fixture([plan, end, evaluation('high'), end]);
+  const { mock, server, site, writes } = await fixture([researchAction, end, plan, end, evaluation('high'), end]);
   let release!: () => void;
   const gate = new Promise<void>(r => { release = r; });
   let entered!: () => void;
@@ -96,12 +97,12 @@ for (const ending of ['stop', 'blocked'] as const) test(`调研${ending}保留�
     return original(q);
   };
   try {
-    assert.equal((await api(server.url, 'POST', '/api/research/start', { city: '北京' })).status, 200);
+    assert.equal((await api(server.url, 'POST', '/api/chat', { message: '调研北京方向' })).status, 200);
     await pending;
     const partial = (await api<AppState>(server.url, 'GET', '/api/state')).json;
     assert.equal(partial.research.directions.length, 1);
     for (const [method, endpoint, body] of [
-      ['POST', '/api/discovery/start', undefined], ['POST', '/api/chat', { message: '建议？' }], ['POST', '/api/research/start', { city: '北京' }],
+      ['POST', '/api/chat', { message: '开始投递' }], ['POST', '/api/chat', { message: '建议？' }], ['POST', '/api/chat', { message: '调研北京方向' }],
       ['POST', '/api/batch/start', undefined], ['PUT', '/api/inputs', inputs], ['POST', '/api/chat/clear', undefined],
     ] as const) assert.equal((await api(server.url, method, endpoint, body)).status, 409, endpoint);
     if (ending === 'stop') {
@@ -109,7 +110,7 @@ for (const ending of ['stop', 'blocked'] as const) test(`调研${ending}保留�
       assert.equal(stopped.json.research.status, 'stopping');
       assert.equal(stopped.json.research.finishedAt, null);
     }
-    const finished = waitState(server, s => s.research.status === 'idle');
+    const finished = waitState(server, s => !s.chat.pending && s.research.status === 'idle');
     release();
     const state = await finished;
     assert.deepEqual(state.research.directions, partial.research.directions);
@@ -120,7 +121,7 @@ for (const ending of ['stop', 'blocked'] as const) test(`调研${ending}保留�
 });
 
 test('调研采样上限、去重、排除已联系；无JD不编造匹配度和薪资', async () => {
-  const script = [plan, end, evaluation('high', 10), end];
+  const script = [researchAction, end, plan, end, evaluation('high', 10), end];
   const { mock, dir, server, site, writes } = await fixture(script);
   const read: string[] = [];
   site.search = async q => q.keyword === names[0] ? [job('contacted'), ...Array.from({ length: 20 }, (_, i) => job(`j${i}`)), job('j1')] : [];
@@ -133,8 +134,8 @@ test('调研采样上限、去重、排除已联系；无JD不编造匹配度和
   state.close();
   const restarted = await startServer({ dataDir: dir, port: 0, site });
   try {
-    assert.equal((await api(restarted.url, 'POST', '/api/research/start', { city: '北京' })).status, 200);
-    const result = await waitState(restarted, s => s.research.status === 'idle');
+    assert.equal((await api(restarted.url, 'POST', '/api/chat', { message: '调研北京方向' })).status, 200);
+    const result = await waitState(restarted, s => !s.chat.pending && s.research.status === 'idle');
     assert.equal(read.length, RESEARCH_SAMPLE_PER_DIRECTION);
     assert.ok(!read.includes('contacted'));
     assert.equal(new Set(read).size, read.length);
@@ -217,7 +218,7 @@ test('对话pending期间与发现、调研、投递和clear互斥，超长模�
     assert.equal(posted.status, 200);
     assert.equal(posted.json.chat.pending, true);
     for (const [endpoint, body] of [
-      ['/api/research/start', { city: '北京' }], ['/api/discovery/start', undefined], ['/api/batch/start', undefined], ['/api/chat', { message: '再次' }], ['/api/chat/clear', undefined],
+      ['/api/chat', { message: '调研北京方向' }], ['/api/discovery/start', undefined], ['/api/batch/start', undefined], ['/api/chat', { message: '再次' }], ['/api/chat/clear', undefined],
     ] as const) assert.equal((await api(server.url, 'POST', endpoint, body)).status, 409, endpoint);
     release();
     const state = await waitState(server, s => !s.chat.pending);
@@ -228,13 +229,13 @@ test('对话pending期间与发现、调研、投递和clear互斥，超长模�
 });
 
 for (const invalid of ['directions', 'matched'] as const) test(`拒绝模型无效调研结果：${invalid}`, async () => {
-  const script = invalid === 'directions' ? [call('suggest_directions', { directions: [{ name: 'AI', keywords: ['AI'] }] }), end]
-    : [plan, end, evaluation('high', 99), end];
+  const script = invalid === 'directions' ? [researchAction, end, call('suggest_directions', { directions: [{ name: 'AI', keywords: ['AI'] }] }), end]
+    : [researchAction, end, plan, end, evaluation('high', 99), end];
   const { mock, server, reads, writes } = await fixture(script);
   try {
-    assert.equal((await api(server.url, 'POST', '/api/research/start', { city: '不存在' })).status, 400);
-    assert.equal((await api(server.url, 'POST', '/api/research/start', { city: '北京' })).status, 200);
-    const state = await waitState(server, s => s.research.status === 'idle');
+    assert.equal((await api(server.url, 'POST', '/api/research/start', { city: '北京' })).status, 404);
+    assert.equal((await api(server.url, 'POST', '/api/chat', { message: '调研北京方向' })).status, 200);
+    const state = await waitState(server, s => !s.chat.pending && s.research.status === 'idle');
     assert.equal(state.research.directions.length, 0);
     assert.match(state.research.message!, /失败|无效/);
     if (invalid === 'directions') assert.deepEqual(reads, []);

@@ -23,20 +23,19 @@ test('真实 Codex 收到模型失败事件后记录错误终态及完成时间'
   const app = new App({ dataDir: dir });
   try {
     app.saveInputs({ requirements: '北京前端，薪资不限', resume: { text: '简历' } });
-    await app.startDiscovery();
+    app.startChat({ message: '北京前端，薪资不限，找10个' });
     const finished = await new Promise<AppState>((resolve, reject) => {
       const cleanup = () => { clearTimeout(timer); app.off('changed', check); };
       const check = () => void app.getState().then(s => {
-        if (s.discovery.status === 'idle') { cleanup(); resolve(s); }
+        if (!s.chat.pending) { cleanup(); resolve(s); }
       }, e => { cleanup(); reject(e); });
       const timer = setTimeout(() => { cleanup(); reject(new Error('模型错误后未结束')); }, 10_000);
       app.on('changed', check);
       check();
     });
-    assert.match(finished.discovery.message!, /fixture rejected input/);
-    assert.ok(finished.discovery.startedAt);
-    assert.ok(finished.discovery.finishedAt);
-    assert.ok(Date.parse(finished.discovery.finishedAt) >= Date.parse(finished.discovery.startedAt));
+    assert.match(finished.chat.messages.at(-1)!.text, /fixture rejected input/);
+    assert.equal(finished.discovery.startedAt, null);
+    assert.equal(finished.batch, null);
   } finally {
     await app.close();
     await new Promise<void>(r => provider.close(() => r()));

@@ -86,7 +86,7 @@ function waitIdle(server: RunningServer): Promise<AppState> {
 
 test('真实 Codex 工具在途时停止：先 stopping、禁保存，工具结束后才固定 finishedAt', async () => {
   const mock = await startMockModel([
-    [{ type: 'function_call', name: 'set_search_plan', args: { keywords: ['前端'], city: '北京', salaryMinK: null, maxTargets: 10, excludeCompanies: [], quotes: { direction: '前端', city: '北京', salary: '薪资不限' } } }],
+    [{ type: 'function_call', name: 'start_delivery', args: { city: '北京', salaryMinK: null, criteria: '前端', sendNow: false, quote: '北京前端，薪资不限', directions: [{ name: '前端', keywords: ['前端'], count: 10 }] } }],
     [{ type: 'message', text: '计划完成' }],
   ]);
   const dir = tempDir('boss-time-rpc-');
@@ -105,12 +105,13 @@ test('真实 Codex 工具在途时停止：先 stopping、禁保存，工具结�
   const server = await startServer({ dataDir: dir, port: 0, site });
   try {
     await api(server.url, 'PUT', '/api/inputs', inputs);
-    const start = await api<AppState>(server.url, 'POST', '/api/discovery/start');
+    const start = await api<AppState>(server.url, 'POST', '/api/chat', { message: inputs.requirements });
     assert.equal(start.status, 200);
     await searching;
+    const running = (await api<AppState>(server.url, 'GET', '/api/state')).json;
     const stop = await api<AppState>(server.url, 'POST', '/api/discovery/stop');
     assert.equal(stop.json.discovery.status, 'stopping');
-    assert.equal(stop.json.discovery.startedAt, start.json.discovery.startedAt);
+    assert.equal(stop.json.discovery.startedAt, running.discovery.startedAt);
     assert.equal(stop.json.discovery.finishedAt, null);
     const denied = await api<ApiError>(server.url, 'PUT', '/api/inputs', inputs);
     assert.equal(denied.status, 409);
@@ -119,17 +120,18 @@ test('真实 Codex 工具在途时停止：先 stopping、禁保存，工具结�
     release();
     const finished = (await idle).discovery;
     assert.ok(finished.finishedAt);
-    assert.equal(finished.startedAt, start.json.discovery.startedAt);
+    assert.equal(finished.startedAt, running.discovery.startedAt);
     assert.equal((await api<AppState>(server.url, 'GET', '/api/state')).json.discovery.finishedAt, finished.finishedAt);
   } finally { release(); await server.close(); mock.close(); }
 });
 
-test('未登录的开始请求被拒绝，不创建发现计时', async () => {
+test('未登录时对话写入错误，不创建发现计时', async () => {
   const server = await startServer({ dataDir: tempDir('boss-time-auth-'), port: 0 });
   try {
     await api(server.url, 'PUT', '/api/inputs', inputs);
-    const denied = await api<ApiError>(server.url, 'POST', '/api/discovery/start');
-    assert.equal(denied.status, 409);
+    const denied = await api<ApiError>(server.url, 'POST', '/api/chat', { message: inputs.requirements });
+    assert.equal(denied.status, 200);
+    await new Promise<void>(resolve => { const check = () => void server.app.getState().then(s => { if (!s.chat.pending) { server.app.off('changed', check); resolve(); } }); server.app.on('changed', check); check(); });
     const state = (await api<AppState>(server.url, 'GET', '/api/state')).json;
     assert.equal(state.discovery.startedAt, null);
     assert.equal(state.discovery.finishedAt, null);
