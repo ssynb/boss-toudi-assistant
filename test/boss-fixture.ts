@@ -93,7 +93,7 @@ async function load(){const f=current,st=state;st.loading=true;
   if(f!==current)return;st.loading=false;const msgs=data.messages||[];if(!msgs.length)return;
   st.min=data.minMsgId||Math.min(...msgs.map(m=>m.mid));st.hasMore=data.hasMore;
   [...msgs].reverse().forEach(m=>render(m,st.page>1));if(st.page===1)box.scrollTop=box.scrollHeight;st.page++;
-  ${s.late === 'after-history' ? "if(!window.lateDone){window.lateDone=true;setTimeout(()=>render({mid:9001,from:{uid:" + UID + "},to:{uid:f.friendId},body:{text:'站点默认招呼'}}),300);}" : ''}
+  ${s.late === 'after-history' ? "if(!window.lateDone){window.lateDone=true;addEventListener('fixture:late-message',()=>render({mid:9001,from:{uid:" + UID + "},to:{uid:f.friendId},body:{text:'站点默认招呼'}}),{once:true});}" : ''}
   if(st.hasMore&&box.scrollHeight<=box.clientHeight)load();}
 box.addEventListener('scroll',()=>{if(box.scrollTop<=40&&state&&state.hasMore&&!state.loading)setTimeout(()=>{if(!state.loading)load();},200);});
 let timer;new MutationObserver(()=>{clearTimeout(timer);timer=setTimeout(()=>send.classList.toggle('disabled',!input.innerText.trim()),100);}).observe(input,{childList:true,subtree:true,characterData:true});

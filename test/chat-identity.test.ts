@@ -132,6 +132,7 @@ test('历史读完后迟到的本方默认招呼：填写前跳过，不填写',
   const { f, site } = await existing({ late: 'after-history' }, [message(1, false, '你好')]);
   try {
     assert.equal((await site.readChat(target)).ourMessages, 0);
+    await browser.eval(`(dispatchEvent(new Event('fixture:late-message')), true)`);
     await browser.waitFor('Boolean(document.querySelector(".item-myself"))');
     const result = await site.sendGreeting(target, '定制招呼');
     assert.equal(result.skipped, true, result.evidence);
