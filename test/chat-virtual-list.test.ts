@@ -10,7 +10,7 @@ for (const mode of ['exact', 'other-job', 'duplicate', 'incomplete'] as const) {
   test(`虚拟会话列表按完整数据确认身份：${mode}`, async () => {
     const tail = mode === 'other-job' ? { ...TARGET, jobId: 'other-job' } : TARGET;
     const f = await startBoss({ continued: true, windowSize: 4, hasMoreFriends: mode === 'incomplete',
-      friends: [...(mode === 'duplicate' ? [TARGET] : []), ...preceding, tail] });
+      friends: mode === 'incomplete' ? [TARGET, ...preceding] : [...(mode === 'duplicate' ? [TARGET] : []), ...preceding, tail] });
     const browser = localBrowser('virtual-chat');
     const site = createBossSite(bossBrowser(browser, f));
     try {
