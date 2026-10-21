@@ -1,5 +1,10 @@
 import {$, el, nearBottom} from './dom.js';
 
+/** 只把 **加粗** 转成 strong，其余一律按文本节点插入；换行由 pre-wrap 保留。 */
+function richText(text) {
+ return text.split(/\*\*([^*\n]+)\*\*/).map((part, i) => i % 2 ? el('strong', {textContent:part}) : part);
+}
+
 /** 求职顾问对话：发送后由服务端置 pending，回复经 SSE 刷新到达；本面板不触发任何投递动作。 */
 export function chatPanel({mutate, updateControls}) {
  const send = async () => {
@@ -20,7 +25,7 @@ export function chatPanel({mutate, updateControls}) {
   const key = `${messages.length}/${messages.at(-1)?.at ?? ''}/${pending}`;
   if (log.dataset.key === key) return;
   log.dataset.key = key;
-  const items = messages.map(m => el('li', {className:`message ${m.role}`}, el('span', {className:'who', textContent:m.role === 'user' ? '我' : '顾问'}), el('p', {textContent:m.text})));
+  const items = messages.map(m => el('li', {className:`message ${m.role}`}, el('span', {className:'who', textContent:m.role === 'user' ? '我' : '顾问'}), el('p', {}, ...richText(m.text))));
   if (pending) items.push(el('li', {className:'message assistant typing'}, el('span', {className:'who', textContent:'顾问'}), el('p', {textContent:'顾问正在回复…'})));
   if (!items.length) items.push(el('li', {className:'empty', textContent:'可以问方向选择、简历短板或招呼怎么写'}));
   log.replaceChildren(...items);

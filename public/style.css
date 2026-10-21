@@ -157,6 +157,10 @@ tr[data-outcome="unknown"] td { background: color-mix(in oklch, var(--amber-soft
 @starting-style { .direction { opacity: 0; transform: translateY(4px); } }
 .direction:has(input:checked) { border-color: var(--violet); background: var(--violet-soft); }
 .direction p { margin: 6px 0 0; }
+.detail { max-height: calc(3 * 1.6em + 6px); overflow: hidden; }
+.detail.clipped { mask-image: linear-gradient(to bottom, #000 60%, transparent); }
+.detail.open { max-height: none; mask-image: none; }
+.more { min-height: 28px; padding: 2px 6px; margin: 2px 0 0 -6px; font-size: 13px; color: var(--violet); }
 .direction-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .pick { display: flex; align-items: center; gap: 8px; margin: 0; cursor: pointer; min-width: 0; }
 .pick input { accent-color: var(--violet); }

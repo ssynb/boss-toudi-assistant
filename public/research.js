@@ -5,6 +5,7 @@ const fitNames = {high:'匹配度高', medium:'匹配度中', low:'匹配度低'
 /** 方向调研：选城市开始/停止；勾选的方向只追加到本地具体要求草稿，由用户自行保存。 */
 export function researchPanel({mutate, appendRequirements, updateControls}) {
  const chosen = new Set();
+ let detailSeq = 0;
  let current = null;
  $('research-toggle').onclick = () => {
   if (current.research.status === 'running') return mutate('research/stop');
@@ -25,9 +26,32 @@ export function researchPanel({mutate, appendRequirements, updateControls}) {
   return el('li', {className:`direction fit-${d.fit}`},
    el('div', {className:'direction-head'}, el('label', {className:'pick'}, box, d.name), el('span', {className:'badge', textContent:fitNames[d.fit]})),
    el('div', {className:'direction-stats'}, meter, el('span', {textContent:`抽样 ${d.sampled} · 匹配 ${d.matched}`}), d.salaryRange ? el('span', {className:'salary', textContent:d.salaryRange}) : null),
+   detail(d));
+ }
+ /** 理由与短板默认折叠为约 3 行；只有内容实际超出时才出现「展开」。 */
+ function detail(d) {
+  const body = el('div', {className:'detail', id:`detail-${++detailSeq}`},
    el('p', {textContent:d.reason}),
    d.gaps ? el('p', {className:'gaps'}, el('strong', {textContent:'短板 '}), d.gaps) : null);
+  const toggle = el('button', {type:'button', className:'quiet more', textContent:'展开', hidden:true});
+  toggle.setAttribute('aria-controls', body.id);
+  toggle.setAttribute('aria-expanded', 'false');
+  toggle.onclick = () => {
+   const open = toggle.getAttribute('aria-expanded') !== 'true';
+   toggle.setAttribute('aria-expanded', String(open));
+   toggle.textContent = open ? '收起' : '展开';
+   body.classList.toggle('open', open);
+  };
+  return el('div', {}, body, toggle);
  }
+ function measure() {
+  for (const body of $('directions').querySelectorAll('.detail:not(.open)')) {
+   const clipped = body.scrollHeight > body.clientHeight + 1;
+   body.classList.toggle('clipped', clipped);
+   body.nextSibling.hidden = !clipped;
+  }
+ }
+ new ResizeObserver(measure).observe($('directions'));
  function render(state) {
   const research = state.research;
   current = state;
@@ -47,6 +71,7 @@ export function researchPanel({mutate, appendRequirements, updateControls}) {
   const names = new Set(research.directions.map(d => d.name));
   for (const name of [...chosen]) if (!names.has(name)) chosen.delete(name);
   $('directions').replaceChildren(...research.directions.map(directionCard));
+  measure();
   $('fill-row').hidden = !research.directions.length;
  }
  function controls(state, {pending, pendingAction, locked}) {
