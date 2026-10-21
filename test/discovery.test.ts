@@ -244,3 +244,33 @@ test('已有入选后遇到站点风控，整轮不保存不联系', async () =>
     assert.deepEqual(fake.writes, []);
   } finally { await server.close(); mock.close(); }
 });
+
+for (const [target, recommended] of [[10, 3], [51, 11], [100, 20], [150, 20]]) {
+  test(`关键词不足可见：目标${target}建议${recommended}个，重复词不能充数`, async () => {
+    const { mock, fake, server } = await setup([planned(target!, ['前端', 'React', '前端']), end], 'gpt-mock');
+    const logs: string[] = [];
+    server.app.on('log', (event: { text: string }) => logs.push(event.text));
+    fake.site.search = async () => [];
+    try {
+      const state = await discover(server.url);
+      assert.match(state.discovery.message!, new RegExp(`关键词.*2.*${recommended}`));
+      assert.ok(logs.some(text => new RegExp(`关键词.*2.*${recommended}`).test(text)), '搜索范围不足须在运行日志中可见');
+      assert.match(state.discovery.message!, /范围|不足|偏少/);
+      assert.deepEqual(fake.writes, []);
+    } finally { await server.close(); mock.close(); }
+  });
+}
+
+test('100目标的20个相关关键词全部遍历，计划模型获得简历且无范围不足警告', async () => {
+  const keywords = ['前端', 'React', 'TypeScript', 'JavaScript', 'Web前端', '前端工程师', 'React开发', 'TypeScript开发', 'JavaScript开发', 'Web开发', '前端架构', '高级前端', '前端组件', '前端工程化', '前端性能', '前端可视化', '前端基础设施', '前端平台', '前端应用', 'React工程师'];
+  const { mock, fake, server } = await setup([planned(100, keywords), end], 'gpt-mock');
+  const searched: string[] = [];
+  fake.site.search = async q => { searched.push(`${q.keyword}:${q.page}`); return []; };
+  try {
+    const state = await discover(server.url);
+    assert.match(JSON.stringify(mock.requests[0]?.input), /五年前端经验，React\/TypeScript/, '计划需要简历作为方向内关键词的相关性依据');
+    assert.deepEqual(searched, keywords.map(keyword => `${keyword}:1`));
+    assert.doesNotMatch(state.discovery.message!, /关键词.*(?:不足|偏少)/);
+    assert.deepEqual(fake.writes, []);
+  } finally { await server.close(); mock.close(); }
+});
