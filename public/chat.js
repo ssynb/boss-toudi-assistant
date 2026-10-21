@@ -1,40 +1,69 @@
-import {$, el, nearBottom} from './dom.js';
+import {$, text, el, richText, nearBottom} from './dom.js';
+import {delivered, keptTargets} from './outcome.js';
 
-/** 只把 **加粗** 转成 strong，其余一律按文本节点插入；换行由 pre-wrap 保留。 */
-function richText(text) {
- return text.split(/\*\*([^*\n]+)\*\*/).map((part, i) => i % 2 ? el('strong', {textContent:part}) : part);
+/** 合同 DAILY_CONTACT_LIMIT：每日主动联系上限。 */
+const DAILY_CONTACT_LIMIT = 150;
+
+/** 当前运行中的任务及其停止接口；对话是唯一开始入口，这里只提供停止。 */
+function runningTask(state) {
+ if (state.research.status !== 'idle') return {status:state.research.status, stop:'research/stop', label:`正在调研${state.research.city ? ` · ${state.research.city}` : ''} · 已完成 ${state.research.directions.length} 个方向`};
+ if (state.discovery.status !== 'idle') return {status:state.discovery.status, stop:'discovery/stop', label:['正在找岗位', ...state.discovery.directions.map(d => `${d.name} ${d.selected}/${d.count}`)].join(' · ')};
+ if (state.batch?.status === 'running') return {status:'running', stop:'batch/pause', label:`正在投递 · 已送达 ${delivered(state.batch)}/${keptTargets(state.batch).length}`};
+ return null;
 }
 
-/** 求职顾问对话：发送后由服务端置 pending，回复经 SSE 刷新到达；本面板不触发任何投递动作。 */
+/** 对话视图：消息列表只追加新消息（入场动效只给新消息），输入区上方显示运行中任务的进度与停止。 */
 export function chatPanel({mutate, updateControls}) {
+ let rendered = [];
+ let task = null;
+ const input = $('chat-input');
  const send = async () => {
-  const message = $('chat-input').value.trim();
+  const message = input.value.trim();
   if (!message || $('chat-send').disabled) return;
-  if (await mutate('chat', 'POST', {message})) $('chat-input').value = '';
+  if (await mutate('chat', 'POST', {message})) { input.value = ''; resize(); }
  };
+ const resize = () => { input.style.height = 'auto'; input.style.height = `${Math.min(input.scrollHeight, 200)}px`; };
  $('chat-form').addEventListener('submit', event => { event.preventDefault(); void send(); });
- $('chat-input').addEventListener('keydown', event => {
+ input.addEventListener('keydown', event => {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); void send(); }
  });
- $('chat-input').addEventListener('input', updateControls);
+ input.addEventListener('input', () => { resize(); updateControls(); });
+ for (const example of document.querySelectorAll('.examples button')) example.onclick = () => {
+  input.value = example.textContent; resize(); input.focus(); updateControls();
+ };
  $('chat-clear').onclick = () => mutate('chat/clear');
- function render(state) {
-  const log = $('chat-log');
-  const follow = nearBottom(log);
-  const {messages, pending} = state.chat;
-  const key = `${messages.length}/${messages.at(-1)?.at ?? ''}/${pending}`;
-  if (log.dataset.key === key) return;
-  log.dataset.key = key;
-  const items = messages.map(m => el('li', {className:`message ${m.role}`}, el('span', {className:'who', textContent:m.role === 'user' ? '我' : '顾问'}), el('p', {}, ...richText(m.text))));
-  if (pending) items.push(el('li', {className:'message assistant typing'}, el('span', {className:'who', textContent:'顾问'}), el('p', {textContent:'顾问正在回复…'})));
-  if (!items.length) items.push(el('li', {className:'empty', textContent:'可以问方向选择、简历短板或招呼怎么写'}));
-  log.replaceChildren(...items);
-  $('chat-clear').hidden = !messages.length;
-  if (follow) log.scrollTop = log.scrollHeight;
+ $('progress-stop').onclick = () => { if (task) mutate(task.stop); };
+
+ const messageNode = m => el('li', {className:`message ${m.role}`}, el('div', {className:'bubble'}, ...richText(m.text)));
+ function renderMessages(messages) {
+  const scroller = $('chat-scroller');
+  const follow = nearBottom(scroller);
+  const keys = messages.map(m => `${m.role}|${m.at}|${m.text.length}`);
+  const appendOnly = rendered.length <= keys.length && rendered.every((key, i) => key === keys[i]);
+  if (!appendOnly) $('chat-log').replaceChildren();
+  for (const m of messages.slice(appendOnly ? rendered.length : 0)) {
+   const node = messageNode(m); node.dataset.role = m.role; $('chat-log').append(node);
+  }
+  rendered = keys;
+  if (follow) scroller.scrollTop = scroller.scrollHeight;
  }
- function controls(state, {locked}) {
-  $('chat-send').disabled = locked || !$('chat-input').value.trim();
+ function render(state) {
+  const {messages, pending} = state.chat;
+  renderMessages(messages);
+  $('chat-thinking').hidden = !pending;
+  $('chat-empty').hidden = messages.length > 0 || pending;
+  $('chat-clear').hidden = !messages.length;
+  task = runningTask(state);
+  $('progress').hidden = !task;
+  if (task) text('progress-text', `${task.label} · 今日已联系 ${state.contactedToday}/${DAILY_CONTACT_LIMIT}`);
+ }
+ function controls(state, {pending, pendingAction, locked}) {
+  $('chat-send').disabled = locked || !input.value.trim();
   $('chat-clear').disabled = locked;
+  input.placeholder = task ? '任务进行中，可点「停止」' : '例如：Agent开发投30个';
+  const stopping = task?.status === 'stopping' || (task && pendingAction === task.stop);
+  text('progress-stop', stopping ? '正在停止…' : '停止');
+  $('progress-stop').disabled = Boolean(stopping) || pending;
  }
  return {render, controls};
 }
