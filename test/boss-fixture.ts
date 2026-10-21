@@ -21,6 +21,7 @@ export interface Scenario {
   target: Friend;
   /** 点击立即沟通后站点是否建立会话。 */
   createsFriend: boolean;
+  continued?: boolean;
   /** 已有会话（不含尚未联系的目标）。 */
   friends: Friend[];
   pageSize: number;
@@ -55,7 +56,7 @@ export function message(mid: number, self: boolean, text: string, other = TARGET
 
 function jobPage(f: BossFixture, jobId: string): string {
   const { bossId } = f.scenario.target;
-  const contacted = f.scenario.friends.some(x => x.jobId === jobId && x.bossId === bossId);
+  const contacted = f.scenario.continued || f.scenario.friends.some(x => x.jobId === jobId && x.bossId === bossId);
   const redirect = `/web/geek/chat?id=${encodeURIComponent(bossId)}&jobId=${jobId}&securityId=SECRET-${jobId}`;
   const action = {
     popup: "document.querySelector('.startchat-dialog').hidden=false",
