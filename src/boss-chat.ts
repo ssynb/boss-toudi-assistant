@@ -36,6 +36,11 @@ const IDENTITY_CHANGED = '当前会话的岗位或招聘者身份不符：请在
 /** 历史响应缺失、失败或不连续：会话已进入，但不能据此判断本方消息。 */
 export class HistoryError extends Error {}
 
+/** 只能作为防重复联系的证据，不能代替目标岗位的会话身份。 */
+export class OtherJobConversationError extends Error {
+  constructor() { super('同一招聘者已有其他岗位会话，不重复联系'); }
+}
+
 interface Observation {
   jobId: string;
   document: number;
@@ -225,6 +230,13 @@ export function createChatSession(browser: ChatBrowser, goto: (url: string) => P
     await goto(CHAT_URL);
     await browser.waitFor(`document.querySelectorAll(${js(LIST_ITEMS)}).length > 0`);
     const indices = await browser.eval<number[]>(matchingIndices(id));
+    if (!indices.length) {
+      const otherJob = await browser.eval<boolean>(`[...document.querySelectorAll(${js(LIST_ITEMS)})].some(e => {
+        const source = e.__vue__?.$props?.source;
+        return source?.encryptBossId === ${js(id.recruiterId)} && Boolean(source.encryptJobId) && source.encryptJobId !== ${js(id.jobId)};
+      })`);
+      if (otherJob) throw new OtherJobConversationError();
+    }
     if (indices.length !== 1) throw new Error('无法唯一识别已存在的目标会话，停止后续动作');
     const watch = await browser.watchResponses(HISTORY_ENDPOINT);
     try {

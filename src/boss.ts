@@ -8,7 +8,7 @@
 import type { BrowserState, Target, ContactIdentity } from './contracts.ts';
 import type { Browser } from './browser.ts';
 import type { GreetingResult, OpenJobResult, Verified, WriteSite } from './executor.ts';
-import { createChatSession, HistoryError, ORIGIN, type ChatIdentity } from './boss-chat.ts';
+import { createChatSession, HistoryError, OtherJobConversationError, ORIGIN, type ChatIdentity } from './boss-chat.ts';
 
 export interface JobCard {
   jobId: string;
@@ -74,7 +74,7 @@ const CITY_CODES: Record<string, string> = {
 };
 
 export const SUPPORTED_CITIES = Object.keys(CITY_CODES);
-export const MAX_SEARCH_PAGE = 5;
+export const MAX_SEARCH_PAGE = 10;
 
 export function validateSearchQuery(q: SearchQuery): void {
   if (typeof q.keyword !== 'string' || !q.keyword.trim() || q.keyword.length > 80
@@ -237,6 +237,7 @@ export function createBossSite(browser: Browser): Site {
       if (count) return { kind: 'alreadyContacted', evidence: `已有会话里有 ${count} 条本方消息，不再发送` };
       return { kind: 'existingConversation', identity: recruiter, evidence: '岗位页显示「继续沟通」；完整历史证明本方尚无消息，未点击联系' };
     } catch (e) {
+      if (e instanceof OtherJobConversationError) return { kind: 'alreadyContacted', evidence: e.message };
       return { kind: 'blocked', evidence: `已有会话无法完成只读核对：${(e as Error).message}` };
     }
   }
