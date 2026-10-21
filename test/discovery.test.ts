@@ -102,7 +102,10 @@ test('程序搜索、排除、读取实际JD后由独立模型回合判定，只
       [{ jobId: 'j1', company: '甲公司', greeting: '您好，我有五年 React 经验', steps: { contact: 'todo', greeting: 'todo' } }]);
     const input = JSON.stringify(mock.requests[2]);
     assert.match(input, /岗位职责：负责前端开发/);
-    assert.ok(!input.includes('乙公司'));
+    const user = mock.requests[2]!.input.filter(item => (item as { role?: string }).role === 'user').at(-1) as { content: { text: string }[] };
+    const jobs = JSON.parse(user.content[0]!.text).jobs as { card: { company: string } }[];
+    assert.ok(jobs.length > 0);
+    assert.ok(jobs.every(({ card }) => card.company !== '乙公司'), '排除公司不能进入本批岗位数据');
     for (const request of mock.requests) {
       const tools = JSON.stringify(request.tools);
       for (const name of ['boss_search', 'boss_job_detail', 'propose_batch']) assert.ok(!tools.includes(name), '模型不能驱动浏览器或提交整轮草案');
@@ -233,7 +236,7 @@ for (const invalid of ['foreign', 'missing', 'duplicate', 'greeting'] as const) 
 
 test('已有入选后遇到站点风控，整轮不保存不联系', async () => {
   const { mock, fake, server } = await setup([planned(100), end, judgments([selection('j1')]), end], 'gpt-mock');
-  fake.site.search = async q => { if (q.page === 2) throw new SiteBlockedError({ page: 'verification', url: null }); return [job('j1')]; };
+  fake.site.search = async q => { if (q.page === 2) throw new SiteBlockedError({ page: 'verify', url: null }); return [job('j1')]; };
   try {
     const state = await discover(server.url);
     assert.equal(state.batch, null);
