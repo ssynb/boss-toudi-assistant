@@ -42,7 +42,7 @@ test('对话：示例提问、发送与等待、安全富文本、任务进度�
   for(const [name,start,facts,stop,finish] of scenarios){
    await t.test(`${name}进行中：输入区上方显示进度与今日额度，「停止」只发对应停止请求`,async()=>{
     start();app.changed();
-    await browser('wait','--text','今日已联系 42/150');
+    await browser('wait','--text','今日已联系 42/80');
     const strip=await browser('get','text','[role=status][aria-label=任务进度]');
     for(const fact of facts)assert.ok(strip.includes(fact),`${fact} ∉ ${strip}`);
     assert.equal(await app.inspect("[...document.querySelectorAll('button')].find(b=>b.textContent==='发送').disabled"),true,'任务进行中不能发消息');

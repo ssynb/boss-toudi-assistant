@@ -12,7 +12,7 @@ export const target=(id,company,title,contact,greeting,extra={})=>({id,jobId:id,
 export function baseState(){
  return {doctor:[],codex:{signedIn:true,email:'测试服务器',plan:null,pendingLoginUrl:null,error:null},browser:{page:'ready',url:null},
   requirements:'',resume:{file:null,text:'合成简历',textSource:'pasted'},
-  discovery:{status:'idle',autoSend:false,directions:[],message:null,startedAt:null,finishedAt:null},batch:null,contactedCount:0,contactedToday:0,
+  discovery:{status:'idle',autoSend:false,directions:[],message:null,startedAt:null,finishedAt:null},batch:null,contactedCount:0,contactedToday:0,dailyContactLimit:80,
   supportedCities:['深圳'],research:{status:'idle',city:null,startedAt:null,finishedAt:null,message:null,directions:[]},chat:{pending:false,messages:[]}};
 }
 
