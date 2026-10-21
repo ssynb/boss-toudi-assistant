@@ -119,6 +119,7 @@ output { color: var(--accent); font-size: 13px; }
 .meter span, .meter::after { flex: 0 0 0; flex-grow: 0; transition: flex-grow .5s var(--ease-state); }
 .meter::after { content: ""; flex-grow: var(--rest, 1); }
 .meter .done { background: var(--green); }
+.meter .skipped { background: #a9b6bf; }
 .meter .unknown { background: var(--amber); }
 .meter .failed { background: var(--red); }
 table { width: 100%; border-collapse: collapse; }
@@ -127,13 +128,13 @@ td { padding: 14px 8px; vertical-align: top; border-bottom: 1px solid var(--line
 tr:last-child td { border-bottom: 0; }
 tr[data-outcome="done"] td { background: color-mix(in oklch, var(--green-soft) 55%, transparent); }
 tr[data-outcome="unknown"] td { background: color-mix(in oklch, var(--amber-soft) 60%, transparent); }
-.job { min-width: 120px; }
+.job { min-width: 100px; }
 .job span { display: block; color: var(--muted); }
 .salary { white-space: nowrap; color: #b4530f; font-weight: 600; font-variant-numeric: tabular-nums; }
 .reason { color: var(--muted); width: 26%; }
-.greeting { width: 32%; min-width: 220px; }
+.greeting { width: 32%; min-width: 180px; }
 .greeting textarea { margin: 0; }
-.action { min-width: 150px; }
+.action { min-width: 120px; }
 .steps { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
 .step { display: inline-block; padding: 2px 10px; border-radius: 8px; font-size: 12.5px; background: #eef1f4; color: var(--muted); transition: opacity .22s var(--ease-enter), transform .22s var(--ease-enter); }
 @starting-style { .step { opacity: 0; transform: scale(.94); } }
@@ -202,6 +203,9 @@ summary { cursor: pointer; }
   .card { padding: 18px 16px; }
   .modes { grid-template-columns: 1fr; }
   .form-foot .hint { margin-left: 0; flex-basis: 100%; }
+}
+#batch { container-type: inline-size; }
+@container (max-width: 680px) {
   thead { display: none; }
   table, tbody, tr, td { display: block; }
   tr { padding: 14px 0; border-bottom: 1px solid var(--line); }

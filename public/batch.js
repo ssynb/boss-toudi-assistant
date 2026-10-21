@@ -2,9 +2,11 @@ import {$, text, el} from './dom.js';
 
 const stepNames = {todo:'未开始', inflight:'进行中', done:'已完成', skipped:'已跳过', failed:'未发生', unknown:'结果未确认 · 请到 BOSS 核查，不自动重试'};
 const batchNames = {draft:'待确认投递', approved:'待投递', running:'正在执行', paused:'已暂停', done:'处理结束'};
-const settled = steps => ['done', 'skipped'].includes(steps.greeting) && steps.contact !== 'unknown';
+// 只有本次招呼核实发出才算送达；skipped 可能是历史已联系/未确认的去重或已有本方消息，不能证明送达。
 const outcome = steps => steps.contact === 'unknown' || steps.greeting === 'unknown' ? 'unknown'
- : steps.contact === 'failed' || steps.greeting === 'failed' ? 'failed' : settled(steps) ? 'done' : null;
+ : steps.contact === 'failed' || steps.greeting === 'failed' ? 'failed'
+ : steps.greeting === 'done' ? 'done' : steps.greeting === 'skipped' ? 'skipped' : null;
+const kinds = ['done', 'skipped', 'unknown', 'failed'];
 
 /** 批次表格：保留招呼编辑与移除；结果芯片仅在状态变化时重建，以便入场动效标出新结果。 */
 export function batchPanel({mutate, markDirty, dirty}) {
@@ -33,11 +35,10 @@ export function batchPanel({mutate, markDirty, dirty}) {
    el('span', {className:`step ${steps.greeting}`, textContent:`招呼：${stepNames[steps.greeting]}`}));
  }
  function renderMeter(kept) {
-  const count = kind => kept.filter(t => outcome(t.steps) === kind).length;
-  for (const kind of ['done', 'unknown', 'failed'])
-   $('batch-meter').querySelector(`.${kind}`).style.flexGrow = String(count(kind));
-  $('batch-meter').style.setProperty('--rest', String(kept.length - count('done') - count('unknown') - count('failed')));
-  return {done:count('done'), unknown:count('unknown'), failed:count('failed')};
+  const tally = Object.fromEntries(kinds.map(kind => [kind, kept.filter(t => outcome(t.steps) === kind).length]));
+  for (const kind of kinds) $('batch-meter').querySelector(`.${kind}`).style.flexGrow = String(tally[kind]);
+  $('batch-meter').style.setProperty('--rest', String(kept.length - kinds.reduce((sum, kind) => sum + tally[kind], 0)));
+  return tally;
  }
  return function render(state) {
   const batch = state.batch, kept = batch?.targets.filter(t => !t.removed) ?? [];
@@ -46,6 +47,7 @@ export function batchPanel({mutate, markDirty, dirty}) {
   const tally = renderMeter(kept);
   const parts = [`${state.discovery.autoSend ? '自动投递 · ' : ''}${batchNames[batch.status]} · ${kept.length} 个岗位`];
   if (tally.done) parts.push(`已送达 ${tally.done}`);
+  if (tally.skipped) parts.push(`已跳过 ${tally.skipped}`);
   if (tally.unknown) parts.push(`未确认 ${tally.unknown}`);
   if (tally.failed) parts.push(`未发生 ${tally.failed}`);
   if (batch.stopReason) parts.push(batch.stopReason);
