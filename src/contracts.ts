@@ -57,6 +57,12 @@ export interface AppState {
   batch: Batch | null;
   /** 历史上已联系或结果未确认的岗位数（全局去重账本），发现时自动排除。 */
   contactedCount: number;
+  /** 岗位方向调研：程序到 BOSS 抽样读取各方向实际 JD，由 AI 评估与简历的匹配度；结果持久化。 */
+  research: ResearchState;
+  /** 求职顾问对话：只基于简历、具体要求与调研结果回答，不能操作浏览器或投递。 */
+  chat: ChatState;
+  /** 可搜索的城市（调研、发现共用），唯一来源为站点适配层。 */
+  supportedCities: string[];
 }
 
 export interface DoctorCheck {
@@ -127,6 +133,60 @@ export interface DiscoveryState {
   autoSend: boolean;
   /** 最近一次发现的结果或失败原因（人话）。 */
   message: string | null;
+}
+
+// ---------- 岗位方向调研与求职顾问对话 ----------
+
+/** 调研每个方向抽样读取的实际 JD 上限。 */
+export const RESEARCH_SAMPLE_PER_DIRECTION = 10;
+/** 对话单条消息上限（字）与保留的最近消息数。 */
+export const CHAT_MESSAGE_MAX_CHARS = 2000;
+export const CHAT_HISTORY_LIMIT = 50;
+
+export interface ResearchDirection {
+  /** 方向名，如「AI 产品经理」。 */
+  name: string;
+  /** 实际用于 BOSS 搜索的关键词。 */
+  keywords: string[];
+  fit: 'high' | 'medium' | 'low';
+  /** 基于简历与抽样 JD 的匹配理由。 */
+  reason: string;
+  /** 与这些岗位要求相比的主要短板。 */
+  gaps: string;
+  /** 抽样岗位卡上看到的薪资区间概括，如「20-40K」；没有样本时为空串。 */
+  salaryRange: string;
+  /** 实际读取的 JD 数与 AI 判定匹配的数量。 */
+  sampled: number;
+  matched: number;
+}
+
+/**
+ * idle 时可开始；running 时可停止；stopping 等待在途读取结束。
+ * 调研与发现、批次执行、对话互斥（共用浏览器与 Codex），冲突返回 busy / batch_running。
+ * 进程中断后恢复为 idle 并写明中断原因，已完成方向保留。
+ */
+export interface ResearchState {
+  status: 'idle' | 'running' | 'stopping';
+  city: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  /** 进度、结果或失败原因（人话）。 */
+  message: string | null;
+  /** 按匹配度从高到低；新一轮开始时清空。 */
+  directions: ResearchDirection[];
+}
+
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  text: string;
+  at: string;
+}
+
+export interface ChatState {
+  /** 正在等待 AI 回复；期间不能再发消息。 */
+  pending: boolean;
+  /** 最近 CHAT_HISTORY_LIMIT 条，按时间先后。 */
+  messages: ChatMessage[];
 }
 
 // ---------- 批次与执行账本 ----------
@@ -210,6 +270,10 @@ export interface Batch {
  * POST /api/batch/approve          ApproveRequest
  * POST /api/batch/start            可选 ApproveRequest：传 version 即核对并批准该版本、直接开始投递；省略请求体仅开始/恢复已有有效批准的批次
  * POST /api/batch/pause            当前 inflight 步骤收尾后停下，不再开始新动作
+ * POST /api/research/start        ResearchRequest；需 Codex 已登录、已保存简历正文；实际搜索前才要求浏览器 ready
+ * POST /api/research/stop
+ * POST /api/chat                   ChatRequest；立即返回（chat.pending=true），回复写入后经 SSE changed 通知
+ * POST /api/chat/clear             清空对话记录
  *
  * 具体要求、简历、批次的任何修改：批次 running 时返回 batch_running；
  * 否则若批次为 approved/paused，状态退回 draft、version +1（旧批准失效）。
@@ -252,6 +316,16 @@ export const INPUTS_MAX_BYTES = 4 * Math.ceil(RESUME_MAX_BYTES / 3) + 512 * 1024
  */
 export interface StartDiscoveryRequest {
   autoSend: boolean;
+}
+
+/** city 必须是 AppState.supportedCities 之一。 */
+export interface ResearchRequest {
+  city: string;
+}
+
+/** message 去掉首尾空白后非空，不超过 CHAT_MESSAGE_MAX_CHARS 字。 */
+export interface ChatRequest {
+  message: string;
 }
 
 export interface TargetPatch {
