@@ -9,15 +9,15 @@ import {resolveCloak,profileArgs} from '../../src/cloak.ts';
 
 test('刷新授权边界与手动批次版本', {timeout:90000}, async t=>{
  const runtime=await resolveCloak();
- const state={doctor:[],codex:{signedIn:true,email:'测试服务器',pendingLoginUrl:null,error:null},browser:{page:'closed'},requirements:'杭州前端',resume:{file:null,text:'合成简历',textSource:'file'},discovery:{status:'idle',message:null,questions:[],startedAt:'2026-01-01T00:00:00Z',finishedAt:'2026-01-01T00:02:05Z'},batch:null,contactedCount:0};
+ const state={doctor:[],codex:{signedIn:true,email:'测试服务器',pendingLoginUrl:null,error:null},browser:{page:'closed'},requirements:'杭州前端',resume:{file:null,text:'合成简历',textSource:'file'},discovery:{status:'idle',message:null,questions:[],startedAt:'2026-01-01T00:00:00Z',finishedAt:'2026-01-01T00:02:05Z'},batch:null,contactedCount:0,supportedCities:[],research:{status:'idle',city:null,startedAt:null,finishedAt:null,message:null,directions:[]},chat:{pending:false,messages:[]}};
  const streams=new Set();const writes=[];
  const changed=()=>{for(const stream of streams)stream.write('event: changed\n\n');};
  const server=http.createServer(async(req,res)=>{
   if(!req.url.startsWith('/api/')){
    const name=req.url==='/'?'index.html':req.url.slice(1);
-   if(!['index.html','app.js','client.js','style.css'].includes(name)){res.writeHead(404).end();return;}
-   res.setHeader('Content-Type',name.endsWith('.js')?'text/javascript':name.endsWith('.css')?'text/css':'text/html');
-   res.end(await fs.readFile(new URL('../'+name,import.meta.url)));return;
+   if(!/^[a-z-]+\.(js|css|html)$/.test(name)){res.writeHead(404).end();return;}
+   try{const body=await fs.readFile(new URL('../'+name,import.meta.url));res.setHeader('Content-Type',name.endsWith('.js')?'text/javascript':name.endsWith('.css')?'text/css':'text/html');res.end(body);}catch{res.writeHead(404).end();}
+   return;
   }
   assert.equal(req.headers['x-boss-local'],'1');
   if(req.url==='/api/events'){res.writeHead(200,{'Content-Type':'text/event-stream'});res.write(': test\n\n');streams.add(res);res.on('close',()=>streams.delete(res));return;}
