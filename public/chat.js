@@ -1,9 +1,6 @@
 import {$, text, el, richText, nearBottom} from './dom.js';
 import {delivered, keptTargets} from './outcome.js';
 
-/** 合同 DAILY_CONTACT_LIMIT：每日主动联系上限。 */
-const DAILY_CONTACT_LIMIT = 150;
-
 /** 当前运行中的任务（含等待 AI 决定）及其停止接口；对话是唯一开始入口，这里只提供停止。 */
 function runningTask(state) {
  if (state.research.status !== 'idle') return {status:state.research.status, stop:'research/stop', label:`正在调研${state.research.city ? ` · ${state.research.city}` : ''} · 已完成 ${state.research.directions.length} 个方向`};
@@ -57,7 +54,7 @@ export function chatPanel({mutate, updateControls}) {
   $('chat-clear').hidden = !messages.length;
   task = runningTask(state);
   $('progress').hidden = !task;
-  if (task) text('progress-text', `${task.label} · 今日已联系 ${state.contactedToday}/${DAILY_CONTACT_LIMIT}`);
+  if (task) text('progress-text', `${task.label} · 今日已联系 ${state.contactedToday}/${state.dailyContactLimit}`);
  }
  function controls(state, {pending, pendingAction, locked}) {
   $('chat-send').disabled = locked || !input.value.trim();
