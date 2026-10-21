@@ -254,7 +254,7 @@ export function createBossSite(browser: Browser): Site {
     try {
       // 新标签页由 agent-browser 跟随；路由与站内弹层都只作为「已点击生效」的信号，随后统一进入已有会话。
       await browser.waitFor('location.pathname.startsWith("/web/geek/chat") || Boolean(document.querySelector(".startchat-dialog")?.checkVisibility())');
-      if (expected.kind === 'chatId') await chat.enter(t, expected);
+      if (expected.kind === 'chatId') await chat.enter(t, expected, true);
       else await verifyLegacyChat(t, expected);
       return { ok: true, evidence: '已进入对应岗位和招聘者的会话页', identity: expected };
     } catch (e) {

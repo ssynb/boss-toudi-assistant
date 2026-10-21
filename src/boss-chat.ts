@@ -87,8 +87,12 @@ function pageState(t: Target, id: ChatIdentity): string {
 }
 
 function matchingIndices(id: ChatIdentity): string {
-  return `[...document.querySelectorAll(${js(LIST_ITEMS)})].map((e, index) => ({source:e.__vue__?.$props?.source,index}))
-    .filter(e => e.source?.encryptJobId === ${js(id.jobId)} && e.source?.encryptBossId === ${js(id.recruiterId)}).map(e => e.index)`;
+  return `(() => {
+    const viewport = document.querySelector(${js(LIST_VIEWPORT)})?.getBoundingClientRect();
+    return [...document.querySelectorAll(${js(LIST_ITEMS)})].map((e,index) => ({source:e.__vue__?.$props?.source,index,rect:e.getBoundingClientRect()}))
+      .filter(e => e.source?.encryptJobId === ${js(id.jobId)} && e.source?.encryptBossId === ${js(id.recruiterId)}
+        && (!viewport || ((e.rect.top + e.rect.bottom) / 2 > viewport.top && (e.rect.top + e.rect.bottom) / 2 < viewport.bottom))).map(e => e.index);
+  })()`;
 }
 
 /** root 子树最近 ms 毫秒内没有任何变化；首次求值时安装观察者。 */
@@ -198,7 +202,7 @@ async function readHistory(watch: ResponseWatch, id: ChatIdentity, account: { ui
 export interface ChatSession {
   close(): Promise<void>;
   /** 选中目标已有会话并读取完整历史；不点击任何联系入口。 */
-  enter(t: Target, id: ChatIdentity): Promise<void>;
+  enter(t: Target, id: ChatIdentity, newlyContacted?: boolean): Promise<void>;
   ownMessages(t: Target, id: ChatIdentity): Promise<number>;
   sendGreeting(t: Target, id: ChatIdentity, text: string): Promise<GreetingResult>;
 }
@@ -226,19 +230,52 @@ export function createChatSession(browser: ChatBrowser, goto: (url: string) => P
     if (height) await browser.scrollWithin('.chat-conversation .chat-message', 'up', height);
   }
 
-  async function locateConversation(id: ChatIdentity): Promise<number> {
-    await browser.waitFor(`Array.isArray(document.querySelector('.chat-user')?.__vue__?.list$)`);
-    const data = await browser.eval<{ exact: number; otherJob: boolean; complete: boolean }>(`(() => {
+  function listState(id: ChatIdentity): string {
+    return `(() => {
       const state = document.querySelector('.chat-user').__vue__;
-      const complete = Array.isArray(state.topList$) && state.hasMore$ === false;
-      const friends = [...state.list$, ...(state.topList$ || [])];
-      return { complete,
-        exact: friends.filter(s => s.encryptJobId === ${js(id.jobId)} && s.encryptBossId === ${js(id.recruiterId)}).length,
-        otherJob: friends.some(s => s.encryptBossId === ${js(id.recruiterId)} && Boolean(s.encryptJobId) && s.encryptJobId !== ${js(id.jobId)}) };
-    })()`);
-    if (!data.complete) throw new Error('会话列表尚未完整加载，不能确认目标会话是否唯一或不存在');
-    if (!data.exact && data.otherJob) throw new OtherJobConversationError();
-    if (data.exact !== 1) throw new Error('无法唯一识别已存在的目标会话，停止后续动作');
+      const friends = [...state.list$, ...state.topList$];
+      return { count:friends.length, hasMore:state.hasMore$,
+        exact:friends.filter(s => s.encryptJobId === ${js(id.jobId)} && s.encryptBossId === ${js(id.recruiterId)}).length,
+        otherJob:friends.some(s => s.encryptBossId === ${js(id.recruiterId)} && Boolean(s.encryptJobId) && s.encryptJobId !== ${js(id.jobId)}) };
+    })()`;
+  }
+
+  async function findConversation(id: ChatIdentity, newlyContacted: boolean): Promise<void> {
+    await browser.waitFor(`(() => {const s=document.querySelector('.chat-user')?.__vue__;return Array.isArray(s?.list$)&&Array.isArray(s?.topList$)})()`);
+    const expression = listState(id);
+    for (let page = 0; page < MAX_LIST_SCROLLS; page++) {
+      const data = await browser.eval<{count:number;exact:number;otherJob:boolean;hasMore?:boolean}>(expression);
+      if (data.exact === 1) return;
+      if (data.exact > 1) throw new Error('无法唯一识别已存在的目标会话，停止后续动作');
+      if (data.hasMore === false) {
+        if (newlyContacted) {
+          await browser.waitFor(`(${expression}).exact > 0`).catch(() => { throw new Error('联系后等待新会话出现在列表超时，不重复联系'); });
+          newlyContacted = false;
+          continue;
+        }
+        if (data.otherJob) throw new OtherJobConversationError();
+        throw new Error('会话列表已加载完，未找到目标会话，停止后续动作');
+      }
+      if (data.hasMore !== true) throw new Error('会话列表分页状态未知，不能确认目标不存在');
+      const height = await browser.eval<number>(`document.querySelector(${js(LIST_VIEWPORT)})?.scrollHeight ?? 0`);
+      if (!height) throw new Error('找不到会话列表滚动区域，无法加载更多会话');
+      await browser.scrollWithin(LIST_VIEWPORT, 'down', height);
+      await browser.waitFor(`(() => {const s=${expression};return s.exact>0||s.count!==${data.count}||s.hasMore!==true})()`)
+        .catch(() => { throw new Error('会话列表加载更多超时，不能确认目标不存在'); });
+    }
+    throw new Error('会话列表加载达到上限，不能确认目标不存在');
+  }
+
+  async function locateConversation(id: ChatIdentity, newlyContacted: boolean): Promise<number> {
+    await findConversation(id, newlyContacted);
+    // 分页查找可能停在底部，而新会话可能插入顶部。已渲染时不滚动，否则从顶部查找。
+    if (!(await browser.eval<number[]>(matchingIndices(id))).length) {
+      const total = await browser.eval<number>(`document.querySelector(${js(LIST_VIEWPORT)})?.scrollHeight ?? 0`);
+      if (total) {
+        await browser.scrollWithin(LIST_VIEWPORT, 'up', total);
+        await browser.waitFor(quiet('.chat-user', QUIET_MS));
+      }
+    }
     for (let step = 0; step <= MAX_LIST_SCROLLS; step++) {
       const indices = await browser.eval<number[]>(matchingIndices(id));
       if (indices.length === 1) return indices[0]!;
@@ -254,11 +291,11 @@ export function createChatSession(browser: ChatBrowser, goto: (url: string) => P
     throw new Error('会话列表滚动到底或达到上限，目标行仍未渲染，停止后续动作');
   }
 
-  async function enter(t: Target, id: ChatIdentity): Promise<void> {
+  async function enter(t: Target, id: ChatIdentity, newlyContacted = false): Promise<void> {
     await close();
-    // 先确认完整列表里的身份并滚动定位，再开启观察，最后选择目标触发首批历史请求。
+    // 先找到精确身份并滚动定位，再开启观察，最后选择目标触发首批历史请求。
     await goto(CHAT_URL);
-    const index = await locateConversation(id);
+    const index = await locateConversation(id, newlyContacted);
     const watch = await browser.watchResponses(HISTORY_ENDPOINT);
     try {
       await browser.clickNth(LIST_ITEMS, index);
