@@ -25,3 +25,15 @@ for (const mode of ['exact', 'other-job', 'duplicate', 'incomplete'] as const) {
     } finally { await site.close(); await f.close(); }
   });
 }
+
+test('完整列表有目标但滚动到底仍不渲染目标行时明确失败', async () => {
+  const f = await startBoss({ continued: true, windowSize: 4, omitTargetRow: true, friends: [...preceding.slice(0, 8), TARGET] });
+  const browser = localBrowser('virtual-chat-missing');
+  const site = createBossSite(bossBrowser(browser, f));
+  try {
+    const opened = await site.openJob(target);
+    assert.equal(opened.kind, 'blocked');
+    assert.match(opened.evidence, /滚动到底|达到上限/);
+    assert.deepEqual([f.contacts, f.sends, f.historyRequests], [0, [], []]);
+  } finally { await site.close(); await f.close(); }
+});
