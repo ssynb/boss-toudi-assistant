@@ -16,11 +16,9 @@ const plan: MockItem = { type: 'function_call', name: 'set_search_plan', args: {
 const card = { jobId: 'j1', url: 'https://www.zhipin.com/job_detail/j1.html', title: '前端工程师', company: '甲公司', salary: '25-35K', area: '北京', snippet: 'React' };
 const script: MockItem[][] = [
   [plan],
-  [{ type: 'function_call', name: 'boss_search', args: { keyword: '前端', page: 1 } }],
-  [{ type: 'function_call', name: 'boss_search', args: { keyword: '前端', page: 2 } }],
-  [{ type: 'function_call', name: 'boss_job_detail', args: { jobId: 'j1' } }],
-  [{ type: 'function_call', name: 'propose_batch', args: { shortfallReason: '搜索结果耗尽，仅一个岗位匹配', targets: [{ jobId: 'j1', reason: 'React 匹配', greeting: '您好，我有五年 React 经验' }] } }],
-  [{ type: 'message', text: '已提交' }],
+  [{ type: 'message', text: '计划完成' }],
+  [{ type: 'function_call', name: 'submit_decisions', args: { decisions: [{ jobId: 'j1', decision: 'select', reason: 'React 匹配', greeting: '您好，我有五年 React 经验' }] } }],
+  [{ type: 'message', text: '判定完成' }],
 ];
 
 async function run(body: unknown, page: BrowserPage = 'ready') {
@@ -87,9 +85,13 @@ for (const terminal of ['failed', 'cancelled'] as const) {
       let body = '';
       req.on('data', chunk => { body += chunk; });
       req.on('end', () => {
-        if (++requests === 12) {
+        if (++requests >= 8) {
           lastInput = JSON.stringify(JSON.parse(body).input.at(-1));
-          respond(res);
+          if (requests === 8) respond(res);
+          else {
+            res.writeHead(200, { 'content-type': 'text/event-stream' });
+            res.end(`event: response.failed\ndata: ${JSON.stringify({ type: 'response.failed', response: { id: 'failure', error: { code: 'invalid_prompt', message: 'staged fixture failure' } } })}\n\n`);
+          }
           return;
         }
         void fetch(`${mock.baseUrl}/responses`, { method: 'POST', headers: { 'content-type': 'application/json' }, body })
@@ -125,7 +127,7 @@ for (const terminal of ['failed', 'cancelled'] as const) {
       assert.ok(original);
       await server.app.startDiscovery({ autoSend: true });
       const response = await staged;
-      assert.match(lastInput, /草案已接收/, '终态发生在真实Codex收到草案接收结果后');
+      assert.match(lastInput, /判定已接收/, '终态发生在真实Codex收到草案接收结果后');
       const finished = idle();
       if (terminal === 'cancelled') server.app.stopDiscovery();
       else {

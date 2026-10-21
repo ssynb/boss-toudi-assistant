@@ -87,7 +87,7 @@ function waitIdle(server: RunningServer): Promise<AppState> {
 test('真实 Codex 工具在途时停止：先 stopping、禁保存，工具结束后才固定 finishedAt', async () => {
   const mock = await startMockModel([
     [{ type: 'function_call', name: 'set_search_plan', args: { keywords: ['前端'], city: '北京', salaryMinK: null, maxTargets: 10, excludeCompanies: [], quotes: { direction: '前端', city: '北京', salary: '薪资不限' } } }],
-    [{ type: 'function_call', name: 'boss_search', args: { keyword: '前端', page: 1 } }],
+    [{ type: 'message', text: '计划完成' }],
   ]);
   const dir = tempDir('boss-time-rpc-');
   fs.mkdirSync(path.join(dir, 'codex-home'));

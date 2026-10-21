@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { startServer } from '../src/server.ts';
-import type { Site } from '../src/boss.ts';
+import { MAX_SEARCH_PAGE, SiteBlockedError, type Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
 import { api, LOCAL, tempDir } from './helpers.ts';
 import { mockProviderToml, startMockModel, type MockItem } from './mock-responses.ts';
@@ -77,37 +77,37 @@ async function discover(base: string): Promise<AppState> {
   }
 }
 
-test('Codex 通过受限只读工具发现岗位，生成待批准草案，期间没有任何联系动作', async () => {
-  const { mock, fake, server } = await setup(
-    [
-      [plan],
-      [{ type: 'function_call', name: 'boss_search', args: { keyword: '前端', page: 1 } }],
-      [{ type: 'function_call', name: 'propose_batch', args: { targets: [{ jobId: 'j1', reason: '只看标题', greeting: '你好' }] } }],
-      [{ type: 'function_call', name: 'boss_job_detail', args: { jobId: 'j1' } }],
-      [{ type: 'function_call', name: 'propose_batch', args: { targets: [{ jobId: 'zzz', reason: '编造的', greeting: '你好' }] } }],
-      [{ type: 'function_call', name: 'propose_batch', args: { targets: [{ jobId: 'j1', reason: 'React 经验匹配', greeting: '您好，我有五年 React 经验' }] } }],
-      [{ type: 'message', text: '已提交草案' }],
-    ],
-    'gpt-mock',
-  );
+const end: MockItem[] = [{ type: 'message', text: '完成本轮' }];
+const selection = (jobId: string, selected = true) => ({ jobId, decision: selected ? 'select' : 'reject', reason: selected ? 'React经验匹配实际JD' : '实际JD与简历不匹配', ...(selected ? { greeting: '您好，我有五年 React 经验' } : {}) });
+const judgments = (items: ReturnType<typeof selection>[]): MockItem[] => [{ type: 'function_call', name: 'submit_decisions', args: { decisions: items } }];
+const planned = (maxTargets: number, keywords = ['前端']): MockItem[] => [{ type: 'function_call', name: 'set_search_plan', args: { ...(plan as Extract<MockItem, { type: 'function_call' }>).args as object, maxTargets, keywords } }];
+
+// 模型替身只给计划和本批判断，不替程序搜索、读取或累计。
+function scriptFor(ids: string[], maxTargets: number, select: (id: string) => boolean = () => true): MockItem[][] {
+  const script: MockItem[][] = [planned(maxTargets), end];
+  for (let i = 0; i < ids.length; i += 10) script.push(judgments(ids.slice(i, i + 10).map(id => selection(id, select(id)))), end);
+  return script;
+}
+
+const job = (id: string) => ({ ...cards[0]!, jobId: id, url: `https://www.zhipin.com/job_detail/${id}.html` });
+
+test('程序搜索、排除、读取实际JD后由独立模型回合判定，只有正常结束保存草案', async () => {
+  const { mock, fake, server } = await setup([planned(1), end, judgments([selection('j1')]), end], 'gpt-mock');
   try {
     const state = await discover(server.url);
     assert.deepEqual(fake.writes, []);
     assert.deepEqual(fake.reads, ['search:前端:北京:1', 'detail:j1']);
-    const batch = state.batch!;
-    assert.equal(batch.status, 'draft');
-    assert.deepEqual(
-      batch.targets.map((t) => ({ jobId: t.jobId, company: t.company, title: t.title, salary: t.salary, greeting: t.greeting, steps: t.steps })),
-      [{ jobId: 'j1', company: '甲公司', title: '前端工程师', salary: '25-35K', greeting: '您好，我有五年 React 经验', steps: { contact: 'todo', greeting: 'todo' } }],
-    );
-    const rejectedOutput = JSON.stringify(mock.requests[5]?.input.at(-1));
-    assert.match(rejectedOutput, /zzz/, '编造的岗位被工具拒绝并告知模型');
-    assert.match(JSON.stringify(mock.requests[3]?.input.at(-1)), /JD|详情/, '未读 JD 不能提交草案');
-    assert.ok(!JSON.stringify(mock.requests[2]?.input.at(-1)).includes('乙公司'), '排除公司不交给模型候选集');
-  } finally {
-    await server.close();
-    mock.close();
-  }
+    assert.equal(state.batch!.status, 'draft');
+    assert.deepEqual(state.batch!.targets.map(t => ({ jobId: t.jobId, company: t.company, greeting: t.greeting, steps: t.steps })),
+      [{ jobId: 'j1', company: '甲公司', greeting: '您好，我有五年 React 经验', steps: { contact: 'todo', greeting: 'todo' } }]);
+    const input = JSON.stringify(mock.requests[2]);
+    assert.match(input, /岗位职责：负责前端开发/);
+    assert.ok(!input.includes('乙公司'));
+    for (const request of mock.requests) {
+      const tools = JSON.stringify(request.tools);
+      for (const name of ['boss_search', 'boss_job_detail', 'propose_batch']) assert.ok(!tools.includes(name), '模型不能驱动浏览器或提交整轮草案');
+    }
+  } finally { await server.close(); mock.close(); }
 });
 
 test('模型看不到 shell、联网搜索等工具；越权的命令与改文件被拒绝', async () => {
@@ -150,7 +150,6 @@ test('模型看不到 shell、联网搜索等工具；越权的命令与改文�
 test('缺关键要求先澄清，不搜索；补充同一文本框后清除问题', async () => {
   const { mock, fake, server } = await setup([
     [{ type: 'function_call', name: 'request_clarification', args: { questions: ['希望在哪个城市？', '可接受的最低月薪或不限？'] } }],
-    [{ type: 'function_call', name: 'boss_search', args: { keyword: '前端', page: 1 } }],
     [{ type: 'message', text: '请补充' }],
   ], 'gpt-mock');
   try {
@@ -168,61 +167,77 @@ test('缺关键要求先澄清，不搜索；补充同一文本框后清除问�
   } finally { await server.close(); mock.close(); }
 });
 
-for (const exhausted of [false, true]) test(`100目标不能以4个无解释结束；搜索耗尽=${exhausted}`, async () => {
-  const targets = Array.from({ length: 4 }, (_, i) => ({ jobId: `j${i}`, reason: '实际JD匹配React经验', greeting: '您好，我有React经验' }));
-  const script: MockItem[][] = [
-    [{ ...plan, args: { ...(plan as Extract<MockItem, { type: 'function_call' }>).args as object, maxTargets: 100 } } as MockItem],
-    [{ type: 'function_call', name: 'boss_search', args: { keyword: '前端', page: 1 } }],
-    ...targets.map(t => [{ type: 'function_call' as const, name: 'boss_job_detail', args: { jobId: t.jobId } }]),
-    [{ type: 'function_call', name: 'propose_batch', args: { targets } }],
-  ];
-  if (exhausted) script.push(
-    [{ type: 'function_call', name: 'boss_search', args: { keyword: '前端', page: 2 } }],
-    [{ type: 'function_call', name: 'propose_batch', args: { targets, shortfallReason: '搜索结果已耗尽，仅4个岗位符合实际JD要求' } }],
-  );
-  script.push([{ type: 'message', text: '结束' }]);
-  const { mock, fake, server } = await setup(script, 'gpt-mock');
-  fake.site.search = async q => q.page === 1 ? targets.map(t => ({ ...cards[0]!, jobId: t.jobId })) : [];
+
+for (const count of [100, 289, 700]) test(`程序累计判定并正常保存，候选${count}`, { timeout: 60_000 }, async () => {
+  const readLimit = Math.min(count, 600);
+  const ids = Array.from({ length: readLimit }, (_, i) => `j${i}`);
+  const select = (id: string) => count === 100 || Number(id.slice(1)) % 10 === 0;
+  const { mock, fake, server } = await setup(scriptFor(ids, 100, select), 'gpt-mock');
+  const searched: number[] = [];
+  const read: string[] = [];
+  fake.site.search = async q => { searched.push(q.page); return q.page === 1 ? Array.from({ length: count }, (_, i) => job(`j${i}`)) : []; };
+  fake.site.jobDetail = async c => { read.push(c.jobId); return `真实JD-${c.jobId}-END`; };
   try {
     await api(server.url, 'PUT', '/api/inputs', { requirements: '北京前端，月薪至少20K，目标100个', resume: { text: null } });
     const state = await discover(server.url);
-    assert.match(JSON.stringify(mock.requests[7]?.input.at(-1)), /100|继续/);
-    assert.equal(state.batch?.targets.length ?? 0, exhausted ? 4 : 0);
-    assert.ok(state.discovery.message);
-    assert.match(state.discovery.message, exhausted ? /100.*4|4.*100/ : /未.*目标|没有提交/);
-    if (exhausted) {
-      assert.match(state.discovery.message, /计划范围.*5.*不代表全站/);
-      assert.match(state.discovery.message, /模型筛选说明.*耗尽/);
+    assert.equal(state.batch?.targets.length, count === 100 ? 100 : count === 289 ? 29 : 60);
+    assert.equal(read.length, readLimit, '100目标允许最多600次详情读取，不能在147次后由模型结束');
+    assert.deepEqual(searched, count === 289 ? [1, 2] : [1], '达到目标或预算后不再搜索');
+    if (count !== 100) assert.match(state.discovery.message!, count === 289 ? /计划范围.*不代表全站/ : /详情.*预算/);
+    for (const request of mock.requests.filter(r => JSON.stringify(r.input).includes('真实JD-'))) {
+      const text = JSON.stringify(request.input);
+      const unique = new Set(text.match(/真实JD-j\d+-END/g));
+      assert.ok(unique.size <= 10, '独立判定回合不能累积旧批JD上下文');
     }
     assert.deepEqual(fake.writes, []);
   } finally { await server.close(); mock.close(); }
 });
 
-for (const scenario of ['unread-candidates', 'skipped-pages', 'repeated-searches'] as const) {
-  test(`不足目标不得绕过未完成的发现工作：${scenario}`, async () => {
-    const targets = Array.from({ length: 4 }, (_, i) => ({ jobId: `j${i}`, reason: 'React经验匹配实际JD', greeting: '您好，我有React经验' }));
-    const search = (page: number): MockItem[] => [{ type: 'function_call', name: 'boss_search', args: { keyword: '前端', page } }];
-    const script: MockItem[][] = [
-      [{ type: 'function_call', name: 'set_search_plan', args: { ...(plan as Extract<MockItem, { type: 'function_call' }>).args as object, maxTargets: 100 } }],
-      search(1),
-      ...targets.map(t => [{ type: 'function_call' as const, name: 'boss_job_detail', args: { jobId: t.jobId } }]),
-      ...(scenario === 'repeated-searches' ? Array.from({ length: 34 }, () => search(1)) : [search(scenario === 'skipped-pages' ? 5 : 2)]),
-      [{ type: 'function_call', name: 'propose_batch', args: { targets, shortfallReason: '搜索结果耗尽' } }],
-      [{ type: 'message', text: '结束' }],
-    ];
-    const { mock, fake, server } = await setup(script, 'gpt-mock');
-    fake.site.search = async q => q.page === 1
-      ? Array.from({ length: scenario === 'unread-candidates' ? 100 : 4 }, (_, i) => ({ ...cards[0]!, jobId: `j${i}` })) : [];
-    try {
-      await api(server.url, 'PUT', '/api/inputs', { requirements: '北京前端，月薪至少20K，目标100个', resume: { text: null } });
-      const state = await discover(server.url);
-      assert.equal(state.batch, null, '尚有未完成搜索或未读候选，不能接受小批次为成功');
-      assert.match(state.discovery.message!, /目标\s*100/);
-      assert.match(state.discovery.message!, /已读.*4/);
-      assert.match(state.discovery.message!, scenario === 'unread-candidates' ? /未读.*96/ : /前端.*[2-5]/);
-      assert.doesNotMatch(state.discovery.message!, /调整具体要求/);
-      assert.match(JSON.stringify(mock.requests.at(-1)?.input.at(-1)), /继续|未读/);
-      assert.deepEqual(fake.writes, []);
-    } finally { await server.close(); mock.close(); }
-  });
-}
+test('程序连续遍历计划关键词与页码，跨页去重；空JD不送给模型', async () => {
+  const script: MockItem[][] = [planned(100, ['前端', 'React']), end];
+  for (let page = 1; page <= MAX_SEARCH_PAGE; page++) script.push(judgments([selection(`p${page}`)]), end);
+  script.push(judgments([selection('react')]), end);
+  const { mock, fake, server } = await setup(script, 'gpt-mock');
+  const searched: string[] = [];
+  const read: string[] = [];
+  fake.site.search = async q => {
+    searched.push(`${q.keyword}:${q.page}`);
+    if (q.keyword === 'React') return q.page === 1 ? [job('p1'), job('react')] : [];
+    return [job(`p${q.page}`), job('empty'), cards[1]!];
+  };
+  fake.site.jobDetail = async c => { read.push(c.jobId); return c.jobId === 'empty' ? '' : `JD-${c.jobId}`; };
+  try {
+    const state = await discover(server.url);
+    assert.equal(state.batch?.targets.length, MAX_SEARCH_PAGE + 1);
+    assert.deepEqual(searched, [...Array.from({ length: MAX_SEARCH_PAGE }, (_, i) => `前端:${i + 1}`), 'React:1', 'React:2']);
+    assert.equal(read.filter(id => id === 'empty').length, 1);
+    assert.equal(read.filter(id => id === 'p1').length, 1);
+    assert.ok(!read.includes('j2'), '排除公司不读JD');
+    assert.ok(!state.batch!.targets.some(t => t.jobId === 'empty'), '空JD不能入选');
+  } finally { await server.close(); mock.close(); }
+});
+
+for (const invalid of ['foreign', 'missing', 'duplicate', 'greeting'] as const) test(`本批判断校验失败后仅重试本批一次：${invalid}`, async () => {
+  const valid = selection('j1');
+  const bad = invalid === 'foreign' ? [selection('invented')] : invalid === 'missing' ? []
+    : invalid === 'duplicate' ? [valid, valid] : [{ ...valid, greeting: '长'.repeat(201) }];
+  const { mock, fake, server } = await setup([planned(1), end, judgments(bad), end, judgments([valid]), end], 'gpt-mock');
+  try {
+    const state = await discover(server.url);
+    assert.equal(state.batch?.targets.length, 1);
+    assert.match(JSON.stringify(mock.requests[3]?.input.at(-1)), /出错|无效|拒绝|200/);
+    assert.deepEqual(fake.reads, ['search:前端:北京:1', 'detail:j1'], '重试判定不重读页面');
+    assert.deepEqual(fake.writes, []);
+  } finally { await server.close(); mock.close(); }
+});
+
+test('已有入选后遇到站点风控，整轮不保存不联系', async () => {
+  const { mock, fake, server } = await setup([planned(100), end, judgments([selection('j1')]), end], 'gpt-mock');
+  fake.site.search = async q => { if (q.page === 2) throw new SiteBlockedError({ page: 'verification', url: null }); return [job('j1')]; };
+  try {
+    const state = await discover(server.url);
+    assert.equal(state.batch, null);
+    assert.match(state.discovery.message!, /验证|风控/);
+    assert.deepEqual(fake.writes, []);
+  } finally { await server.close(); mock.close(); }
+});
