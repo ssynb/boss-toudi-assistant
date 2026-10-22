@@ -4,7 +4,7 @@
  * 规则：
  * - 运行批次只有本轮找到就投授权可追加目标，拒绝其他修改；其余时候任何修改（具体要求、简历、批次）都会让未完成批次退回草案并使批准失效。
  * - 联系账本（contacts）跨批次保存：联系步骤动手前先记为 unknown，核实后改为 done；
- *   账本里出现过的岗位永不再次联系。
+ *   账本里仍有记录的岗位永不再次联系；明确未联系仅撤销当前尝试的占位。
  * - 打开数据库时，上次残留的 inflight 步骤变为 unknown，执行中的批次变为 paused。
  */
 import crypto from 'node:crypto';
@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS targets (
   contact TEXT NOT NULL, greeting_state TEXT NOT NULL,
   evidence TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS contact_identities (target_id TEXT PRIMARY KEY, job_id TEXT NOT NULL, recruiter_value TEXT NOT NULL, kind TEXT NOT NULL DEFAULT 'legacyUrl');
-CREATE TABLE IF NOT EXISTS contacts (job_id TEXT PRIMARY KEY, company TEXT NOT NULL, title TEXT NOT NULL, state TEXT NOT NULL, at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS contacts (job_id TEXT PRIMARY KEY, company TEXT NOT NULL, title TEXT NOT NULL, state TEXT NOT NULL, at TEXT NOT NULL, attempt_id TEXT);
 `;
 
 interface BatchRow {
@@ -135,6 +135,8 @@ export class State {
     try {
       this.#db.exec('PRAGMA locking_mode = EXCLUSIVE; PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL;');
       this.#db.exec(SCHEMA);
+      const contactColumns = this.#db.prepare('PRAGMA table_info(contacts)').all() as { name: string }[];
+      if (!contactColumns.some(c => c.name === 'attempt_id')) this.#db.exec('ALTER TABLE contacts ADD COLUMN attempt_id TEXT');
       this.#migrateIdentity();
       this.#dropRemovedColumns();
       this.#migrateResume(file);
@@ -417,12 +419,12 @@ export class State {
 
   setStep(target: Target, step: Step, value: StepState, evidence: string, identity?: ContactIdentity): void {
     this.#tx(() => {
-      const previous = (this.#db.prepare('SELECT contact FROM targets WHERE id = ?').get(target.id) as { contact: StepState } | undefined)?.contact;
       this.#db.prepare(`UPDATE targets SET ${STEP_COLUMN[step]} = ?, evidence = ?, updated_at = ? WHERE id = ?`).run(value, evidence, now(), target.id);
       if (step !== 'contact') return;
-      // 本次尝试点击前写下的保守占位；站点已核实未发生时撤销，既不占额度也不阻止日后联系。
-      if (value === 'failed' && previous === 'inflight') {
-        this.#db.prepare("DELETE FROM contacts WHERE job_id = ? AND state = 'unknown'").run(target.jobId);
+      if (value === 'inflight') {
+        const reserved = this.#db.prepare('INSERT OR IGNORE INTO contacts (job_id, company, title, state, at, attempt_id) VALUES (?, ?, ?, ?, ?, ?)')
+          .run(target.jobId, target.company, target.title, 'unknown', now(), target.id);
+        if (reserved.changes !== 1) throw new AppError('not_startable', '联系账本已有该岗位记录，不能再次联系');
         return;
       }
       if (value === 'done' && identity) {
@@ -430,13 +432,24 @@ export class State {
         this.#db.prepare('INSERT INTO contact_identities (target_id, job_id, recruiter_value, kind) VALUES (?, ?, ?, ?) ON CONFLICT(target_id) DO UPDATE SET job_id = excluded.job_id, recruiter_value = excluded.recruiter_value, kind = excluded.kind')
           .run(target.id, identity.jobId, identity.kind === 'chatId' ? identity.recruiterId : identity.recruiterUrl, identity.kind ?? 'legacyUrl');
       }
-      if (value === 'inflight' || value === 'unknown' || value === 'done') {
+      if (value === 'unknown' || value === 'done') {
         this.#db
-          .prepare('INSERT INTO contacts (job_id, company, title, state, at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(job_id) DO UPDATE SET state = excluded.state, at = excluded.at')
+          .prepare('INSERT INTO contacts (job_id, company, title, state, at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(job_id) DO UPDATE SET state = excluded.state, at = excluded.at, attempt_id = NULL')
           .run(target.jobId, target.company, target.title, value === 'done' ? 'done' : 'unknown', now());
       } else if (value === 'skipped') {
         this.#db.prepare('INSERT OR IGNORE INTO contacts (job_id, company, title, state, at) VALUES (?, ?, ?, ?, ?)').run(target.jobId, target.company, target.title, 'skipped', now());
       }
+    });
+  }
+
+  /** 仅站点明确证明本次未联系时撤销本次占位；与 failed 同事务提交，其他失败不能释放额度。 */
+  confirmNotContacted(target: Target, evidence: string): void {
+    this.#tx(() => {
+      const updated = this.#db.prepare("UPDATE targets SET contact = 'failed', evidence = ?, updated_at = ? WHERE id = ? AND job_id = ? AND contact = 'inflight'")
+        .run(evidence, now(), target.id, target.jobId);
+      const removed = this.#db.prepare("DELETE FROM contacts WHERE job_id = ? AND state = 'unknown' AND attempt_id = ?")
+        .run(target.jobId, target.id);
+      if (updated.changes !== 1 || removed.changes !== 1) throw new AppError('not_startable', '无法核对本次联系尝试，保留联系账本');
     });
   }
 
