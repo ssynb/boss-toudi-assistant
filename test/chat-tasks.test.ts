@@ -2,9 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 import { startServer } from '../src/server.ts';
 import { openState } from '../src/state.ts';
+import { Executor, type WriteSite } from '../src/executor.ts';
+import { requireQuota } from '../src/search-plan.ts';
 import type { Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
 import { api, tempDir } from './helpers.ts';
@@ -87,22 +88,50 @@ for (const scenario of ['quote', 'quota'] as const) test(`对话工具拒绝${sc
   } finally { await server.close(); mock.close(); }
 });
 
-test('今日联系按本地自然日计数，不使用UTC日界线', t => {
-  const before = process.env.TZ;
-  process.env.TZ = 'Asia/Shanghai';
-  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-21T01:00:00Z') });
-  const file = path.join(tempDir('boss-local-day-'), 'state.sqlite');
-  let state = openState(file);
+for (const boundary of [
+  { name: 'CDT午夜不清零', before: '2026-10-22T04:59:59.999Z', after: '2026-10-22T05:00:00.000Z', expected: 49 },
+  { name: '北京时间零点清零', before: '2026-10-22T15:59:59.999Z', after: '2026-10-22T16:00:00.000Z', expected: 0 },
+]) test(`今日联系采用北京时间：${boundary.name}`, t => {
+  const previousZone = process.env.TZ;
+  process.env.TZ = 'America/Chicago';
+  t.mock.timers.enable({ apis: ['Date'], now: new Date(boundary.before) });
+  const state = openState(path.join(tempDir('boss-beijing-day-'), 'state.sqlite'));
   try {
-    const batch = state.replaceBatch(['a', 'b', 'c'].map(id => ({ ...job(id), reason: '测试', greeting: '您好' })));
-    for (const target of batch.targets) state.setStep(target, 'contact', 'unknown', '测试');
-    state.close();
-    const db = new DatabaseSync(file);
-    db.prepare('UPDATE contacts SET at = ? WHERE job_id = ?').run('2026-10-20T15:59:59.999Z', 'a');
-    db.prepare('UPDATE contacts SET at = ? WHERE job_id = ?').run('2026-10-20T16:00:00.000Z', 'b');
-    db.close();
-    state = openState(file);
-    assert.equal(state.snapshot().contactedCount, 3);
-    assert.equal(state.snapshot().contactedToday, 2);
-  } finally { state.close(); t.mock.timers.reset(); if (before === undefined) delete process.env.TZ; else process.env.TZ = before; }
+    const batch = state.replaceBatch(Array.from({ length: 50 }, (_, i) => ({ ...job(`day${i}`), reason: '测试', greeting: '您好' })));
+    for (const target of batch.targets.slice(0, 49)) state.setStep(target, 'contact', 'unknown', '测试账本');
+    assert.equal(state.snapshot().contactedToday, 49);
+    t.mock.timers.setTime(new Date(boundary.after).getTime());
+    assert.equal(state.snapshot().contactedToday, boundary.expected);
+    if (boundary.expected === 49) assert.throws(() => requireQuota(102, state.snapshot().contactedToday), /101/);
+    else assert.doesNotThrow(() => requireQuota(150, state.snapshot().contactedToday));
+    state.setStep(batch.targets[49]!, 'contact', 'inflight', '边界后的新联系');
+    assert.equal(state.snapshot().contactedToday, boundary.expected + 1);
+    assert.equal(state.snapshot().contactedCount, 50, '日界线不能删除历史账本');
+  } finally { state.close(); t.mock.timers.reset(); if (previousZone === undefined) delete process.env.TZ; else process.env.TZ = previousZone; }
+});
+
+test('CDT午夜不能恢复已耗尽的北京时间额度，执行器拒绝新增联系', async t => {
+  const previousZone = process.env.TZ;
+  process.env.TZ = 'America/Chicago';
+  t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-22T04:59:59.999Z') });
+  const state = openState(path.join(tempDir('boss-beijing-quota-'), 'state.sqlite'));
+  const calls: string[] = [];
+  const site: WriteSite = {
+    openJob: async () => { calls.push('open'); return { kind: 'canContact', evidence: '' }; },
+    contact: async t => { calls.push('contact'); return { ok: true, evidence: '', identity: { jobId: t.jobId, recruiterUrl: 'https://www.zhipin.com/boss_detail/test.html' } }; },
+    readChat: async () => ({ ourMessages: 0, evidence: '' }),
+    sendGreeting: async () => { calls.push('greeting'); return { ok: true, evidence: '' }; },
+  };
+  try {
+    const old = state.replaceBatch(Array.from({ length: 150 }, (_, i) => ({ ...job(`old${i}`), reason: '测试', greeting: '您好' })));
+    old.targets.forEach(target => state.setStep(target, 'contact', 'done', '测试账本'));
+    const batch = state.replaceBatch([{ ...job('new'), reason: '测试', greeting: '您好' }]);
+    state.approve(batch.version);
+    t.mock.timers.setTime(new Date('2026-10-22T05:00:00.000Z').getTime());
+    await new Executor(state, site).start();
+    assert.deepEqual(calls, [], '仍是北京时间同一天，不能再次联系');
+    assert.equal(state.snapshot().batch!.status, 'paused');
+    assert.match(state.snapshot().batch!.stopReason!, /额度/);
+    assert.deepEqual(state.snapshot().batch!.targets[0]!.steps, { contact: 'todo', greeting: 'todo' });
+  } finally { state.close(); t.mock.timers.reset(); if (previousZone === undefined) delete process.env.TZ; else process.env.TZ = previousZone; }
 });
