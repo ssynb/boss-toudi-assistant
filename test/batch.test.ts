@@ -264,3 +264,15 @@ test('发送前才出现本方消息时记为跳过，而非已发送或未知',
     assert.equal(state.snapshot().batch!.status, 'done');
   } finally { state.close(); }
 });
+
+test('站点已核实联系未发生时记为未发生而非未确认，并暂停整批', async () => {
+  const state = approvedState(['a', 'b']);
+  try {
+    const { site, calls } = fakeSite({ contact: async (t) => { calls.push(`contact:${t.jobId}`); return { ok: false, notContacted: true, evidence: '站点提示剩余0次，已核实未联系' }; } });
+    await new Executor(state, site).start();
+    assert.deepEqual(target(state, 'a').steps, { contact: 'failed', greeting: 'skipped' });
+    assert.deepEqual(target(state, 'b').steps, { contact: 'todo', greeting: 'todo' });
+    assert.equal(state.snapshot().batch!.status, 'paused');
+    assert.match(state.snapshot().batch!.stopReason!, /未发生/);
+  } finally { state.close(); }
+});
