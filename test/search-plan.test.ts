@@ -12,7 +12,8 @@ test('新任务必须引用最新消息原文，参数或今日额度越界时�
     { directions: [] }, { directions: [{ ...plan.directions[0], count: 151 }] },
     { directions: [{ ...plan.directions[0], keywords: [] }] }, { sendNow: 'true' },
   ]) assert.throws(() => readSearchPlan({ ...plan, ...patch }, requirements, 0));
-  assert.throws(() => readSearchPlan(plan, requirements, 145), /5/);
+  assert.throws(() => readSearchPlan({ ...plan, sendNow: true }, requirements, 145), /5/);
+  assert.equal(readSearchPlan({ ...plan, directions: [{ ...plan.directions[0]!, count: 150 }] }, requirements, 145).directions[0]!.count, 150, '只找不投不占今日额度，发送时再核对');
   assert.deepEqual(readSearchPlan(plan, requirements, 0), plan);
 });
 
