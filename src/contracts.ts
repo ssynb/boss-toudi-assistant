@@ -131,7 +131,7 @@ export interface DiscoveryState {
   /** 后端记录的结束时间（ISO 8601）；运行/正在停止时为 null，完成、停止或失败后固定保留。 */
   finishedAt: string | null;
   status: 'idle' | 'running' | 'stopping';
-  /** 本轮是否找到就投：true 时正常结束后立即执行联系与招呼；false 时只保存草稿，之后在对话里说「投吧」或在投递记录里继续。 */
+  /** 本轮是否找到就投：true 时边找边投，每入选一个岗位立即执行联系与招呼并追加到同一运行批次；false 时只保存草稿，之后在对话里说「投吧」或在投递记录里继续。 */
   autoSend: boolean;
   /** 本轮各方向的目标数与已入选数；未开始过为空数组。 */
   directions: DiscoveryDirectionProgress[];
