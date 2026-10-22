@@ -137,18 +137,18 @@ export class App extends EventEmitter {
 
   async #deliver(plan: SearchPlan, abort: AbortController): Promise<void> {
     requireQuota(plan.directions.reduce((sum, direction) => sum + direction.count, 0), this.#state.snapshot().contactedToday);
-    this.#state.beginDiscovery(plan.sendNow, plan.directions.map(({ name, count }) => ({ name, count, selected: 0 })));
+    this.#state.beginDiscovery(plan.sendNow, plan.directions.map(({ name, count }) => ({ name, count, selected: 0 })), plan);
     this.#changed();
     const outcome = await runDiscovery({
       codex: this.#codex, site: this.#site, state: this.#state, plan, signal: abort.signal,
       log: text => { this.#log(text); this.#changed(); }, node: text => this.#chatNode(text),
     });
-    this.#state.finishDiscovery(outcome.message);
-    const send = !abort.signal.aborted && plan.sendNow && outcome.proposed > 0;
+    this.#state.finishDiscovery(outcome.message, outcome);
+    const send = !abort.signal.aborted && outcome.status === 'completed' && plan.sendNow && outcome.proposed > 0;
     if (!send) this.#assistantAbort = null;
     this.#chatNode(outcome.message);
     if (send) {
-      this.#executeBatch({ version: this.#state.snapshot().batch!.version });
+      this.#executeBatch({ version: this.#state.snapshot().batch!.version }, true);
       await this.#execution;
     }
   }
@@ -164,7 +164,7 @@ export class App extends EventEmitter {
       });
       this.#state.finishResearch('调研完成，结果仅代表本轮实际 JD 抽样。');
     } catch (error) {
-      this.#state.finishResearch(abort.signal.aborted ? '已停止调研，已完成方向保留。' : `调研失败：${error instanceof Error ? error.message : String(error)}；已完成方向保留。`);
+      this.#state.finishResearch(abort.signal.aborted ? '已停止调研，已完成方向保留。' : `调研失败：${error instanceof Error ? error.message : String(error)}；已完成方向保留。`, abort.signal.aborted ? 'stopped' : 'failed');
     }
     this.#assistantAbort = null;
     this.#chatNode(this.#state.snapshot().research.message!);
@@ -202,10 +202,13 @@ export class App extends EventEmitter {
       await this.#refreshAccount();
       abort.signal.throwIfAborted();
       if (!this.#codexState.signedIn) throw new AppError('codex_signed_out', '请先登录 Codex（ChatGPT 账号）');
-      const action = await askAdvisor(this.#codex, abort.signal, this.#state.snapshot());
+      const action = await askAdvisor(this.#codex, abort.signal, this.#state.snapshot(), this.#state.recentTask());
       abort.signal.throwIfAborted();
       if (action.kind === 'reply') { this.#state.finishChat(action.text); this.#assistantAbort = null; return; }
-      this.#state.finishChat(action.kind === 'research' ? '开始只读调研。' : action.kind === 'delivery' ? '开始按方向配额查找岗位。' : '开始投递已保存的批次。');
+      const recap = action.kind === 'research' ? `开始只读调研，城市：${action.city}。` : action.kind === 'delivery'
+        ? `本轮沿用或确认的条件：${action.plan.city}，${action.plan.salaryMinK === null ? '薪资不限' : `月薪至少${action.plan.salaryMinK}K`}，${action.plan.criteria}。方向配额：${action.plan.directions.map(d => `${d.name}${d.count}个`).join('、')}。${action.plan.sendNow ? '正常完成后直接投递。' : '仅保存草稿。'}`
+        : '开始投递已保存的批次。';
+      this.#state.finishChat(recap.slice(0, CHAT_MESSAGE_MAX_CHARS));
       await this.#runAction(action, abort);
     } catch (error) {
       const message = abort.signal.aborted ? '任务已停止，未开始新的联系。' : `任务失败：${error instanceof Error ? error.message : String(error)}`;
@@ -258,7 +261,7 @@ export class App extends EventEmitter {
     this.#executeBatch(request);
   }
 
-  #executeBatch(request?: ApproveRequest): void {
+  #executeBatch(request?: ApproveRequest, continuingTask = false): void {
     if (this.#executor) throw new AppError('batch_running', '批次已在执行');
     const snapshot = this.#state.snapshot();
     requireQuota(snapshot.batch?.targets.filter(target => !target.removed && target.steps.contact === 'todo' && !this.#state.isContacted(target.jobId)).length ?? 0, snapshot.contactedToday);
@@ -266,8 +269,14 @@ export class App extends EventEmitter {
       if (!request || !Number.isSafeInteger(request.version)) throw new AppError('bad_request', 'version 须为整数');
       this.#state.approve(request.version);
     }
+    if (!continuingTask) this.#state.beginSavedTask();
     const executor = new Executor(this.#state, this.#site, () => this.#changed());
-    const run = executor.start();
+    let run: Promise<void>;
+    try { run = executor.start(); }
+    catch (error) {
+      this.#state.finishRecentTask(`执行未开始：${error instanceof Error ? error.message : String(error)}`, 'failed');
+      throw error;
+    }
     this.#executor = executor;
     this.#execution = run
       .catch((e: unknown) => {
@@ -277,7 +286,9 @@ export class App extends EventEmitter {
         this.#executor = null;
         this.#assistantAbort = null;
         const b = this.#state.snapshot().batch;
-        this.#chatNode(b?.status === 'done' ? '批次已执行完毕。' : `批次已暂停${b?.stopReason ? `：${b.stopReason}` : ''}`);
+        const result = b?.status === 'done' ? '批次已执行完毕。' : `批次已暂停${b?.stopReason ? `：${b.stopReason}` : ''}`;
+        this.#state.finishRecentTask(result, b?.status === 'done' ? 'completed' : 'stopped');
+        this.#chatNode(result);
         this.#changed();
       });
   }

@@ -31,6 +31,7 @@ import {
 } from './contracts.ts';
 import { AppError } from './errors.ts';
 import { prepareInputs } from './resume.ts';
+import type { SearchPlan } from './search-plan.ts';
 
 export interface DraftTarget {
   jobId: string;
@@ -43,6 +44,17 @@ export interface DraftTarget {
 }
 
 export type Step = keyof TargetSteps;
+
+/** 只供顾问续接上下文，不作为新的HTTP配置入口。 */
+export interface RecentTask {
+  kind: 'delivery' | 'research' | 'saved';
+  plan: SearchPlan | { city: string } | null;
+  status: 'running' | 'completed' | 'partial' | 'failed' | 'stopped';
+  result: string | null;
+  selected: number;
+  delivered: number;
+  batchId: string | null;
+}
 
 export interface StateSnapshot {
   research: ResearchState;
@@ -162,13 +174,14 @@ export class State {
     });
   }
 
-  beginDiscovery(autoSend = false, directions: DiscoveryDirectionProgress[] = []): void {
+  beginDiscovery(autoSend = false, directions: DiscoveryDirectionProgress[] = [], plan: SearchPlan | null = null): void {
     this.#tx(() => {
       this.#assertNotRunning();
       this.#assertIdle();
       if (!this.#kv('resume', DEFAULT_RESUME).text.trim()) {
         throw new AppError('inputs_incomplete', '请先统一保存具体要求和有效简历正文');
       }
+      this.#setKv('recent_task', { kind: 'delivery', plan, status: 'running', result: null, selected: 0, delivered: 0, batchId: null } satisfies RecentTask);
       this.#setKv('discovery', { status: 'running', message: '正在发现岗位…', directions, startedAt: now(), finishedAt: null, autoSend });
     });
   }
@@ -186,11 +199,32 @@ export class State {
     });
   }
 
-  finishDiscovery(message: string): void {
+  finishDiscovery(message: string, outcome?: { status: RecentTask['status']; proposed: number }): void {
     this.#tx(() => {
       const current = this.#kv('discovery', DEFAULT_DISCOVERY);
-      if (current.status !== 'idle') this.#setKv('discovery', { ...current, status: 'idle', message, finishedAt: now() });
+      if (current.status !== 'idle') {
+        this.#setKv('discovery', { ...current, status: 'idle', message, finishedAt: now() });
+        this.finishRecentTask(message, outcome?.status ?? 'completed', outcome?.proposed ?? 0, outcome?.proposed ? this.#batchRow()?.id ?? null : null);
+      }
     });
+  }
+
+  recentTask(): RecentTask | null {
+    const task = this.#kv<RecentTask | null>('recent_task', null);
+    if (!task) return null;
+    const batch = this.#batch();
+    return { ...task, delivered: batch && batch.id === task.batchId ? batch.targets.filter(target => target.steps.greeting === 'done').length : task.delivered };
+  }
+
+  beginSavedTask(): void {
+    const batch = this.#requireBatch();
+    const previous = this.recentTask();
+    this.#setKv('recent_task', { kind: 'saved', plan: previous?.batchId === batch.id ? previous.plan : null, status: 'running', result: null, selected: batch.targets.length, delivered: batch.targets.filter(t => t.steps.greeting === 'done').length, batchId: batch.id } satisfies RecentTask);
+  }
+
+  finishRecentTask(result: string, status: RecentTask['status'], selected?: number, batchId?: string | null): void {
+    const task = this.recentTask();
+    if (task) this.#setKv('recent_task', { ...task, result, status, selected: selected ?? task.selected, batchId: batchId === undefined ? task.batchId : batchId });
   }
 
   // ---------- 调研与对话 ----------
@@ -200,6 +234,7 @@ export class State {
       this.#assertNotRunning();
       this.#assertIdle();
       if (!this.#kv('resume', DEFAULT_RESUME).text.trim()) throw new AppError('inputs_incomplete', '请先保存有效简历正文');
+      this.#setKv('recent_task', { kind: 'research', plan: { city }, status: 'running', result: null, selected: 0, delivered: 0, batchId: null } satisfies RecentTask);
       this.#setKv('research', { ...DEFAULT_RESEARCH, city, status: 'running', startedAt: now(), message: '正在提出候选方向…' });
     });
   }
@@ -223,9 +258,14 @@ export class State {
     if (current.status === 'running') this.#setKv('research', { ...current, status: 'stopping', message: '正在停止调研，等待在途读取结束…' });
   }
 
-  finishResearch(message: string): void {
-    const current = this.#kv('research', DEFAULT_RESEARCH);
-    if (current.status !== 'idle') this.#setKv('research', { ...current, status: 'idle', finishedAt: now(), message });
+  finishResearch(message: string, status: RecentTask['status'] = 'completed'): void {
+    this.#tx(() => {
+      const current = this.#kv('research', DEFAULT_RESEARCH);
+      if (current.status !== 'idle') {
+        this.#setKv('research', { ...current, status: 'idle', finishedAt: now(), message });
+        this.finishRecentTask(message, status, 0, null);
+      }
+    });
   }
 
   beginChat(message: string): void {
@@ -408,6 +448,7 @@ export class State {
         this.#db.prepare(`UPDATE targets SET ${col} = 'unknown', updated_at = ? WHERE ${col} = 'inflight'`).run(now());
       }
       this.#db.prepare("UPDATE batch SET status = 'paused', stop_reason = ? WHERE status = 'running'").run(stale.n > 0 ? CRASH_REASON : '上次运行意外中断。');
+      if (this.recentTask()?.status === 'running') this.finishRecentTask('上次任务因进程中断而停止；计划保留，未确认结果不重试。', 'stopped');
     });
   }
 

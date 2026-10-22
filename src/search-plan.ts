@@ -13,6 +13,7 @@ export interface SearchPlan {
   directions: DeliveryDirection[];
 }
 export const MAX_SEARCH_KEYWORDS = 20;
+const CRITERIA_MAX_CHARS = 10_000;
 const MAX_DIRECTIONS = 20;
 
 export function requireQuote(quote: unknown, latestMessage: string): void {
@@ -39,7 +40,7 @@ export function readSearchPlan(value: unknown, latestMessage: string, contactedT
   const plan = value as SearchPlan;
   requireQuote(plan?.quote, latestMessage);
   const text = (value: unknown, max: number): value is string => typeof value === 'string' && Boolean(value.trim()) && value.length <= max;
-  if (!plan || !SUPPORTED_CITIES.includes(plan.city) || typeof plan.sendNow !== 'boolean' || !text(plan.criteria, 10_000)
+  if (!plan || !SUPPORTED_CITIES.includes(plan.city) || typeof plan.sendNow !== 'boolean' || !text(plan.criteria, CRITERIA_MAX_CHARS)
     || !(plan.salaryMinK === null || typeof plan.salaryMinK === 'number' && Number.isFinite(plan.salaryMinK) && plan.salaryMinK >= 0 && plan.salaryMinK <= 1000)
     || !Array.isArray(plan.directions) || !plan.directions.length || plan.directions.length > MAX_DIRECTIONS
     || plan.directions.some(d => !d || !text(d.name, 80) || !Number.isInteger(d.count) || d.count < 1
@@ -49,4 +50,23 @@ export function readSearchPlan(value: unknown, latestMessage: string, contactedT
   if (new Set(plan.directions.map(d => d.name.trim())).size !== plan.directions.length) throw new Error('投递方向不能重复');
   requireQuota(plan.directions.reduce((sum, direction) => sum + direction.count, 0), contactedToday);
   return plan;
+}
+
+
+/** 只提取用户明确的常见排除/解除排除；不从岗位页面或模型理由猜条件。 */
+export function preserveExclusions(plan: SearchPlan, userSources: string[]): SearchPlan {
+  const restrictions = new Map<string, boolean>();
+  const directive = /(不再排除|不排除|取消排除|允许|可以|不要|不投|不考虑|不接受|排除|拒绝)(?:再|给|投递|投|找|考虑|推荐|任何|所有|我|这些|\s)*((?:猎头|中介|外包)(?:公司|岗位|职位)?(?:[、/和或及\s]+(?:猎头|中介|外包)(?:公司|岗位|职位)?)*)/gu;
+  for (const source of userSources) {
+    for (const match of source.matchAll(directive)) {
+      const excluded = !['不再排除', '不排除', '取消排除', '允许', '可以'].includes(match[1]!);
+      for (const kind of match[2]!.match(/猎头|中介|外包/gu)!) restrictions.set(kind, excluded);
+    }
+  }
+  if (!restrictions.size) return plan;
+  const explicit = [...restrictions].map(([kind, excluded]) => excluded ? `排除${kind}` : `不再排除${kind}`).join('；');
+  const base = plan.criteria.replace(/^用户明确限制（优先于下文）：[^。]*。/u, '');
+  const criteria = `用户明确限制（优先于下文）：${explicit}。${base}`;
+  if (criteria.length > CRITERIA_MAX_CHARS) throw new Error('筛选条件过长，请精简表述并保留用户明确排除条件');
+  return { ...plan, criteria };
 }
