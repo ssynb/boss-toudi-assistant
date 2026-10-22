@@ -17,6 +17,7 @@ export type HistoryReply = { status: number; body: unknown } | 'drop';
 
 export interface Scenario {
   destination: 'popup' | 'route' | 'new-tab';
+  quotaNotice?: 'continue' | 'not-contacted' | 'unknown';
   /** 立即沟通对应的招聘者。 */
   target: Friend;
   /** 点击立即沟通后站点是否建立会话。 */
@@ -48,6 +49,7 @@ export interface BossFixture {
   scenario: Scenario;
   contacts: number;
   jobVisits: string[];
+  quotaDismissals: number;
   sends: string[];
   history: Map<string, Message[]>;
   historyRequests: Array<{ bossId: string; page: number; maxMsgId: string }>;
@@ -73,7 +75,9 @@ function jobPage(f: BossFixture, jobId: string): string {
 <div class="job-sec-text">岗位职责：本地合成 JD</div>
 <a class="btn-startchat" href="javascript:;" redirect-url="${redirect}">${contacted ? '继续沟通' : '立即沟通'}</a>
 <div class="startchat-dialog" hidden><textarea></textarea></div>
-<script>document.querySelector('.btn-startchat').onclick=async()=>{await fetch('/wapi/contact?jobId=${jobId}',{method:'POST'});${action}};</script>`;
+<div class="dialog-wrap greet-pop" hidden><div class="dialog-container"><div class="dialog-title">温馨提示</div><div class="dialog-content">${f.scenario.quotaNotice === 'unknown' ? '操作未确认，请人工处理' : '您今天已与120位BOSS沟通，还剩30次沟通机会哦'}</div><div class="dialog-footer"><div class="btns"><span class="btn btn-sure">好</span></div></div></div>
+<script>document.querySelector('.btn-startchat').onclick=async()=>{await fetch('/wapi/contact?jobId=${jobId}',{method:'POST'});${f.scenario.quotaNotice ? "document.querySelector('.greet-pop').hidden=false" : action}};
+document.querySelector('.greet-pop .btn-sure').onclick=async()=>{await fetch('/wapi/quota-dismiss',{method:'POST'});document.querySelector('.greet-pop').hidden=true;${f.scenario.quotaNotice === 'continue' ? action : ''}};</script>`;
 }
 
 function chatPage(f: BossFixture): string {
@@ -138,7 +142,7 @@ function historyReply(f: BossFixture, bossId: string, maxMsgId: string): History
 
 export async function startBoss(scenario: Partial<Scenario> = {}): Promise<BossFixture> {
   const f: BossFixture = {
-    origin: '', contacts: 0, jobVisits: [], sends: [], history: new Map(), historyRequests: [],
+    origin: '', contacts: 0, jobVisits: [], quotaDismissals: 0, sends: [], history: new Map(), historyRequests: [],
     scenario: { destination: 'popup', target: TARGET, createsFriend: true, friends: [], pageSize: 20, ...scenario },
     close: () => new Promise(resolve => { server.closeAllConnections(); server.close(() => resolve()); }),
   };
@@ -160,9 +164,10 @@ export async function startBoss(scenario: Partial<Scenario> = {}): Promise<BossF
       f.contacts++;
       const { target, friends, createsFriend } = f.scenario;
       const jobId = url.searchParams.get('jobId')!;
-      if (createsFriend && !friends.some(x => x.jobId === jobId && x.bossId === target.bossId)) friends.unshift({ ...target, jobId });
+      if (createsFriend && !['not-contacted','unknown'].includes(f.scenario.quotaNotice ?? '') && !friends.some(x => x.jobId === jobId && x.bossId === target.bossId)) friends.unshift({ ...target, jobId });
       return json(200, { code: 0 });
     }
+    if (url.pathname === '/wapi/quota-dismiss') { f.quotaDismissals++; return json(200, {code:0}); }
     if (url.pathname === '/wapi/send') {
       let text = '';
       req.on('data', c => { text += c; });
