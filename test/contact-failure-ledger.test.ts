@@ -30,3 +30,18 @@ for (const previous of ['done','unknown'] as const) {
     } finally {state.close();}
   });
 }
+
+for (const previous of ['done','unknown'] as const) {
+  test(`新的联系尝试不能覆盖同岗位既有${previous}占位`, () => {
+    const state=openState(':memory:');
+    try {
+      const old=state.replaceBatch([draft()]);
+      state.setStep(old.targets[0]!,'contact',previous,'既有证据');
+      const current=state.replaceBatch([draft()]);
+      assert.throws(()=>state.setStep(current.targets[0]!,'contact','inflight','新的尝试'),/已.*联系|账本/);
+      assert.equal(state.snapshot().batch!.targets[0]!.steps.contact,'todo');
+      assert.equal(state.snapshot().contactedToday,1);
+      assert.equal(state.isContacted(current.targets[0]!.jobId),true);
+    } finally {state.close();}
+  });
+}
