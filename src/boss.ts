@@ -56,14 +56,7 @@ export class SiteBlockedError extends Error {
 
 const HOME_URL = `${ORIGIN}/`;
 const LOGIN_URL = `${ORIGIN}/web/user/`;
-/** 账号区与登录入口在 load 之后才渲染（会话页约数百毫秒）；等到能判定登录状态再探测，避免把加载中当作未知。 */
 const PAGE_LOADED = 'document.readyState === "complete" && location.origin === "https://www.zhipin.com"';
-const LOGIN_RENDERED = `(() => {
-  const visible = e => e.checkVisibility({checkVisibilityCSS:true,checkOpacity:true});
-  return /^\\/web\\/(user|passport)\\//.test(location.pathname) || document.title.includes('安全验证')
-    || [...document.querySelectorAll('.nav-figure, .user-nav .user-name')].some(visible)
-    || [...document.querySelectorAll('a,button')].some(e => visible(e) && /^(登录|登录\\/注册)$/.test((e.textContent || '').trim()));
-})()`;
 /** 搜索页在 load 之后才异步渲染岗位卡或「没有找到相关职位」，在此之前提取只会得到空列表。 */
 const RESULTS_RENDERED = 'Boolean(document.querySelector(".job-card-box, .job-empty-box"))';
 
@@ -92,8 +85,22 @@ const PAGE_PROBE = `(() => {
     url: location.href,
     title: document.title,
     hasAccount: [...document.querySelectorAll('.nav-figure, .user-nav .user-name')].some(visible),
-    loginLink: [...document.querySelectorAll('a,button')].some(e => visible(e) && /^(登录|登录\\/注册)$/.test((e.textContent || '').trim())),
+    loginLink: [...document.querySelectorAll('a,button')].some(e => {
+      if (!visible(e)) return false;
+      if (e.classList?.contains('header-login-btn')) return true;
+      if (e.href) {
+        const url = new URL(e.href, location.href);
+        if (url.origin === ${JSON.stringify(ORIGIN)} && url.pathname === '/web/user/') return true;
+      }
+      return /^(登录|登录\\/注册)$/.test((e.innerText ?? e.textContent ?? '').trim().split(/\\r?\\n/, 1)[0].trim());
+    }),
   };
+})()`;
+
+/** 账号区和登录入口会在 load 后异步出现；等待与状态探测共用相同信号。 */
+const LOGIN_RENDERED = `(() => {
+  const p = ${PAGE_PROBE};
+  return /^\\/web\\/(user|passport)\\//.test(location.pathname) || p.title.includes('安全验证') || p.hasAccount || p.loginLink;
 })()`;
 
 const BLOCKED_PAGE = `(() => {
