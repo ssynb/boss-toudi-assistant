@@ -5,7 +5,7 @@
  * 核实不了记 unknown 并停下整批，unknown 永不自动重试。
  * 暂停只在步骤之间生效，不打断正在进行的步骤。
  */
-import type { Batch, Target, ContactIdentity } from './contracts.ts';
+import { DAILY_CONTACT_LIMIT, type Target, type ContactIdentity } from './contracts.ts';
 import type { State } from './state.ts';
 
 export interface Verified {
@@ -65,15 +65,21 @@ export class Executor {
   start(): Promise<void> {
     const batch = this.#state.beginRun();
     this.#onChange();
-    return this.#run(batch);
+    return this.#run(batch.targets, true);
   }
 
-  async #run(batch: Batch): Promise<void> {
+  /** 已入账且获批的单目标执行；运行批次保持打开，供发现串行追加下一目标。 */
+  async runTarget(id: string): Promise<boolean> {
+    await this.#run([this.#state.runningTarget(id)], false);
+    return this.#state.snapshot().batch?.status === 'running';
+  }
+
+  async #run(targets: Target[], finish: boolean): Promise<void> {
     try {
-      for (const t of batch.targets) {
+      for (const t of targets) {
         if (!t.removed) await this.#runTarget(t);
       }
-      this.#state.finishRun('done', null);
+      if (finish) this.#state.finishRun('done', null);
     } catch (e) {
       if (!(e instanceof Stop)) {
         this.#state.finishRun('paused', `执行出错：${errorText(e)}`);
@@ -87,6 +93,10 @@ export class Executor {
 
   #checkpoint(): void {
     if (this.#pauseRequested) throw new Stop('');
+  }
+
+  #checkDailyQuota(): void {
+    if (this.#state.snapshot().contactedToday >= DAILY_CONTACT_LIMIT) throw new Stop('今日联系额度已用完，已入选待执行目标保留，请在额度恢复后继续');
   }
 
   #set(t: Target, step: keyof Target['steps'], value: Target['steps']['contact'], evidence: string, identity?: ContactIdentity): void {
@@ -107,6 +117,7 @@ export class Executor {
         this.#set(t, 'contact', 'skipped', '此前已联系过或结果未确认，不再联系');
         return this.#skipRest(t, '此前已联系过，不再联系');
       }
+      this.#checkDailyQuota();
       const opened = await this.#site.openJob(t);
       if (opened.kind === 'blocked') throw new Stop(`页面需要处理后才能继续：${opened.evidence}`);
       if (opened.kind === 'missing') {
@@ -121,6 +132,7 @@ export class Executor {
       if (opened.kind === 'existingConversation') {
         this.#set(t, 'contact', 'done', opened.evidence, opened.identity);
       } else {
+        this.#checkDailyQuota();
         this.#set(t, 'contact', 'inflight', opened.evidence);
         const r: Verified = await this.#site.contact(t).catch((e: unknown) => ({ ok: false, evidence: `点击后出错：${errorText(e)}` }));
         this.#set(t, 'contact', r.ok ? 'done' : 'unknown', r.evidence, r.ok ? r.identity : undefined);

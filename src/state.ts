@@ -2,7 +2,7 @@
  * 本地持久状态与批次规则的唯一来源（SQLite）。
  *
  * 规则：
- * - 批次执行中拒绝一切修改；其余时候任何修改（具体要求、简历、批次）都会让未完成批次退回草案并使批准失效。
+ * - 运行批次只有本轮找到就投授权可追加目标，拒绝其他修改；其余时候任何修改（具体要求、简历、批次）都会让未完成批次退回草案并使批准失效。
  * - 联系账本（contacts）跨批次保存：联系步骤动手前先记为 unknown，核实后改为 done；
  *   账本里出现过的岗位永不再次联系。
  * - 打开数据库时，上次残留的 inflight 步骤变为 unknown，执行中的批次变为 paused。
@@ -310,21 +310,66 @@ export class State {
     if (new Set(drafts.map((d) => d.jobId)).size !== drafts.length) throw new AppError('bad_request', '草案中有重复岗位');
     this.#tx(() => {
       this.#assertNotRunning();
-      const version = (this.#batchRow()?.version ?? 0) + 1;
-      this.#db.exec('DELETE FROM contact_identities; DELETE FROM targets; DELETE FROM batch;');
-      const id = crypto.randomUUID();
-      this.#db
-        .prepare('INSERT INTO batch (id, version, status, approved_version, stop_reason, created_at) VALUES (?, ?, ?, NULL, NULL, ?)')
-        .run(id, version, 'draft', now());
-      const insert = this.#db.prepare(
-        `INSERT INTO targets (id, batch_id, ord, job_id, company, title, salary, url, reason, greeting, removed, contact, greeting_state, evidence, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'todo', 'todo', '', ?)`,
-      );
-      drafts.forEach((d, i) =>
-        insert.run(crypto.randomUUID(), id, i, d.jobId, d.company, d.title, d.salary, d.url, d.reason, greetingText(d.greeting), now()),
-      );
+      this.#replaceBatch(drafts, 'draft');
     });
     return this.#batch()!;
+  }
+
+  /** 只消费本轮找到就投的持续授权，新增目标和新版本的批准同事务保存。 */
+  appendStreamingTarget(draft: DraftTarget): Target {
+    let targetId = '';
+    this.#tx(() => {
+      const discovery = this.#kv('discovery', DEFAULT_DISCOVERY);
+      const task = this.#kv<RecentTask | null>('recent_task', null);
+      if (discovery.status !== 'running' || !discovery.autoSend || task?.kind !== 'delivery'
+        || !task.plan || !('sendNow' in task.plan) || !task.plan.sendNow) throw new AppError('not_startable', '没有本轮找到就投的运行授权');
+      const row = this.#batchRow();
+      const limit = Math.min(MAX_BATCH_TARGETS, task.plan.directions.reduce((sum, direction) => sum + direction.count, 0));
+      if (task.batchId) {
+        if (!row || row.id !== task.batchId || row.status !== 'running' || row.approved_version !== row.version) throw new AppError('not_startable', '运行批次已停止或授权失效');
+        const count = (this.#db.prepare('SELECT COUNT(*) AS n FROM targets').get() as { n: number }).n;
+        if (count >= limit) throw new AppError('bad_request', '不能超出本轮已授权配额');
+        if (this.#db.prepare('SELECT 1 FROM targets WHERE job_id = ?').get(draft.jobId)) throw new AppError('bad_request', '同一岗位不能重复追加');
+        this.#db.prepare('UPDATE batch SET version = version + 1, approved_version = version + 1').run();
+        targetId = this.#insertDrafts(row.id, [draft], count)[0]!;
+        this.#setKv('recent_task', { ...task, selected: count + 1 });
+      } else {
+        this.#assertNotRunning();
+        if (limit < 1) throw new AppError('bad_request', '本轮没有可用配额');
+        targetId = this.#replaceBatch([draft], 'running')[0]!;
+        this.#setKv('recent_task', { ...task, selected: 1, batchId: this.#batchRow()!.id });
+      }
+    });
+    return this.runningTarget(targetId);
+  }
+
+  runningTarget(id: string): Target {
+    const row = this.#batchRow();
+    if (!row || row.status !== 'running' || row.approved_version !== row.version) throw new AppError('not_startable', '目标不属于当前已批准的运行批次');
+    const target = this.#batch()!.targets.find(target => target.id === id && !target.removed);
+    if (!target) throw new AppError('not_found', '运行目标不存在或已移除');
+    return target;
+  }
+
+  #replaceBatch(drafts: DraftTarget[], status: 'draft' | 'running'): string[] {
+    const version = (this.#batchRow()?.version ?? 0) + 1;
+    this.#db.exec('DELETE FROM contact_identities; DELETE FROM targets; DELETE FROM batch;');
+    const id = crypto.randomUUID();
+    this.#db.prepare('INSERT INTO batch (id, version, status, approved_version, stop_reason, created_at) VALUES (?, ?, ?, ?, NULL, ?)')
+      .run(id, version, status, status === 'running' ? version : null, now());
+    return this.#insertDrafts(id, drafts, 0);
+  }
+
+  #insertDrafts(batchId: string, drafts: DraftTarget[], offset: number): string[] {
+    const insert = this.#db.prepare(
+      `INSERT INTO targets (id, batch_id, ord, job_id, company, title, salary, url, reason, greeting, removed, contact, greeting_state, evidence, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'todo', 'todo', '', ?)`,
+    );
+    return drafts.map((draft, index) => {
+      const id = crypto.randomUUID();
+      insert.run(id, batchId, offset + index, draft.jobId, draft.company, draft.title, draft.salary, draft.url, draft.reason, greetingText(draft.greeting), now());
+      return id;
+    });
   }
 
   patchTarget(id: string, p: TargetPatch): void {
@@ -437,7 +482,9 @@ export class State {
       const discovery = { ...DEFAULT_DISCOVERY, ...saved };
       if (obsoleteQuestions !== undefined || !previous.directions) this.#setKv('discovery', discovery);
       if (discovery.status !== 'idle') {
-        const message = '上次发现因进程中断而停止，结束时间为本次恢复检测时间，未自动发送。';
+        const live = discovery.autoSend && this.recentTask()?.batchId === this.#batchRow()?.id && this.#batchRow();
+        const message = live ? '上次边找边投因进程中断而停止，已执行内容不可撤回，已入选待执行目标保留，未确认不重试。'
+          : '上次发现因进程中断而停止，结束时间为本次恢复检测时间，未自动发送。';
         this.#setKv('discovery', { ...discovery, status: 'idle', message, finishedAt: now() });
         this.appendAssistant(message);
       }

@@ -1,6 +1,6 @@
 /**
  * 应用服务：把状态、Codex、浏览器站点、发现与执行器组合成 HTTP 接口背后的操作。
- * 发现与执行互斥；任何对外联系只经执行器。
+ * 独立任务互斥；边找边投在同一任务内串行发现与单目标执行，任何联系只经执行器。
  */
 import { EventEmitter } from 'node:events';
 import { createHash } from 'node:crypto';
@@ -18,7 +18,7 @@ import { requireQuota, type SearchPlan } from './search-plan.ts';
 import { runDoctor } from './doctor.ts';
 import { AppError } from './errors.ts';
 import { Executor } from './executor.ts';
-import { openState, type State } from './state.ts';
+import { openState, type State, type DraftTarget } from './state.ts';
 
 export const APP_NAME = 'boss-toudi-assistant';
 
@@ -142,15 +142,39 @@ export class App extends EventEmitter {
     const outcome = await runDiscovery({
       codex: this.#codex, site: this.#site, state: this.#state, plan, signal: abort.signal,
       log: text => { this.#log(text); this.#changed(); }, node: text => this.#chatNode(text),
+      accept: draft => this.#sendSelected(draft, abort),
     });
-    this.#state.finishDiscovery(outcome.message, outcome);
-    const send = !abort.signal.aborted && outcome.status === 'completed' && plan.sendNow && outcome.proposed > 0;
-    if (!send) this.#assistantAbort = null;
-    this.#chatNode(outcome.message);
-    if (send) {
-      this.#executeBatch({ version: this.#state.snapshot().batch!.version }, true);
-      await this.#execution;
+    if (plan.sendNow && outcome.proposed > 0) {
+      this.#state.finishRun(outcome.status === 'completed' ? 'done' : 'paused', outcome.status === 'completed' ? null : outcome.message);
+      outcome.message += this.#executionSummary();
     }
+    this.#state.finishDiscovery(outcome.message, outcome);
+    this.#executor = null;
+    this.#assistantAbort = null;
+    this.#chatNode(outcome.message);
+  }
+
+  async #sendSelected(draft: DraftTarget, abort: AbortController): Promise<string | null> {
+    abort.signal.throwIfAborted();
+    const target = this.#state.appendStreamingTarget(draft);
+    this.#executor ??= new Executor(this.#state, this.#site, () => this.#changed());
+    const running = await this.#executor.runTarget(target.id);
+    this.#chatNode(this.#executionSummary());
+    return running ? null : this.#state.snapshot().batch?.stopReason || '已暂停执行';
+  }
+
+  #executionSummary(): string {
+    const targets = this.#state.snapshot().batch?.targets ?? [];
+    const count = { delivered: 0, skipped: 0, failed: 0, unknown: 0, pending: 0 };
+    for (const target of targets) {
+      const steps = Object.values(target.steps);
+      if (steps.includes('unknown') || steps.includes('inflight')) count.unknown++;
+      else if (steps.includes('failed')) count.failed++;
+      else if (target.steps.greeting === 'done') count.delivered++;
+      else if (target.removed || steps.includes('skipped')) count.skipped++;
+      else count.pending++;
+    }
+    return `入选 ${targets.length} 个，送达 ${count.delivered} 个，跳过 ${count.skipped} 个，失败 ${count.failed} 个，未确认 ${count.unknown} 个，待执行 ${count.pending} 个。`;
   }
 
   async #research(city: string, abort: AbortController): Promise<void> {
@@ -174,6 +198,7 @@ export class App extends EventEmitter {
     const state = this.#state.snapshot();
     if (state.discovery.status === 'idle' && !state.chat.pending) return;
     this.#state.requestDiscoveryStop();
+    this.#executor?.pause();
     this.#assistantAbort?.abort();
     this.#changed();
   }
@@ -206,7 +231,7 @@ export class App extends EventEmitter {
       abort.signal.throwIfAborted();
       if (action.kind === 'reply') { this.#state.finishChat(action.text); this.#assistantAbort = null; return; }
       const recap = action.kind === 'research' ? `开始只读调研，城市：${action.city}。` : action.kind === 'delivery'
-        ? `本轮沿用或确认的条件：${action.plan.city}，${action.plan.salaryMinK === null ? '薪资不限' : `月薪至少${action.plan.salaryMinK}K`}，${action.plan.criteria}。方向配额：${action.plan.directions.map(d => `${d.name}${d.count}个`).join('、')}。${action.plan.sendNow ? '正常完成后直接投递。' : '仅保存草稿。'}`
+        ? `本轮沿用或确认的条件：${action.plan.city}，${action.plan.salaryMinK === null ? '薪资不限' : `月薪至少${action.plan.salaryMinK}K`}，${action.plan.criteria}。方向配额：${action.plan.directions.map(d => `${d.name}${d.count}个`).join('、')}。${action.plan.sendNow ? '找到一个就执行一个，配额按入选计，送达/跳过等结果另计。' : '仅保存草稿。'}`
         : '开始投递已保存的批次。';
       this.#state.finishChat(recap.slice(0, CHAT_MESSAGE_MAX_CHARS));
       await this.#runAction(action, abort);
@@ -226,7 +251,14 @@ export class App extends EventEmitter {
   }
 
   #chatNode(text: string): void {
-    this.#state.appendAssistant(text.slice(0, CHAT_MESSAGE_MAX_CHARS));
+    let remaining = text;
+    while (remaining.length > CHAT_MESSAGE_MAX_CHARS) {
+      const newline = remaining.lastIndexOf('\n', CHAT_MESSAGE_MAX_CHARS);
+      const end = newline > 0 ? newline : CHAT_MESSAGE_MAX_CHARS;
+      this.#state.appendAssistant(remaining.slice(0, end));
+      remaining = remaining.slice(end + (newline > 0 ? 1 : 0));
+    }
+    if (remaining.trim()) this.#state.appendAssistant(remaining);
     this.#log(text);
     this.#changed();
   }
@@ -261,7 +293,7 @@ export class App extends EventEmitter {
     this.#executeBatch(request);
   }
 
-  #executeBatch(request?: ApproveRequest, continuingTask = false): void {
+  #executeBatch(request?: ApproveRequest): void {
     if (this.#executor) throw new AppError('batch_running', '批次已在执行');
     const snapshot = this.#state.snapshot();
     requireQuota(snapshot.batch?.targets.filter(target => !target.removed && target.steps.contact === 'todo' && !this.#state.isContacted(target.jobId)).length ?? 0, snapshot.contactedToday);
@@ -269,7 +301,7 @@ export class App extends EventEmitter {
       if (!request || !Number.isSafeInteger(request.version)) throw new AppError('bad_request', 'version 须为整数');
       this.#state.approve(request.version);
     }
-    if (!continuingTask) this.#state.beginSavedTask();
+    this.#state.beginSavedTask();
     const executor = new Executor(this.#state, this.#site, () => this.#changed());
     let run: Promise<void>;
     try { run = executor.start(); }
@@ -286,7 +318,7 @@ export class App extends EventEmitter {
         this.#executor = null;
         this.#assistantAbort = null;
         const b = this.#state.snapshot().batch;
-        const result = b?.status === 'done' ? '批次已执行完毕。' : `批次已暂停${b?.stopReason ? `：${b.stopReason}` : ''}`;
+        const result = (b?.status === 'done' ? '批次已执行完毕。' : `批次已暂停${b?.stopReason ? `：${b.stopReason}` : ''}。`) + this.#executionSummary();
         this.#state.finishRecentTask(result, b?.status === 'done' ? 'completed' : 'stopped');
         this.#chatNode(result);
         this.#changed();
@@ -294,7 +326,9 @@ export class App extends EventEmitter {
   }
 
   pauseBatch(): void {
-    this.#executor?.pause();
+    const discovery = this.#state.snapshot().discovery;
+    if (discovery.status !== 'idle' && discovery.autoSend) this.stopDiscovery();
+    else this.#executor?.pause();
   }
 
   // ---------- 内部 ----------
