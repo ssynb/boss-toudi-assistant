@@ -26,3 +26,16 @@ test('浏览器查询仍拒绝非法城市、页码或过长关键词', () => {
 test('一轮最多可计划 150 个目标', () => {
   assert.equal(readSearchPlan({ ...plan, directions: [{ ...plan.directions[0], count: 150 }] }, requirements, 0).directions[0]!.count, 150);
 });
+
+for (const requirement of ['月薪上限到20K就行', '工资至少20000元/月', '月薪希望高一些', '开始找前端岗位']) {
+  test(`没有明确不限时不能将salaryMinK置空：${requirement}`, () => {
+    assert.throws(() => readSearchPlan({ ...plan, salaryMinK: null, quote: requirement, criteria: requirement }, requirement, 0), /salaryMinK|薪资|阈值/);
+  });
+}
+
+test('薪资语义沿用历史且最新明确修改优先，null只表示明确不限', () => {
+  const request = { ...plan, salaryMinK: null, criteria: '前端', quote: '继续' };
+  assert.throws(() => readSearchPlan(request, '继续', 0, ['薪资不限', '月薪上限到20K就行']), /salaryMinK|阈值/);
+  assert.doesNotThrow(() => readSearchPlan(request, '继续', 0, ['月薪上限到20K就行', '薪资不限']));
+  assert.doesNotThrow(() => readSearchPlan({ ...request, quote: '薪资不限，开始' }, '薪资不限，开始', 0, ['月薪20K']));
+});
