@@ -96,7 +96,7 @@ function matchingIndices(id: ChatIdentity): string {
 }
 
 /** root 子树最近 ms 毫秒内没有任何变化；首次求值时安装观察者。 */
-function quiet(selector: string, ms: number): string {
+export function domQuiet(selector: string, ms: number): string {
   return `(() => {
     const root = document.querySelector(${js(selector)});
     if (!root) return false;
@@ -225,7 +225,7 @@ export function createChatSession(browser: ChatBrowser, goto: (url: string) => P
 
   async function loadOlder(): Promise<void> {
     // 站点在内容不足一屏时自动加载下一页，否则要滚到顶部；等列表安静后滚动，两种情况都覆盖。
-    await browser.waitFor(quiet('.chat-conversation .chat-record', QUIET_MS), '会话历史渲染');
+    await browser.waitFor(domQuiet('.chat-conversation .chat-record', QUIET_MS), '会话历史渲染');
     const height = await browser.eval<number>(`document.querySelector('.chat-conversation .chat-message')?.scrollHeight ?? 0`);
     if (height) await browser.scrollWithin('.chat-conversation .chat-message', 'up', height);
   }
@@ -273,7 +273,7 @@ export function createChatSession(browser: ChatBrowser, goto: (url: string) => P
       const total = await browser.eval<number>(`document.querySelector(${js(LIST_VIEWPORT)})?.scrollHeight ?? 0`);
       if (total) {
         await browser.scrollWithin(LIST_VIEWPORT, 'up', total);
-        await browser.waitFor(quiet('.chat-user', QUIET_MS), '会话列表滚动渲染');
+        await browser.waitFor(domQuiet('.chat-user', QUIET_MS), '会话列表滚动渲染');
       }
     }
     for (let step = 0; step <= MAX_LIST_SCROLLS; step++) {
@@ -286,7 +286,7 @@ export function createChatSession(browser: ChatBrowser, goto: (url: string) => P
       })()`);
       if (!scroll || !scroll.height || scroll.top + scroll.height >= scroll.total || step === MAX_LIST_SCROLLS) break;
       await browser.scrollWithin(LIST_VIEWPORT, 'down', scroll.height);
-      await browser.waitFor(quiet('.chat-user', QUIET_MS), '会话列表滚动渲染');
+      await browser.waitFor(domQuiet('.chat-user', QUIET_MS), '会话列表滚动渲染');
     }
     throw new Error('会话列表滚动到底或达到上限，目标行仍未渲染，停止后续动作');
   }
@@ -353,7 +353,7 @@ export function createChatSession(browser: ChatBrowser, goto: (url: string) => P
       if (beforeFill === null) return { ok: false, evidence: '填写前会话或历史证明已失效，未填写' };
       if (beforeFill) return { ok: true, skipped: true, evidence: '填写前已有本方消息，未发送本次招呼' };
       await browser.fillSelector(CHAT_INPUT, text);
-      await browser.waitFor(quiet(CONTROLS, QUIET_MS), '招呼输入及控件稳定');
+      await browser.waitFor(domQuiet(CONTROLS, QUIET_MS), '招呼输入及控件稳定');
       const own = await measure(t, id);
       if (own === null) return { ok: false, evidence: '填写后当前会话身份或历史证明已变化，未发送' };
       if (own) return { ok: true, skipped: true, evidence: '提交前出现本方消息，未发送本次招呼' };

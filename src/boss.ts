@@ -8,7 +8,7 @@
 import type { BrowserState, Target, ContactIdentity } from './contracts.ts';
 import { BrowserWaitTimeoutError, type Browser } from './browser.ts';
 import type { GreetingResult, OpenJobResult, Verified, WriteSite } from './executor.ts';
-import { createChatSession, HistoryError, OtherJobConversationError, ORIGIN, type ChatIdentity } from './boss-chat.ts';
+import { createChatSession, domQuiet, HistoryError, OtherJobConversationError, ORIGIN, type ChatIdentity } from './boss-chat.ts';
 
 export interface JobCard {
   jobId: string;
@@ -131,6 +131,34 @@ const EXTRACT_CARDS = `(() => {
 })()`;
 
 const EXTRACT_DETAIL = `(document.querySelector('.job-sec-text')?.innerText || '').slice(0, 20000)`;
+
+const CHAT_ENTRY = 'location.pathname.startsWith("/web/geek/chat") || Boolean(document.querySelector(".startchat-dialog")?.checkVisibility())';
+const QUOTA_DIALOG = '.dialog-wrap.greet-pop';
+const QUOTA_CONFIRM = `${QUOTA_DIALOG} .dialog-footer .btn-sure`;
+const CONTACT_SETTLE_MS = 300;
+const QUOTA_NOTICE = `(() => {
+  const visible = e => e.checkVisibility({checkVisibilityCSS:true,checkOpacity:true});
+  const dialogs = [...document.querySelectorAll(${JSON.stringify(QUOTA_DIALOG)})].filter(visible);
+  if (dialogs.length !== 1) return null;
+  const text = dialogs[0].innerText.replace(/\\s+/g, '');
+  const match = text.match(/^温馨提示您今天已与(\\d+)位BOSS沟通[，,]还剩(\\d+)次沟通机会哦[！!。]?好$/);
+  const buttons = [...dialogs[0].querySelectorAll('.dialog-footer .btn-sure')].filter(visible);
+  if (!match || buttons.length !== 1 || buttons[0].textContent.trim() !== '好') return null;
+  const used = Number(match[1]), remaining = Number(match[2]);
+  return Number.isSafeInteger(used) && Number.isSafeInteger(remaining) ? {used,remaining} : null;
+})()`;
+
+function unchangedContactEntry(t: Target): string {
+  return `(() => {
+    const visible = e => e.checkVisibility({checkVisibilityCSS:true,checkOpacity:true});
+    if (location.pathname !== ${JSON.stringify(`/job_detail/${t.jobId}.html`)} || document.querySelector('.page-chat-loading')
+      || [...document.querySelectorAll('.dialog-wrap')].some(visible)) return false;
+    const entries = [...document.querySelectorAll('.btn-startchat')].filter(visible);
+    return entries.length === 1 && entries[0].innerText.trim() === '立即沟通'
+      && entries[0].getAttribute('data-isfriend') !== 'true' && !entries[0].classList.contains('btn-disabled')
+      && !entries[0].disabled && entries[0].getAttribute('aria-disabled') !== 'true';
+  })()`;
+}
 
 const OWN_MESSAGES = `[...document.querySelectorAll('.chat-conversation .message-list [class*="item-myself"]')].map((e) => (e.innerText || '').trim())`;
 
@@ -278,7 +306,7 @@ export function createBossSite(browser: Browser): Site {
   }
 
   /** 在已核实的岗位页上重新定位唯一的「立即沟通」并复核身份，点击后汇合到已有会话路径。 */
-  async function contact(t: Target, expected: ContactIdentity): Promise<Verified> {
+  async function contact(t: Target, expected: ContactIdentity): Promise<Verified & { notContacted?: true }> {
     if (await browser.eval<string>('location.pathname') !== `/job_detail/${t.jobId}.html`) return { ok: false, evidence: '当前岗位已变化，未点击沟通' };
     const { refs } = await browser.snapshot();
     const entries = contactRefs(refs, '立即沟通');
@@ -286,15 +314,31 @@ export function createBossSite(browser: Browser): Site {
     const recruiter = await jobIdentity(t);
     if (JSON.stringify(recruiter) !== JSON.stringify(expected)) return { ok: false, evidence: '招聘者身份已变化，未点击沟通' };
     await browser.click(entries[0]!);
+    let quotaEvidence = '';
     try {
       // 新标签页由 agent-browser 跟随；路由与站内弹层都只作为「已点击生效」的信号，随后统一进入已有会话。
-      await waitPage('location.pathname.startsWith("/web/geek/chat") || Boolean(document.querySelector(".startchat-dialog")?.checkVisibility())', '联系后会话入口');
+      await waitPage(`(${CHAT_ENTRY}) || Boolean(${QUOTA_NOTICE})`, '联系后会话入口或额度提示');
+      const notice = await browser.eval<{used:number;remaining:number} | null>(QUOTA_NOTICE);
+      if (notice) {
+        quotaEvidence = `站点提示：今日已沟通 ${notice.used} 位 BOSS，剩余 ${notice.remaining} 次沟通机会；`;
+        await browser.clickSelector(QUOTA_CONFIRM);
+        await waitPage(`((${CHAT_ENTRY}) || (${unchangedContactEntry(t)})) && (${domQuiet('body', CONTACT_SETTLE_MS)})`, '额度提示关闭后会话入口');
+        if (!(await browser.eval<boolean>(CHAT_ENTRY))) {
+          const current = await status();
+          const {refs: freshRefs} = await browser.snapshot();
+          const unchanged = current.page === 'ready' && await browser.eval<boolean>(unchangedContactEntry(t))
+            && contactRefs(freshRefs, '立即沟通').length === 1 && !contactRefs(freshRefs, '继续沟通').length
+            && JSON.stringify(await jobIdentity(t)) === JSON.stringify(expected);
+          if (unchanged) return {ok:false,notContacted:true,evidence:quotaEvidence+'提示已关闭，原岗位仍为「立即沟通」且未进入会话，已核实未发生联系；不再次点击'};
+          return {ok:false,evidence:quotaEvidence+'关闭提示后未能核实会话或原联系入口，结果未确认'};
+        }
+      }
       if (expected.kind === 'chatId') await chat.enter(t, expected, true);
       else await verifyLegacyChat(t, expected);
-      return { ok: true, evidence: '已进入对应岗位和招聘者的会话页', identity: expected };
+      return { ok: true, evidence: quotaEvidence + '已进入对应岗位和招聘者的会话页', identity: expected };
     } catch (e) {
-      if (e instanceof HistoryError) return { ok: true, evidence: `已进入对应岗位和招聘者的会话页；${e.message}`, identity: expected };
-      return { ok: false, evidence: (e as Error).message };
+      if (e instanceof HistoryError) return { ok: true, evidence: `${quotaEvidence}已进入对应岗位和招聘者的会话页；${e.message}`, identity: expected };
+      return { ok: false, evidence: quotaEvidence + (e as Error).message };
     }
   }
 
