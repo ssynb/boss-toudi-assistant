@@ -15,6 +15,7 @@ export interface SearchPlan {
 export const MAX_SEARCH_KEYWORDS = 20;
 const CRITERIA_MAX_CHARS = 10_000;
 const MAX_DIRECTIONS = 20;
+const EXPLICIT_RESTRICTIONS = /^用户明确限制（优先于下文）：([^。]*)。/u;
 
 export function requireQuote(quote: unknown, latestMessage: string): void {
   if (typeof quote !== 'string' || !quote.trim() || !latestMessage.includes(quote)) throw new Error('操作须附用户最新消息中的逐字原文引用，不能引用旧对话或自行假设授权');
@@ -58,14 +59,15 @@ export function preserveExclusions(plan: SearchPlan, userSources: string[]): Sea
   const restrictions = new Map<string, boolean>();
   const directive = /(不再排除|不排除|取消排除|允许|可以|不要|不投|不考虑|不接受|排除|拒绝)(?:再|给|投递|投|找|考虑|推荐|任何|所有|我|这些|\s)*((?:猎头|中介|外包)(?:公司|岗位|职位)?(?:[、/和或及\s]+(?:猎头|中介|外包)(?:公司|岗位|职位)?)*)/gu;
   for (const source of userSources) {
-    for (const match of source.matchAll(directive)) {
+    const authoritative = EXPLICIT_RESTRICTIONS.exec(source)?.[1] ?? source;
+    for (const match of authoritative.matchAll(directive)) {
       const excluded = !['不再排除', '不排除', '取消排除', '允许', '可以'].includes(match[1]!);
       for (const kind of match[2]!.match(/猎头|中介|外包/gu)!) restrictions.set(kind, excluded);
     }
   }
   if (!restrictions.size) return plan;
   const explicit = [...restrictions].map(([kind, excluded]) => excluded ? `排除${kind}` : `不再排除${kind}`).join('；');
-  const base = plan.criteria.replace(/^用户明确限制（优先于下文）：[^。]*。/u, '');
+  const base = plan.criteria.replace(EXPLICIT_RESTRICTIONS, '');
   const criteria = `用户明确限制（优先于下文）：${explicit}。${base}`;
   if (criteria.length > CRITERIA_MAX_CHARS) throw new Error('筛选条件过长，请精简表述并保留用户明确排除条件');
   return { ...plan, criteria };
