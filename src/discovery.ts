@@ -1,4 +1,5 @@
 /** 只找不投累积草稿；找到就投每个JD独立判定后交给执行器，完成当前目标才继续读取。 */
+import { setTimeout as delay } from 'node:timers/promises';
 import { GREETING_MAX_CHARS } from './contracts.ts';
 import type { CodexClient, DynamicTool } from './codex.ts';
 import { SiteBlockedError, MAX_SEARCH_PAGE, type JobCard, type ReadSite, type SiteControl } from './boss.ts';
@@ -6,6 +7,20 @@ import { greetingText, type State } from './state.ts';
 import { MAX_SEARCH_KEYWORDS, excludeSalaryCard, type DeliveryDirection, type SearchPlan } from './search-plan.ts';
 
 const JUDGMENT_BATCH_SIZE = 10;
+const READ_PACING_MS = { min: 1500, max: 3000 } as const;
+const MS_PER_SECOND = 1000;
+const READ_PACING_MESSAGE = `读取节奏：每次搜索或打开JD前随机等待 ${READ_PACING_MS.min / MS_PER_SECOND}–${READ_PACING_MS.max / MS_PER_SECOND} 秒（含重试，可停止），不保证免除安全验证。`;
+
+export interface ReadClock {
+  /** 与Math.random相同，返回[0, 1)。 */
+  random(): number;
+  wait(milliseconds: number, signal: AbortSignal): Promise<void>;
+}
+
+const SYSTEM_READ_CLOCK: ReadClock = {
+  random: Math.random,
+  async wait(milliseconds, signal) { await delay(milliseconds, undefined, { signal }); },
+};
 const REJECTION_CATEGORIES = ['薪资不足', '外包/猎头/中介', '年限学历', '技术栈不符', '岗位方向不符', '其他'] as const;
 type RejectionCategory = typeof REJECTION_CATEGORIES[number];
 type Rejections = Partial<Record<RejectionCategory, number>>;
@@ -33,7 +48,7 @@ export interface DiscoveryOutcome {
   message: string;
 }
 
-type Options = { codex: CodexClient; site: ReadSite & Pick<SiteControl, 'status'>; state: State; signal: AbortSignal; plan: SearchPlan; log: (text: string) => void; node: (text: string) => void; accept: (draft: Draft) => Promise<string | null> };
+type Options = { readClock?: ReadClock; codex: CodexClient; site: ReadSite & Pick<SiteControl, 'status'>; state: State; signal: AbortSignal; plan: SearchPlan; log: (text: string) => void; node: (text: string) => void; accept: (draft: Draft) => Promise<string | null> };
 type Draft = Parameters<State['replaceBatch']>[0][number];
 type JobDetail = { card: JobCard; jd: string };
 type Judgment = { selected: Draft[]; rejected: Rejections };
@@ -46,13 +61,18 @@ function directionMessage(report: DirectionReport): string {
 
 class SiteUnavailableError extends Error {}
 class ExecutionPausedError extends Error {}
+class ModelJudgmentError extends Error {}
 
 function browserReads(opts: Options) {
   const failures = { search: 0, detail: 0, consecutive: 0, lastError: '' };
+  const clock = opts.readClock ?? SYSTEM_READ_CLOCK;
   return {
     failures,
     async read<T>(kind: 'search' | 'detail', label: string, operation: () => Promise<T>): Promise<{ ok: true; value: T } | { ok: false }> {
       for (let attempt = 0; attempt < READ_ATTEMPTS; attempt++) {
+        opts.signal.throwIfAborted();
+        const milliseconds = READ_PACING_MS.min + Math.floor(clock.random() * (READ_PACING_MS.max - READ_PACING_MS.min + 1));
+        await clock.wait(milliseconds, opts.signal);
         opts.signal.throwIfAborted();
         try {
           const value = await operation();
@@ -85,9 +105,9 @@ async function modelTurn(opts: Options, instructions: string, input: string, too
         return tool.handle(args);
       } })),
     });
+    if (result.status === 'failed') throw new ModelJudgmentError(`Codex 运行失败：${result.error ?? '未知原因'}`);
     opts.signal.throwIfAborted();
     if (result.status === 'interrupted') throw new DOMException('已停止发现。', 'AbortError');
-    if (result.status === 'failed') throw new Error(`Codex 运行失败：${result.error ?? '未知原因'}`);
   } finally {
     active = false;
   }
@@ -141,7 +161,7 @@ async function judge(opts: Options, context: object, jobs: JobDetail[]): Promise
       if (attempt + 1 < JUDGMENT_ATTEMPTS) opts.log('本批模型判定失败，重试一次；不重新读取页面。');
     }
   }
-  throw failure;
+  throw failure instanceof ModelJudgmentError ? failure : new ModelJudgmentError(`模型判定失败：${failure instanceof Error ? failure.message : String(failure)}`);
 }
 
 async function* searchPages(opts: Options, direction: DeliveryDirection, selected: Set<string>, reads: ReturnType<typeof browserReads>): AsyncGenerator<JobCard[]> {
@@ -185,6 +205,7 @@ async function discoverPlan(opts: Options): Promise<DiscoveryOutcome> {
   const budget = detailBudget(total);
   const reports: DirectionReport[] = plan.directions.map(({ name, count }) => ({ name, count, selected: 0, reads: 0, reused: 0, prefiltered: 0, budget: detailBudget(count), rejected: {}, stopped: '未开始' }));
   const warnings = plan.directions.map(keywordWarning).filter(Boolean);
+  opts.node(READ_PACING_MESSAGE);
   for (const warning of warnings) opts.log(warning);
   let reads = 0;
   let carry = 0;
@@ -243,19 +264,20 @@ async function discoverPlan(opts: Options): Promise<DiscoveryOutcome> {
     }
     opts.signal.throwIfAborted();
   } catch (error) {
-    const stopped = opts.signal.aborted || error instanceof ExecutionPausedError || error instanceof Error && error.name === 'AbortError';
-    status = stopped ? 'stopped' : error instanceof SiteUnavailableError ? 'partial' : 'failed';
-    failure = opts.signal.aborted ? '用户已停止' : error instanceof Error ? error.message : String(error);
+    const modelFailed = error instanceof ModelJudgmentError;
+    const stopped = !modelFailed && (opts.signal.aborted || error instanceof ExecutionPausedError || error instanceof Error && error.name === 'AbortError');
+    status = stopped ? 'stopped' : error instanceof SiteUnavailableError || !plan.sendNow && error instanceof SiteBlockedError ? 'partial' : 'failed';
+    failure = stopped && opts.signal.aborted ? '用户已停止' : error instanceof Error ? error.message : String(error);
     for (const report of reports) if (report.stopped === '进行中' || report.stopped === '未开始') report.stopped = `${report.stopped === '未开始' ? '未开始' : '提前停止'}：${failure}`;
   }
-  const normal = status === 'completed' || status === 'partial';
+  const keepDraft = status === 'completed' || status === 'partial' || status === 'stopped';
   const liveBatch = plan.sendNow && opts.state.recentTask()?.batchId === opts.state.snapshot().batch?.id ? opts.state.snapshot().batch : null;
-  const proposed = plan.sendNow ? liveBatch?.targets.length ?? 0 : normal && selected.length ? opts.state.replaceBatch(selected).targets.length : 0;
-  const stopped = status === 'partial' ? `因站点异常提前结束：${failure}` : !normal ? `已停止或失败：${failure}`
+  const proposed = plan.sendNow ? liveBatch?.targets.length ?? 0 : keepDraft && selected.length ? opts.state.replaceBatch(selected).targets.length : 0;
+  const stopped = status === 'partial' ? `因站点异常提前结束：${failure}` : status === 'stopped' ? `提前结束：${failure}` : status === 'failed' ? `发现失败：${failure}`
     : proposed >= total ? '已达到目标' : reports.some(report => report.reads >= report.budget) ? '部分方向详情读取预算已用完' : '计划范围已搜完';
   const saved = proposed ? plan.sendNow ? '已入选及执行结果保留，已执行内容不可撤回。' : '草案已保存，可在对话中说“投吧”。' : '原批次未替换。';
-  const safety = !normal || status === 'partial' ? plan.sendNow && proposed ? '边找边投已暂停，不再开始新动作。' : '未自动发送。' : '';
-  const message = [`目标 ${total} 个，实际 ${proposed} 个。程序停止依据：${stopped}（仅计划关键词，每词最多 ${MAX_SEARCH_PAGE} 页，不代表全站无岗位）。搜索失败 ${reader.failures.search} 页，详情失败 ${reader.failures.detail} 个。${saved}${safety}`, ...reports.map(directionMessage), ...warnings].join('\n');
+  const safety = status !== 'completed' ? plan.sendNow && proposed ? '边找边投已暂停，不再开始新动作。' : '未自动发送。' : '';
+  const message = [`目标 ${total} 个，实际 ${proposed} 个。程序停止依据：${stopped}（仅计划关键词，每词最多 ${MAX_SEARCH_PAGE} 页，不代表全站无岗位）。搜索失败 ${reader.failures.search} 页，详情失败 ${reader.failures.detail} 个。${saved}${safety}`, READ_PACING_MESSAGE, ...reports.map(directionMessage), ...warnings].join('\n');
   return { status, proposed, message };
 }
 

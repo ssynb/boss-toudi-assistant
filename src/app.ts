@@ -11,7 +11,7 @@ import { CHAT_MESSAGE_MAX_CHARS, DAILY_CONTACT_LIMIT, type ChatRequest, type App
 import { Browser } from './browser.ts';
 import { SUPPORTED_CITIES, createBossSite, type Site } from './boss.ts';
 import { CodexClient } from './codex.ts';
-import { runDiscovery } from './discovery.ts';
+import { runDiscovery, type ReadClock } from './discovery.ts';
 import { runResearch } from './research.ts';
 import { askAdvisor, type AdvisorAction } from './advisor.ts';
 import { requireQuota, type SearchPlan } from './search-plan.ts';
@@ -46,6 +46,8 @@ export interface AppOptions {
   dataDir: string;
   /** 站点实现；默认用 agent-browser 驱动真实 BOSS。 */
   site?: Site;
+  /** 发现阶段的读取节奏时钟；默认使用真实可取消等待。 */
+  readClock?: ReadClock;
 }
 
 /** 事件：'changed'（状态有变）、'log'（人话日志文本）。 */
@@ -54,6 +56,7 @@ export class App extends EventEmitter {
   readonly #state: State;
   readonly #codex: CodexClient;
   readonly #site: Site;
+  readonly #readClock: ReadClock | undefined;
   #doctor: Promise<DoctorCheck[]>;
   #codexState: CodexState = { signedIn: false, email: null, plan: null, pendingLoginUrl: null, error: null };
   #assistantAbort: AbortController | null = null;
@@ -64,6 +67,7 @@ export class App extends EventEmitter {
   constructor(opts: AppOptions) {
     super();
     this.#layout = dataLayout(opts.dataDir);
+    this.#readClock = opts.readClock;
     for (const dir of [opts.dataDir, this.#layout.codexHome, this.#layout.codexUserHome, this.#layout.codexWork, this.#layout.browserProfile]) {
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     }
@@ -140,7 +144,7 @@ export class App extends EventEmitter {
     this.#state.beginDiscovery(plan.sendNow, plan.directions.map(({ name, count }) => ({ name, count, selected: 0 })), plan);
     this.#changed();
     const outcome = await runDiscovery({
-      codex: this.#codex, site: this.#site, state: this.#state, plan, signal: abort.signal,
+      codex: this.#codex, site: this.#site, state: this.#state, plan, signal: abort.signal, readClock: this.#readClock,
       log: text => { this.#log(text); this.#changed(); }, node: text => this.#chatNode(text),
       accept: draft => this.#sendSelected(draft, abort),
     });
