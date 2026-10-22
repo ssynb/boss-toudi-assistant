@@ -178,6 +178,13 @@ export function createBossSite(browser: Browser): Site {
 
   const chat = createChatSession(browser, goto);
 
+  async function currentJobReady(t: Target): Promise<boolean> {
+    if (!browser.isOpen) return false;
+    const loaded = await browser.eval<boolean>(`(${PAGE_LOADED}) && location.pathname === ${JSON.stringify(`/job_detail/${t.jobId}.html`)}`);
+    return loaded === true && (await status()).page === 'ready';
+  }
+
+
   const contactRefs = (refs: Record<string, { role: string; name: string }>, name: string) =>
     Object.entries(refs).filter(([, r]) => r.name.trim() === name).map(([ref]) => ref);
 
@@ -351,14 +358,19 @@ export function createBossSite(browser: Browser): Site {
     async openJob(t: Target): Promise<OpenJobResult> {
       recipients.delete(t.jobId);
       try {
-        await goto(t.url);
+        await chat.close();
+        if (!(await currentJobReady(t))) await goto(t.url);
       } catch (e) {
         if (e instanceof SiteBlockedError) return { kind: 'blocked', evidence: e.message };
         throw e;
       }
+      if (await browser.eval<string>('location.pathname') !== `/job_detail/${t.jobId}.html`) return { kind: 'blocked', evidence: '当前页面岗位与目标不符，未点击沟通' };
       const { refs } = await browser.snapshot();
-      if (contactRefs(refs, '继续沟通').length) return existingConversation(t);
-      if (!contactRefs(refs, '立即沟通').length) return { kind: 'missing', evidence: '岗位页没有「立即沟通」入口（可能已下线）' };
+      const existing = contactRefs(refs, '继续沟通').length;
+      const immediate = contactRefs(refs, '立即沟通').length;
+      if (existing + immediate > 1) return { kind: 'blocked', evidence: '岗位页沟通入口不唯一，未点击沟通' };
+      if (existing === 1) return existingConversation(t);
+      if (!immediate) return { kind: 'missing', evidence: '岗位页没有「立即沟通」入口（可能已下线）' };
       const recruiter = await jobIdentity(t);
       if (!recruiter) return { kind: 'blocked', evidence: '岗位页无法识别招聘者身份，未点击沟通' };
       recipients.set(t.jobId, recruiter);
