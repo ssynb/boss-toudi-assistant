@@ -274,5 +274,7 @@ test('站点已核实联系未发生时记为未发生而非未确认，并暂�
     assert.deepEqual(target(state, 'b').steps, { contact: 'todo', greeting: 'todo' });
     assert.equal(state.snapshot().batch!.status, 'paused');
     assert.match(state.snapshot().batch!.stopReason!, /未发生/);
+    assert.equal(state.isContacted('a'), false, '已核实未联系不占账本，后续可重新联系');
+    assert.equal(state.snapshot().contactedToday, 0, '不占今日额度');
   } finally { state.close(); }
 });
