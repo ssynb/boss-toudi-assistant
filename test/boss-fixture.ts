@@ -47,6 +47,7 @@ export interface BossFixture {
   origin: string;
   scenario: Scenario;
   contacts: number;
+  jobVisits: string[];
   sends: string[];
   history: Map<string, Message[]>;
   historyRequests: Array<{ bossId: string; page: number; maxMsgId: string }>;
@@ -137,7 +138,7 @@ function historyReply(f: BossFixture, bossId: string, maxMsgId: string): History
 
 export async function startBoss(scenario: Partial<Scenario> = {}): Promise<BossFixture> {
   const f: BossFixture = {
-    origin: '', contacts: 0, sends: [], history: new Map(), historyRequests: [],
+    origin: '', contacts: 0, jobVisits: [], sends: [], history: new Map(), historyRequests: [],
     scenario: { destination: 'popup', target: TARGET, createsFriend: true, friends: [], pageSize: 20, ...scenario },
     close: () => new Promise(resolve => { server.closeAllConnections(); server.close(() => resolve()); }),
   };
@@ -146,8 +147,9 @@ export async function startBoss(scenario: Partial<Scenario> = {}): Promise<BossF
     const html = (body: string) => res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(body);
     const json = (status: number, body: unknown) => res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body));
     const job = url.pathname.match(/^\/job_detail\/([^/]+)\.html$/);
-    if (job) return html(jobPage(f, job[1]!));
+    if (job) { f.jobVisits.push(job[1]!); return html(jobPage(f, job[1]!)); }
     if (url.pathname === '/web/geek/chat') return html(chatPage(f));
+    if (url.pathname === '/web/geek/jobs') return html('<!doctype html><div class="nav-figure">账号</div><div class="job-empty-box">没有找到相关职位</div>');
     if (url.pathname === '/wapi/friends') return json(200, f.scenario.friends.filter(x => !f.scenario.newFriendDelay || x.jobId !== f.scenario.target.jobId).map(friendJson));
     if (url.pathname === '/wapi/friend-page') {
       const page = Number(url.searchParams.get('page'));
