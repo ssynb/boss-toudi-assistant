@@ -417,8 +417,14 @@ export class State {
 
   setStep(target: Target, step: Step, value: StepState, evidence: string, identity?: ContactIdentity): void {
     this.#tx(() => {
+      const previous = (this.#db.prepare('SELECT contact FROM targets WHERE id = ?').get(target.id) as { contact: StepState } | undefined)?.contact;
       this.#db.prepare(`UPDATE targets SET ${STEP_COLUMN[step]} = ?, evidence = ?, updated_at = ? WHERE id = ?`).run(value, evidence, now(), target.id);
       if (step !== 'contact') return;
+      // 本次尝试点击前写下的保守占位；站点已核实未发生时撤销，既不占额度也不阻止日后联系。
+      if (value === 'failed' && previous === 'inflight') {
+        this.#db.prepare("DELETE FROM contacts WHERE job_id = ? AND state = 'unknown'").run(target.jobId);
+        return;
+      }
       if (value === 'done' && identity) {
         if (identity.jobId !== target.jobId) throw new AppError('bad_request', '核实身份的岗位与目标不符');
         this.#db.prepare('INSERT INTO contact_identities (target_id, job_id, recruiter_value, kind) VALUES (?, ?, ?, ?) ON CONFLICT(target_id) DO UPDATE SET job_id = excluded.job_id, recruiter_value = excluded.recruiter_value, kind = excluded.kind')
