@@ -60,7 +60,10 @@ export function readSearchPlan(value: unknown, latestMessage: string, contactedT
   if (typeof criteriaSalary === 'number' && plan.salaryMinK !== criteriaSalary) throw new Error(`criteria的月薪阈值${criteriaSalary}K与salaryMinK不一致，请按用户要求更正`);
   if (criteriaSalary !== undefined && (plan.salaryMinK === null) !== (criteriaSalary === 'unlimited')) throw new Error('criteria与salaryMinK的薪资口径冲突，请同步更正，不保留旧薪资条件');
   if (new Set(plan.directions.map(d => d.name.trim())).size !== plan.directions.length) throw new Error('投递方向不能重复');
-  requireQuota(plan.directions.reduce((sum, direction) => sum + direction.count, 0), contactedToday);
+  // 只找不投不联系任何人，额度在发送草稿时再核对。
+  const total = plan.directions.reduce((sum, direction) => sum + direction.count, 0);
+  if (total > MAX_BATCH_TARGETS) throw new AppError('bad_request', `本批最多 ${MAX_BATCH_TARGETS} 个，请求 ${total} 个，未启动`);
+  if (plan.sendNow) requireQuota(total, contactedToday);
   return plan;
 }
 

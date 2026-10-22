@@ -74,7 +74,8 @@ test('一句话按方向配额找岗、持久进度并写回对话；随后投�
 });
 
 for (const scenario of ['quote', 'quota'] as const) test(`对话工具拒绝${scenario}不满足的请求并让模型说明`, async () => {
-  const args = scenario === 'quote' ? { ...plan, quote: '上轮的授权' } : plan;
+  // 额度只约束立即发送；只找不投在发送草稿时再核对。
+  const args = scenario === 'quote' ? { ...plan, quote: '上轮的授权' } : { ...plan, sendNow: true };
   const { mock, server, searches, writes, idle } = await setup([
     call('start_delivery', args), call('reply', { text: '未启动，请按当前授权和剩余额度调整。' }), end,
   ], scenario === 'quota' ? 149 : 0);

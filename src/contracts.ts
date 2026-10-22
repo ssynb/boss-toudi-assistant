@@ -198,7 +198,7 @@ export interface ChatMessage {
 /**
  * 对话是唯一的任务入口。AI 只有受限工具：回复文本；在指定城市调研方向（只读）；
  * 按用户最新消息开始投递；开始投递已保存的草稿。开始类工具须附用户最新消息中的原文引用（程序逐字核对），
- * 投递按方向给出关键词与数量，总数不超过 MAX_BATCH_TARGETS 和今日剩余额度；sendNow=false 时只找不投。
+ * 投递按方向给出关键词与数量，总数不超过 MAX_BATCH_TARGETS；sendNow=true 时还不能超过今日剩余额度，sendNow=false 只找不投，发送草稿时再核对额度。
  * 用户已明确选择「一句话直接开始」，不再弹确认卡；进度与结果由程序写回对话。
  */
 export interface ChatState {

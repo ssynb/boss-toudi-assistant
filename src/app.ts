@@ -136,7 +136,7 @@ export class App extends EventEmitter {
   // ---------- 对话驱动任务 ----------
 
   async #deliver(plan: SearchPlan, abort: AbortController): Promise<void> {
-    requireQuota(plan.directions.reduce((sum, direction) => sum + direction.count, 0), this.#state.snapshot().contactedToday);
+    if (plan.sendNow) requireQuota(plan.directions.reduce((sum, direction) => sum + direction.count, 0), this.#state.snapshot().contactedToday);
     this.#state.beginDiscovery(plan.sendNow, plan.directions.map(({ name, count }) => ({ name, count, selected: 0 })), plan);
     this.#changed();
     const outcome = await runDiscovery({
