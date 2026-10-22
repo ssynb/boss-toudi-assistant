@@ -72,6 +72,8 @@ const DEFAULT_DISCOVERY: DiscoveryState = { status: 'idle', message: null, direc
 const DEFAULT_RESEARCH: ResearchState = { status: 'idle', city: null, startedAt: null, finishedAt: null, message: null, directions: [] };
 const DEFAULT_CHAT: ChatState = { pending: false, messages: [] };
 const FIT_ORDER = { high: 0, medium: 1, low: 2 };
+const CONTACT_TIME_ZONE = 'Asia/Shanghai';
+const CONTACT_DAY_FORMAT = new Intl.DateTimeFormat('en-CA', { timeZone: CONTACT_TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit', timeZoneName: 'longOffset' });
 const CRASH_REASON = '上次运行意外中断：中断时正在进行的步骤结果未确认，请到 BOSS 上自行核对。';
 
 const STEP_COLUMN: Record<Step, string> = { contact: 'contact', greeting: 'greeting_state' };
@@ -546,11 +548,15 @@ export class State {
   }
 
   #contactedToday(): number {
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(start);
-    end.setDate(end.getDate() + 1);
-    const row = this.#db.prepare('SELECT COUNT(*) AS n FROM contacts WHERE at >= ? AND at < ?').get(start.toISOString(), end.toISOString()) as { n: number };
+    const parts = CONTACT_DAY_FORMAT.formatToParts(new Date());
+    const part = (type: Intl.DateTimeFormatPartTypes) => parts.find(part => part.type === type)!.value;
+    const year = Number(part('year'));
+    const month = Number(part('month')) - 1;
+    const day = Number(part('day'));
+    const offset = part('timeZoneName').replace('GMT', '');
+    // 北京现行自然日没有夏令时；日期和偏移均取自指定时区，不读取宿主机的午夜。
+    const midnight = (date: number) => new Date(`${new Date(Date.UTC(year, month, date)).toISOString().slice(0, 10)}T00:00:00${offset}`).toISOString();
+    const row = this.#db.prepare('SELECT COUNT(*) AS n FROM contacts WHERE at >= ? AND at < ?').get(midnight(day), midnight(day + 1)) as { n: number };
     return row.n;
   }
 

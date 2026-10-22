@@ -63,7 +63,7 @@ export interface AppState {
   chat: ChatState;
   /** 可搜索的城市（调研、发现共用），唯一来源为站点适配层。 */
   supportedCities: string[];
-  /** 本地时区今天已记入联系账本的岗位数；与 DAILY_CONTACT_LIMIT 比较。 */
+  /** 北京时间（Asia/Shanghai）当日已记入联系账本的岗位数；与 DAILY_CONTACT_LIMIT 比较，不随本机时区改变。 */
   contactedToday: number;
   /** 每日主动联系上限，等于 DAILY_CONTACT_LIMIT；UI 只读这个字段，不另写一份。 */
   dailyContactLimit: number;
@@ -148,7 +148,7 @@ export interface DiscoveryDirectionProgress {
 
 // ---------- 岗位方向调研与求职顾问对话 ----------
 
-/** 每日主动联系上限（用户告知的 BOSS 额度）；一句话投递的总数不能超过今日剩余。 */
+/** 北京时间自然日的主动联系上限（用户告知的 BOSS 额度）；一句话投递的总数不能超过当日剩余。 */
 export const DAILY_CONTACT_LIMIT = 150;
 /** 调研每个方向抽样读取的实际 JD 上限。 */
 export const RESEARCH_SAMPLE_PER_DIRECTION = 10;
