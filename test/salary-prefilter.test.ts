@@ -8,12 +8,12 @@ import type { AppState } from '../src/contracts.ts';
 import { api, tempDir } from './helpers.ts';
 import { startMockModel, mockProviderToml, type MockItem } from './mock-responses.ts';
 
-async function discover(salaries: [string, string][], selected: string[], salaryMinK: number | null, initiallyNull = false) {
+async function discover(salaries: [string, string][], selected: string[], salaryMinK: number | null, initialSalary?: number | null) {
   const message = salaryMinK === null ? '深圳Python，薪资不限，先找岗位存草稿' : '深圳Python，月薪上限到20K就行，先找岗位存草稿';
   const plan = { city: '深圳', salaryMinK, criteria: salaryMinK === null ? 'Python，薪资不限' : 'Python，月薪区间上限到20K即可', sendNow: false, quote: message, directions: [{ name: 'Python', keywords: ['Python'], count: selected.length }] };
   const action = (value: typeof plan): MockItem[] => [{ type: 'function_call', name: 'start_delivery', args: value }];
   const mock = await startMockModel([
-    ...(initiallyNull ? [action({ ...plan, salaryMinK: null })] : []), action(plan), [{ type: 'message', text: '计划完成' }],
+    ...(initialSalary !== undefined ? [action({ ...plan, salaryMinK: initialSalary })] : []), action(plan), [{ type: 'message', text: '计划完成' }],
     [{ type: 'function_call', name: 'submit_decisions', args: { decisions: selected.map(jobId => ({ jobId, decision: 'select', reason: 'Python主要职责匹配，月薪口径符合要求', greeting: '您好，我有Python经验' })) } }],
     [{ type: 'message', text: '完成' }],
   ]);
@@ -70,10 +70,18 @@ test('薪资明确不限时不按工资格式或金额预筛', async () => {
 });
 
 test('顾问不能把“月薪上限到20K就行”仅写criteria并用null绕过薪资阈值', async () => {
-  const { state, reads, requests } = await discover([['low', '10-18K'], ['match', '15-25K']], ['match'], 20, true);
+  const { state, reads, requests } = await discover([['low', '10-18K'], ['match', '15-25K']], ['match'], 20, null);
   assert.match(JSON.stringify(requests[1]?.input.at(-1)), /salaryMinK|阈值/);
   assert.deepEqual(reads, ['match']);
   assert.equal(state.batch!.targets[0]!.jobId, 'match');
   const user = requests[3]!.input.filter(item => (item as { role?: string }).role === 'user').at(-1) as { content: { text: string }[] };
   assert.equal(JSON.parse(user.content[0]!.text).salaryMinK, 20);
+});
+
+
+for (const wrong of [0, 30]) test(`错误数值${wrong}不能进入卡片预筛，纠正为用户20K后才搜索`, async () => {
+  const { state, reads, requests } = await discover([['low', '10-18K'], ['match', '15-25K']], ['match'], 20, wrong);
+  assert.match(JSON.stringify(requests[1]?.input.at(-1)), /阈值|薪资.*冲突/);
+  assert.deepEqual(reads, ['match']);
+  assert.deepEqual(state.batch!.targets.map(t => t.jobId), ['match']);
 });
