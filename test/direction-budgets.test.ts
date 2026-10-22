@@ -5,7 +5,7 @@ import path from 'node:path';
 import { startServer } from '../src/server.ts';
 import type { Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
-import { tempDir, api } from './helpers.ts';
+import { instantReadClock, tempDir, api } from './helpers.ts';
 import { mockProviderToml, startMockModel, type MockItem } from './mock-responses.ts';
 
 const end: MockItem[] = [{ type: 'message', text: '完成' }];
@@ -31,7 +31,7 @@ async function run(directions: { name: string; count: number }[], cards: Record<
     jobDetail: async c => { reads.push(c.jobId); return `实际JD-${c.jobId}：主要职责Python开发，了解前端工具加分`; },
     openJob: forbidden, contact: forbidden, readChat: forbidden, sendGreeting: forbidden,
   };
-  const server = await startServer({ dataDir: dir, port: 0, site });
+  const server = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site });
   try {
     await api(server.url, 'PUT', '/api/inputs', { requirements: '', resume: { text: 'Python后端开发经验' } });
     await api(server.url, 'POST', '/api/chat', { message });

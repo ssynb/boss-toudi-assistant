@@ -7,7 +7,7 @@ import { openState } from '../src/state.ts';
 import { Executor, type WriteSite } from '../src/executor.ts';
 import { SiteBlockedError, type Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
-import { tempDir, api } from './helpers.ts';
+import { instantReadClock, tempDir, api } from './helpers.ts';
 import { startMockModel, mockProviderToml, type MockItem } from './mock-responses.ts';
 
 const message = '深圳AI开发，薪资不限，找到就投';
@@ -48,7 +48,7 @@ async function setup(count: number, ids: string[], tail: MockItem[][] = []) {
     readChat: async () => ({ ourMessages: 0, evidence: '' }),
     sendGreeting: async t => { events.push(`greeting:${t.jobId}`); return { ok: true, evidence: '已送达' }; },
   };
-  const server = await startServer({ dataDir: dir, port: 0, site });
+  const server = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site });
   return { mock, dir, server, site, events };
 }
 

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { startServer } from '../src/server.ts';
 import type { Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
-import { api, tempDir } from './helpers.ts';
+import { instantReadClock, api, tempDir } from './helpers.ts';
 import { startMockModel, mockProviderToml, type MockItem } from './mock-responses.ts';
 
 async function discover(salaries: [string, string][], selected: string[], salaryMinK: number | null, initialSalary?: number | null) {
@@ -28,7 +28,7 @@ async function discover(salaries: [string, string][], selected: string[], salary
     jobDetail: async card => { reads.push(card.jobId); return `实际JD-${card.jobId}：Python开发，明确月薪区间20-25K`; },
     openJob: forbidden, contact: forbidden, readChat: forbidden, sendGreeting: forbidden,
   };
-  const server = await startServer({ dataDir: dir, port: 0, site });
+  const server = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site });
   try {
     await api(server.url, 'PUT', '/api/inputs', { requirements: '', resume: { text: 'Python开发经验' } });
     await api(server.url, 'POST', '/api/chat', { message });

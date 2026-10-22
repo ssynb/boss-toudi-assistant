@@ -6,7 +6,7 @@ import { startServer, type RunningServer } from '../src/server.ts';
 import { openState } from '../src/state.ts';
 import { SiteBlockedError, type Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
-import { api, tempDir } from './helpers.ts';
+import { instantReadClock, api, tempDir } from './helpers.ts';
 import { startMockModel, mockProviderToml, type MockItem } from './mock-responses.ts';
 
 const end: MockItem[] = [{ type: 'message', text: '完成' }];
@@ -36,7 +36,7 @@ async function setup(script: MockItem[][]) {
     readChat: async () => ({ ourMessages: 0, evidence: '' }),
     sendGreeting: async t => { writes.push(`greeting:${t.jobId}`); return { ok: true, evidence: '' }; },
   };
-  const server = await startServer({ dataDir: dir, port: 0, site });
+  const server = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site });
   return { mock, dir, server, site, writes, original };
 }
 
@@ -109,13 +109,14 @@ for (const mode of ['pages', 'details'] as const) test(`只找不投连续${mode
   } finally { await server.close(); mock.close(); }
 });
 
-for (const ending of ['blocked', 'cancelled'] as const) test(`只找不投${ending}：不重试、不替换原批次`, async () => {
-  const { mock, server, site, writes, original } = await setup([call('start_delivery', { ...plan, sendNow: false }), end, judge('good'), end]);
+for (const ending of ['blocked', 'cancelled', 'model-failed'] as const) test(`只找不投${ending}：仅模型判定失败丢弃本轮草稿`, async () => {
+  const { mock, server, site, writes, original } = await setup([call('start_delivery', { ...plan, sendNow: false }), end, judge('good'), end, ...(ending === 'model-failed' ? [] : [call('send_saved_batch', { quote: '投吧' }), end])]);
   let failedCalls = 0;
   site.search = async q => {
     if (q.page === 1) return [card('good')];
     failedCalls++;
     if (ending === 'blocked') throw new SiteBlockedError({ page: 'verify', url: null });
+    if (ending === 'model-failed') return [card('bad')];
     server.app.stopDiscovery();
     throw timeout();
   };
@@ -123,9 +124,20 @@ for (const ending of ['blocked', 'cancelled'] as const) test(`只找不投${endi
     await api(server.url, 'POST', '/api/chat', { message });
     const state = await idle(server);
     assert.equal(failedCalls, 1);
-    assert.deepEqual(state.batch, original);
+    if (ending === 'model-failed') assert.deepEqual(state.batch, original);
+    else {
+      assert.notEqual(state.batch!.id, original.id);
+      assert.equal(state.batch!.status, 'draft');
+      assert.deepEqual(state.batch!.targets.map(target => target.jobId), ['good']);
+    }
     assert.deepEqual(writes, []);
-    assert.match(state.discovery.message!, ending === 'blocked' ? /验证/ : /停止/);
+    assert.match(state.discovery.message!, ending === 'blocked' ? /验证/ : ending === 'cancelled' ? /停止/ : /模型|判定/);
+    if (ending !== 'model-failed') {
+      await api(server.url, 'POST', '/api/chat', { message: '投吧' });
+      const sent = await idle(server);
+      assert.equal(sent.batch!.status, 'done');
+      assert.deepEqual(writes, ['contact:good', 'greeting:good']);
+    }
   } finally { await server.close(); mock.close(); }
 });
 
@@ -147,7 +159,7 @@ test('失败任务重启后仍向顾问提供计划与原因；最新继续意�
     await idle(current);
     await current.close();
     site.search = async q => q.page === 1 ? [card('headhunter'), card('direct')] : [];
-    current = await startServer({ dataDir: dir, port: 0, site });
+    current = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site });
     await api(current.url, 'POST', '/api/chat', { message: again });
     const state = await idle(current);
     const previous = context(mock, 2).lastTask;
@@ -188,7 +200,7 @@ test('清空对话并重启后继续：顾问判定条件不恢复已经解除�
     assert.equal((await api(current.url, 'POST', '/api/chat/clear')).status, 200);
     await current.close();
     site.search = async q => q.page === 1 ? [card('agency')] : [];
-    current = await startServer({ dataDir: dir, port: 0, site });
+    current = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site });
     await api(current.url, 'POST', '/api/chat', { message: again });
     const state = await idle(current);
     assert.equal(context(mock, 2).messages.length, 1, '旧对话已清空，续接只依赖持久任务计划');

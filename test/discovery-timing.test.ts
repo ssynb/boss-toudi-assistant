@@ -6,7 +6,7 @@ import { openState } from '../src/state.ts';
 import { startServer, type RunningServer } from '../src/server.ts';
 import type { Site } from '../src/boss.ts';
 import type { AppState, ApiError } from '../src/contracts.ts';
-import { api, tempDir } from './helpers.ts';
+import { instantReadClock, api, tempDir } from './helpers.ts';
 import { mockProviderToml, startMockModel } from './mock-responses.ts';
 
 const inputs = { requirements: '北京前端，薪资不限', resume: { text: '前端简历' } };
@@ -102,7 +102,7 @@ test('真实 Codex 工具在途时停止：先 stopping、禁保存，工具结�
     search: async () => { entered(); await gate; return []; }, jobDetail: async () => '',
     openJob: forbidden, contact: forbidden, readChat: forbidden, sendGreeting: forbidden,
   };
-  const server = await startServer({ dataDir: dir, port: 0, site });
+  const server = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site });
   try {
     await api(server.url, 'PUT', '/api/inputs', inputs);
     const start = await api<AppState>(server.url, 'POST', '/api/chat', { message: inputs.requirements });
@@ -126,7 +126,7 @@ test('真实 Codex 工具在途时停止：先 stopping、禁保存，工具结�
 });
 
 test('未登录时对话写入错误，不创建发现计时', async () => {
-  const server = await startServer({ dataDir: tempDir('boss-time-auth-'), port: 0 });
+  const server = await startServer({ readClock: instantReadClock, dataDir: tempDir('boss-time-auth-'), port: 0 });
   try {
     await api(server.url, 'PUT', '/api/inputs', inputs);
     const denied = await api<ApiError>(server.url, 'POST', '/api/chat', { message: inputs.requirements });

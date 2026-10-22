@@ -6,7 +6,7 @@ import path from 'node:path';
 import { startServer } from '../src/server.ts';
 import type { Site } from '../src/boss.ts';
 import type { AppState, BrowserPage } from '../src/contracts.ts';
-import { api, LOCAL, tempDir } from './helpers.ts';
+import { instantReadClock, api, LOCAL, tempDir } from './helpers.ts';
 import { mockProviderToml, startMockModel, type MockItem } from './mock-responses.ts';
 
 const requestText = '北京前端，薪资不限，找150个';
@@ -39,7 +39,7 @@ async function run(body: unknown, page: BrowserPage = 'ready') {
     readChat: async () => ({ ourMessages: 0, evidence: '' }),
     sendGreeting: async (_t, text) => { calls.push(`greet:${text}`); return { ok: true, evidence: '' }; },
   };
-  const server = await startServer({ dataDir, port: 0, site });
+  const server = await startServer({ readClock: instantReadClock, dataDir, port: 0, site });
   try {
     await api(server.url, 'PUT', '/api/inputs', { requirements: '北京前端，薪资不限，找 150 个', resume: { text: '五年 React 经验' } });
     const controller = new AbortController();
@@ -111,7 +111,7 @@ for (const terminal of ['failed', 'cancelled'] as const) {
       search: async q => q.page === 1 ? [card] : [], jobDetail: async () => '岗位职责：React前端开发',
       openJob: forbidden('openJob'), contact: forbidden('contact'), readChat: forbidden('readChat'), sendGreeting: forbidden('sendGreeting'),
     };
-    const server = await startServer({ dataDir: dir, port: 0, site });
+    const server = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site });
     const idle = () => new Promise<AppState>((resolve, reject) => {
       const cleanup = () => { clearTimeout(timer); server.app.off('changed', check); };
       const check = () => void server.app.getState().then(state => {

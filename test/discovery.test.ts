@@ -5,7 +5,7 @@ import path from 'node:path';
 import { startServer } from '../src/server.ts';
 import { MAX_SEARCH_PAGE, SiteBlockedError, type Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
-import { api, LOCAL, tempDir } from './helpers.ts';
+import { instantReadClock, api, LOCAL, tempDir } from './helpers.ts';
 import { mockProviderToml, startMockModel, type MockItem } from './mock-responses.ts';
 
 const requestText = '北京前端，月薪至少20K，只找不投';
@@ -47,7 +47,7 @@ async function setup(script: MockItem[][], model: string) {
   fs.mkdirSync(path.join(dataDir, 'codex-home'), { recursive: true });
   fs.writeFileSync(path.join(dataDir, 'codex-home', 'config.toml'), mockProviderToml(mock.baseUrl, model));
   const fake = fakeSite();
-  const server = await startServer({ dataDir, port: 0, site: fake.site });
+  const server = await startServer({ readClock: instantReadClock, dataDir, port: 0, site: fake.site });
   const saved = await api(server.url, 'PUT', '/api/inputs', { requirements: '北京前端，月薪至少20K，最多1个，不考虑乙公司', resume: { text: '张三，五年前端经验，React/TypeScript' } });
   assert.equal(saved.status, 200);
   return { mock, dataDir, fake, server };
@@ -224,12 +224,13 @@ for (const invalid of ['foreign', 'missing', 'duplicate', 'greeting'] as const) 
   } finally { await server.close(); mock.close(); }
 });
 
-test('已有入选后遇到站点风控，整轮不保存不联系', async () => {
+test('只找不投已有入选后遇到站点风控，保存已选草稿但不联系', async () => {
   const { mock, fake, server } = await setup([planned(100), end, judgments([selection('j1')]), end], 'gpt-mock');
   fake.site.search = async q => { if (q.page === 2) throw new SiteBlockedError({ page: 'verify', url: null }); return [job('j1')]; };
   try {
     const state = await discover(server.url);
-    assert.equal(state.batch, null);
+    assert.equal(state.batch!.status, 'draft');
+    assert.deepEqual(state.batch!.targets.map(target => target.jobId), ['j1']);
     assert.match(state.discovery.message!, /验证|风控/);
     assert.deepEqual(fake.writes, []);
   } finally { await server.close(); mock.close(); }

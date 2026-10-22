@@ -8,7 +8,7 @@ import { Executor, type WriteSite } from '../src/executor.ts';
 import { requireQuota } from '../src/search-plan.ts';
 import type { Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
-import { api, tempDir } from './helpers.ts';
+import { instantReadClock, api, tempDir } from './helpers.ts';
 import { mockProviderToml, startMockModel, type MockItem } from './mock-responses.ts';
 
 const end: MockItem[] = [{ type: 'message', text: '完成' }];
@@ -40,7 +40,7 @@ async function setup(script: MockItem[][], contacted = 0) {
     contact: async t => { writes.push(`contact:${t.jobId}`); return { ok: true, evidence: '', identity: { jobId: t.jobId, recruiterUrl: `https://www.zhipin.com/boss_detail/${t.jobId}.html` } }; },
     readChat: async () => ({ ourMessages: 0, evidence: '' }), sendGreeting: async t => { writes.push(`greeting:${t.jobId}`); return { ok: true, evidence: '' }; },
   };
-  const server = await startServer({ dataDir: dir, port: 0, site });
+  const server = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site });
   const idle = () => new Promise<AppState>((resolve, reject) => {
     const cleanup = () => { clearTimeout(timer); server.app.off('changed', check); };
     const check = () => void server.app.getState().then(s => {

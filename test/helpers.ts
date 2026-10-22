@@ -39,3 +39,9 @@ export async function api<T = unknown>(base: string, method: string, pathname: s
   });
   return { status: res.status, json: (await res.json()) as T };
 }
+
+
+export const instantReadClock = {
+  random: () => 0.5,
+  async wait(_milliseconds: number, signal: AbortSignal): Promise<void> { signal.throwIfAborted(); },
+};
