@@ -11,13 +11,14 @@ async function fixture(mode: string) {
 <div class="page-jobs-main"><ul>${mode === 'empty' ? '<div class="job-empty-box">无结果</div>' : mode === 'unrendered' || mode === 'detail' ? '' : '<li class="job-card-box" style="height:1600px"><a href="/job_detail/a.html">岗位A</a></li>'}</ul></div>
 <script>
 const root=document.querySelector('.page-jobs-main'),state=root.__vue__={pageVo:{page:1},hasMore:${mode !== 'empty'},loading:false,moreLoading:false};
-let requested=false;
-addEventListener('scroll',()=>{if(requested)return;requested=true;
+let requested=0;
+addEventListener('scroll',()=>{if(requested&&${JSON.stringify(mode)}!=='growing-layout')return;requested++;
+ if(${JSON.stringify(mode)}==='growing-layout'&&requested===1){root.querySelector('ul').insertAdjacentHTML('beforeend','<li style="height:1600px">稍后加载的页面内容</li>');return;}
  if(${JSON.stringify(mode)}==='stalled')return;
  state.moreLoading=true;
  setTimeout(()=>{
   if(['verify','login'].includes(${JSON.stringify(mode)})) {history.replaceState({},'',${mode === 'verify' ? "'/web/passport/zp/verify'" : "'/web/user/'"});document.title=${mode === 'verify' ? "'安全验证'" : "'登录'"};return;}
-  if(${JSON.stringify(mode)}==='final-page') {state.pageVo.page=2;root.querySelector('ul').insertAdjacentHTML('beforeend','<li class="job-card-box"><a href="/job_detail/b.html">岗位B</a></li>');}
+  if(['final-page','growing-layout'].includes(${JSON.stringify(mode)})) {state.pageVo.page=2;root.querySelector('ul').insertAdjacentHTML('beforeend','<li class="job-card-box"><a href="/job_detail/b.html">岗位B</a></li>');}
   state.hasMore=false;state.moreLoading=false;
  },50);
 });
@@ -35,7 +36,7 @@ addEventListener('scroll',()=>{if(requested)return;requested=true;
   return {site:createBossSite(mapped),async close(){await browser.close();server.closeAllConnections();await new Promise<void>(resolve=>server.close(()=>resolve()));}};
 }
 
-for (const [mode,page,expected] of [['end-without-page',2,[]],['final-page',2,['b']],['final-page',3,[]],['empty',1,[]]] as const) {
+for (const [mode,page,expected] of [['growing-layout',2,['b']],['end-without-page',2,[]],['final-page',2,['b']],['final-page',3,[]],['empty',1,[]]] as const) {
   test(`搜索终态无需页码继续推进：${mode}/${page}`,async()=>{
     const f=await fixture(mode);try{assert.deepEqual((await f.site.search({keyword:'AI Agent 开发',city:'深圳',page})).map(x=>x.jobId),expected);}finally{await f.close();}
   });
