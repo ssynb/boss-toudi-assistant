@@ -75,7 +75,7 @@ async function discover(base: string): Promise<AppState> {
 }
 
 const end: MockItem[] = [{ type: 'message', text: '完成本轮' }];
-const selection = (jobId: string, selected = true) => ({ jobId, decision: selected ? 'select' : 'reject', reason: selected ? 'React经验匹配实际JD' : '实际JD与简历不匹配', ...(selected ? { greeting: '您好，我有五年 React 经验' } : {}) });
+const selection = (jobId: string, selected = true) => ({ jobId, decision: selected ? 'select' : 'reject', reason: selected ? 'React经验匹配实际JD' : '实际JD与简历不匹配', ...(selected ? { greeting: '您好，我有五年 React 经验' } : { rejectionCategory: '其他' }) });
 const judgments = (items: ReturnType<typeof selection>[]): MockItem[] => [{ type: 'function_call', name: 'submit_decisions', args: { decisions: items } }];
 const planned = (maxTargets: number, keywords = ['前端']): MockItem[] => [{ type: 'function_call', name: 'start_delivery', args: { city: '北京', salaryMinK: 20, criteria: '前端，月薪至少20K，不考虑乙公司', sendNow: false, quote: requestText, directions: [{ name: '前端', keywords, count: maxTargets }] } }];
 
