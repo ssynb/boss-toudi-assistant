@@ -306,7 +306,7 @@ export function createBossSite(browser: Browser): Site {
   }
 
   /** 在已核实的岗位页上重新定位唯一的「立即沟通」并复核身份，点击后汇合到已有会话路径。 */
-  async function contact(t: Target, expected: ContactIdentity): Promise<Verified & { notContacted?: true }> {
+  async function contact(t: Target, expected: ContactIdentity): Promise<Verified> {
     if (await browser.eval<string>('location.pathname') !== `/job_detail/${t.jobId}.html`) return { ok: false, evidence: '当前岗位已变化，未点击沟通' };
     const { refs } = await browser.snapshot();
     const entries = contactRefs(refs, '立即沟通');

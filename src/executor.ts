@@ -12,6 +12,8 @@ export interface Verified {
   identity?: ContactIdentity;
   ok: boolean;
   evidence: string;
+  /** 联系失败且站点证据核实未发生（如额度提示关闭后入口未变）：记 failed 而非 unknown。 */
+  notContacted?: true;
 }
 
 export interface GreetingResult extends Verified {
@@ -135,7 +137,11 @@ export class Executor {
         this.#checkDailyQuota();
         this.#set(t, 'contact', 'inflight', opened.evidence);
         const r: Verified = await this.#site.contact(t).catch((e: unknown) => ({ ok: false, evidence: `点击后出错：${errorText(e)}` }));
-        this.#set(t, 'contact', r.ok ? 'done' : 'unknown', r.evidence, r.ok ? r.identity : undefined);
+        this.#set(t, 'contact', r.ok ? 'done' : r.notContacted ? 'failed' : 'unknown', r.evidence, r.ok ? r.identity : undefined);
+        if (r.notContacted) {
+          this.#skipRest(t, '联系未发生');
+          throw new Stop(`「${t.company}」联系未发生：${r.evidence}`);
+        }
         if (!r.ok) {
           this.#skipRest(t, '联系结果未确认，不继续');
           throw new Stop(`「${t.company}」联系结果未确认：${r.evidence}`);
