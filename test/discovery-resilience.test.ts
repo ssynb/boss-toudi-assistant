@@ -169,3 +169,30 @@ test('失败任务重启后仍向顾问提供计划与原因；最新继续意�
     assert.equal(context(mock, 6).lastTask.delivered, 1);
   } finally { await current.close(); mock.close(); }
 });
+
+
+test('清空对话并重启后继续：顾问判定条件不恢复已经解除的外包排除', async () => {
+  const initial = '深圳AI开发，月薪至少30K，找10个，允许外包，先存草稿';
+  const again = '继续，只找不投';
+  const oldCriteria = 'Python，排除外包';
+  const { mock, dir, server, site, writes } = await setup([
+    call('start_delivery', { ...plan, quote: initial, criteria: oldCriteria, sendNow: false }), end,
+    call('start_delivery', { ...plan, quote: again, criteria: oldCriteria, sendNow: false }), end,
+    judge('agency'), end,
+  ]);
+  let current = server;
+  try {
+    await api(current.url, 'POST', '/api/chat', { message: initial });
+    await idle(current);
+    assert.equal((await api(current.url, 'POST', '/api/chat/clear')).status, 200);
+    await current.close();
+    site.search = async q => q.page === 1 ? [card('agency')] : [];
+    current = await startServer({ dataDir: dir, port: 0, site });
+    await api(current.url, 'POST', '/api/chat', { message: again });
+    const state = await idle(current);
+    assert.equal(context(mock, 2).messages.length, 1, '旧对话已清空，续接只依赖持久任务计划');
+    assert.equal(context(mock, 4).criteria, '用户明确限制（优先于下文）：不再排除外包。Python，排除外包');
+    assert.deepEqual(state.batch!.targets.map(target => target.jobId), ['agency']);
+    assert.deepEqual(writes, []);
+  } finally { await current.close(); mock.close(); }
+});
