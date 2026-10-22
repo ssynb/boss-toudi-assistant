@@ -231,7 +231,7 @@ export class App extends EventEmitter {
       abort.signal.throwIfAborted();
       if (action.kind === 'reply') { this.#state.finishChat(action.text); this.#assistantAbort = null; return; }
       const recap = action.kind === 'research' ? `开始只读调研，城市：${action.city}。` : action.kind === 'delivery'
-        ? `本轮沿用或确认的条件：${action.plan.city}，${action.plan.salaryMinK === null ? '薪资不限' : `月薪至少${action.plan.salaryMinK}K`}，${action.plan.criteria}。方向配额：${action.plan.directions.map(d => `${d.name}${d.count}个`).join('、')}。${action.plan.sendNow ? '找到一个就执行一个，配额按入选计，送达/跳过等结果另计。' : '仅保存草稿。'}`
+        ? `本轮沿用或确认的条件：${action.plan.city}，${action.plan.salaryMinK === null ? '薪资不限' : `月薪区间上限至少${action.plan.salaryMinK}K`}，${action.plan.criteria}。方向配额：${action.plan.directions.map(d => `${d.name}${d.count}个`).join('、')}。${action.plan.sendNow ? '找到一个就执行一个，配额按入选计，送达/跳过等结果另计。' : '仅保存草稿。'}`
         : '开始投递已保存的批次。';
       this.#state.finishChat(recap.slice(0, CHAT_MESSAGE_MAX_CHARS));
       await this.#runAction(action, abort);
