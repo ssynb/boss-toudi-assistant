@@ -15,7 +15,8 @@ export interface SearchPlan {
 }
 export const MAX_SEARCH_KEYWORDS = 20;
 const CRITERIA_MAX_CHARS = 10_000;
-const YUAN_PER_K = 1000;
+const SALARY_UNIT_EXPONENT: Readonly<Record<string, number>> = { k: 0, '千': 0, '万': 1, '元': -3 };
+const SALARY_AMOUNT = String.raw`(\d+(?:\.\d+)?)([kK](?![a-zA-Z])|千|万|元)`;
 const MAX_DIRECTIONS = 20;
 const EXPLICIT_RESTRICTIONS = /^用户明确限制（优先于下文）：([^。]*)。/u;
 
@@ -51,26 +52,39 @@ export function readSearchPlan(value: unknown, latestMessage: string, contactedT
     throw new Error('投递计划格式无效；须明确城市、薪资或不限、筛选要求及每个方向的数量');
   }
   const salaryIntent = [...salaryEvidence, latestMessage].map(readSalaryIntent).filter(intent => intent !== undefined).at(-1);
+  if (salaryIntent === undefined || salaryIntent === 'specified') throw new Error('薪资阈值无法明确核对，请澄清为单一数字K/月（或数字千/万/元月薪），或明确薪资不限；不能填任意salaryMinK');
   if (plan.salaryMinK === null && salaryIntent !== 'unlimited') throw new Error('salaryMinK=null仅表示用户明确薪资不限；有薪资要求须把K/月阈值填入salaryMinK，不能只写criteria，含糊时请澄清');
   if (plan.salaryMinK !== null && salaryIntent === 'unlimited') throw new Error('用户明确薪资不限，应将salaryMinK设为null，不得沿用旧阈值');
+  if (typeof salaryIntent === 'number' && plan.salaryMinK !== salaryIntent) throw new Error(`salaryMinK与用户月薪阈值${salaryIntent}K不一致，请按用户要求更正`);
   const criteriaSalary = readSalaryIntent(plan.criteria);
-  if (criteriaSalary && (plan.salaryMinK === null) !== (criteriaSalary === 'unlimited')) throw new Error('criteria与salaryMinK的薪资口径冲突，请同步更正，不保留旧薪资条件');
+  if (typeof criteriaSalary === 'number' && plan.salaryMinK !== criteriaSalary) throw new Error(`criteria的月薪阈值${criteriaSalary}K与salaryMinK不一致，请按用户要求更正`);
+  if (criteriaSalary !== undefined && (plan.salaryMinK === null) !== (criteriaSalary === 'unlimited')) throw new Error('criteria与salaryMinK的薪资口径冲突，请同步更正，不保留旧薪资条件');
   if (new Set(plan.directions.map(d => d.name.trim())).size !== plan.directions.length) throw new Error('投递方向不能重复');
   requireQuota(plan.directions.reduce((sum, direction) => sum + direction.count, 0), contactedToday);
   return plan;
 }
 
 
-function readSalaryIntent(source: string): 'unlimited' | 'specified' | undefined {
-  let intent: 'unlimited' | 'specified' | undefined;
+function salaryInK(amount: string, unit: string): number {
+  return Number(`${amount}e${SALARY_UNIT_EXPONENT[unit.toLowerCase()]}`);
+}
+
+function readSalaryIntent(source: string): number | 'unlimited' | 'specified' | undefined {
+  let intent: number | 'unlimited' | 'specified' | undefined;
   for (const clause of source.split(/[，,。；;！？\n]/u)) {
     const text = clause.replace(/\s/gu, '');
     const relevant = /薪资|薪水|工资|月薪|年薪|日薪|时薪|待遇|\d+(?:\.\d+)?[kK](?![a-zA-Z])|元\/月/u.test(text);
     if (!relevant) continue;
-    const amounts = [...text.matchAll(/\d+(?:\.\d+)?(?:[kK](?![a-zA-Z])|千|万|元)/gu)];
+    const amounts = [...text.matchAll(new RegExp(SALARY_AMOUNT, 'gu'))];
+    const scalar = (amount: RegExpMatchArray) => !/[0-9kK千万元][-–—~～至]$/u.test(text.slice(0, amount.index))
+      && !/^[-–—~～至]\d/u.test(text.slice(amount.index! + amount[0].length));
+    const explicit = [...text.matchAll(new RegExp(`(?:上限|至少|不低于|阈值|最低|月薪|薪资|薪水|工资|待遇)(?:的|为|是|要|需|到|≥|>=|达到|要求|希望|至少|区间|范围|上限)*${SALARY_AMOUNT}`, 'gu'))].filter(scalar).at(-1);
+    const amount = explicit ?? amounts.filter(scalar).at(-1);
     const unrestricted = [...text.matchAll(/(?:薪资|薪水|工资|月薪|待遇)(?:不限|不设限|不限制|无要求|没有要求|随意)|不限(?:薪资|薪水|工资|月薪|待遇)/gu)]
       .filter(match => !/(?:不是|并非|不接受|不能算)$/u.test(text.slice(0, match.index))).at(-1);
-    intent = unrestricted && unrestricted.index! >= (amounts.at(-1)?.index ?? -1) ? 'unlimited' : 'specified';
+    if (unrestricted && unrestricted.index! >= (amounts.at(-1)?.index ?? -1)) intent = 'unlimited';
+    else if (amount && !/年薪|日薪|时薪|\/(?:年|天|日|小时|时)/u.test(text)) intent = salaryInK(amount[1]!, amount[2]!);
+    else if (intent === undefined) intent = 'specified';
   }
   return intent;
 }
@@ -85,7 +99,7 @@ export function excludeSalaryCard(salary: string, threshold: number | null): boo
   const lower = Number(match[1]);
   const upper = Number(match[3] ?? match[1]);
   if (upper < lower) return false;
-  return upper / (match[4] === '元' ? YUAN_PER_K : 1) < threshold;
+  return salaryInK(match[3] ?? match[1]!, match[4]!) < threshold;
 }
 
 
