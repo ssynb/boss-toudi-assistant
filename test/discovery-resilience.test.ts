@@ -80,8 +80,8 @@ test('单页与单JD失败仅重试一次，跳过后继续找岗并报告失败
   } finally { await server.close(); mock.close(); }
 });
 
-for (const mode of ['pages', 'details'] as const) test(`连续${mode}失败提前结束：替换为已入选草稿但不自动发送，投吧才发`, async () => {
-  const { mock, server, site, writes, original } = await setup([call('start_delivery', plan), end, judge('good'), end, call('send_saved_batch', { quote: '投吧' }), end]);
+for (const mode of ['pages', 'details'] as const) test(`只找不投连续${mode}失败提前结束：保存入选草稿，投吧才发`, async () => {
+  const { mock, server, site, writes, original } = await setup([call('start_delivery', { ...plan, sendNow: false }), end, judge('good'), end, call('send_saved_batch', { quote: '投吧' }), end]);
   const searches: number[] = [];
   const badReads: string[] = [];
   site.search = async q => {
@@ -109,8 +109,8 @@ for (const mode of ['pages', 'details'] as const) test(`连续${mode}失败提�
   } finally { await server.close(); mock.close(); }
 });
 
-for (const ending of ['blocked', 'cancelled'] as const) test(`${ending}不属于可跳过异常：不重试、不替换原批次`, async () => {
-  const { mock, server, site, writes, original } = await setup([call('start_delivery', plan), end, judge('good'), end]);
+for (const ending of ['blocked', 'cancelled'] as const) test(`只找不投${ending}：不重试、不替换原批次`, async () => {
+  const { mock, server, site, writes, original } = await setup([call('start_delivery', { ...plan, sendNow: false }), end, judge('good'), end]);
   let failedCalls = 0;
   site.search = async q => {
     if (q.page === 1) return [card('good')];
@@ -136,7 +136,8 @@ test('失败任务重启后仍向顾问提供计划与原因；最新继续意�
   const { mock, dir, server, site, writes } = await setup([
     call('start_delivery', fullPlan), end,
     call('start_delivery', { ...fullPlan, quote: again }), end,
-    call('submit_decisions', { decisions: [decision('headhunter', false), decision('direct')] }), end,
+    call('submit_decisions', { decisions: [decision('headhunter', false)] }), end,
+    call('submit_decisions', { decisions: [decision('direct')] }), end,
     call('reply', { text: '本轮已送达1个岗位。' }), end,
   ]);
   site.search = async () => { throw timeout(); };
@@ -165,8 +166,8 @@ test('失败任务重启后仍向顾问提供计划与原因；最新继续意�
     assert.deepEqual(writes, ['contact:direct', 'greeting:direct']);
     await api(current.url, 'POST', '/api/chat', { message: '上轮结果如何？' });
     await idle(current);
-    assert.equal(context(mock, 6).lastTask.selected, 1);
-    assert.equal(context(mock, 6).lastTask.delivered, 1);
+    assert.equal(context(mock, 8).lastTask.selected, 1);
+    assert.equal(context(mock, 8).lastTask.delivered, 1);
   } finally { await current.close(); mock.close(); }
 });
 

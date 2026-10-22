@@ -57,9 +57,9 @@ async function run(body: unknown, page: BrowserPage = 'ready') {
   } finally { await server.close(); mock.close(); }
 }
 
-test('自动投递：一次开始即批准 AI 草案并执行联系与招呼', { timeout: 60_000 }, async () => {
+test('找到就投：首个入选立即执行，再继续搜索', { timeout: 60_000 }, async () => {
   const { state, calls } = await run({ autoSend: true });
-  assert.deepEqual(calls, ['search', 'search', 'open', 'contact', 'greet:您好，我有五年 React 经验']);
+  assert.deepEqual(calls, ['search', 'open', 'contact', 'greet:您好，我有五年 React 经验', 'search']);
   assert.equal(state.batch!.status, 'done');
   assert.equal(state.discovery.autoSend, true);
 });
@@ -76,7 +76,7 @@ test('浏览器窗口被关闭时发现照常搜索（由搜索重新打开浏�
 });
 
 for (const terminal of ['failed', 'cancelled'] as const) {
-  test(`自动投递草案暂存后${terminal}：保留原批次且不联系`, { timeout: 30_000 }, async () => {
+  test(`首次入选判定未正常结束时${terminal}：保留原批次且不联系`, { timeout: 30_000 }, async () => {
     const mock = await startMockModel([...script(false), ...script(true)]);
     let respond!: (res: http.ServerResponse) => void;
     const staged = new Promise<http.ServerResponse>(resolve => { respond = resolve; });
