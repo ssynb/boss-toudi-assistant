@@ -6,6 +6,7 @@ import { SUPPORTED_CITIES } from './boss.ts';
 export interface DeliveryDirection { name: string; keywords: string[]; count: number }
 export interface SearchPlan {
   city: string;
+  /** 月薪区间上限须达到的阈值，单位K/月；null只表示用户明确不限。 */
   salaryMinK: number | null;
   criteria: string;
   sendNow: boolean;
@@ -14,6 +15,7 @@ export interface SearchPlan {
 }
 export const MAX_SEARCH_KEYWORDS = 20;
 const CRITERIA_MAX_CHARS = 10_000;
+const YUAN_PER_K = 1000;
 const MAX_DIRECTIONS = 20;
 const EXPLICIT_RESTRICTIONS = /^用户明确限制（优先于下文）：([^。]*)。/u;
 
@@ -28,7 +30,7 @@ export function requireQuota(count: number, contactedToday: number): void {
 
 export const SEARCH_PLAN_SCHEMA = {
   type: 'object', properties: {
-    city: { type: 'string', enum: SUPPORTED_CITIES }, salaryMinK: { type: ['number', 'null'] },
+    city: { type: 'string', enum: SUPPORTED_CITIES }, salaryMinK: { type: ['number', 'null'], description: '月薪区间上限须达到的K/月阈值。例如上限到20K就行必须填20，不能只写criteria；null仅在用户明确薪资不限时使用。' },
     criteria: { type: 'string' }, sendNow: { type: 'boolean' }, quote: { type: 'string' },
     directions: { type: 'array', minItems: 1, maxItems: MAX_DIRECTIONS, items: {
       type: 'object', properties: { name: { type: 'string' }, keywords: { type: 'array', minItems: 1, maxItems: MAX_SEARCH_KEYWORDS, items: { type: 'string' } }, count: { type: 'integer', minimum: 1, maximum: MAX_BATCH_TARGETS } },
@@ -37,7 +39,7 @@ export const SEARCH_PLAN_SCHEMA = {
   }, required: ['city', 'salaryMinK', 'criteria', 'sendNow', 'quote', 'directions'], additionalProperties: false,
 };
 
-export function readSearchPlan(value: unknown, latestMessage: string, contactedToday: number): SearchPlan {
+export function readSearchPlan(value: unknown, latestMessage: string, contactedToday: number, salaryEvidence: string[] = []): SearchPlan {
   const plan = value as SearchPlan;
   requireQuote(plan?.quote, latestMessage);
   const text = (value: unknown, max: number): value is string => typeof value === 'string' && Boolean(value.trim()) && value.length <= max;
@@ -48,9 +50,42 @@ export function readSearchPlan(value: unknown, latestMessage: string, contactedT
       || !Array.isArray(d.keywords) || !d.keywords.length || d.keywords.length > MAX_SEARCH_KEYWORDS || d.keywords.some(k => !text(k, 80)))) {
     throw new Error('投递计划格式无效；须明确城市、薪资或不限、筛选要求及每个方向的数量');
   }
+  const salaryIntent = [...salaryEvidence, latestMessage].map(readSalaryIntent).filter(intent => intent !== undefined).at(-1);
+  if (plan.salaryMinK === null && salaryIntent !== 'unlimited') throw new Error('salaryMinK=null仅表示用户明确薪资不限；有薪资要求须把K/月阈值填入salaryMinK，不能只写criteria，含糊时请澄清');
+  if (plan.salaryMinK !== null && salaryIntent === 'unlimited') throw new Error('用户明确薪资不限，应将salaryMinK设为null，不得沿用旧阈值');
+  const criteriaSalary = readSalaryIntent(plan.criteria);
+  if (criteriaSalary && (plan.salaryMinK === null) !== (criteriaSalary === 'unlimited')) throw new Error('criteria与salaryMinK的薪资口径冲突，请同步更正，不保留旧薪资条件');
   if (new Set(plan.directions.map(d => d.name.trim())).size !== plan.directions.length) throw new Error('投递方向不能重复');
   requireQuota(plan.directions.reduce((sum, direction) => sum + direction.count, 0), contactedToday);
   return plan;
+}
+
+
+function readSalaryIntent(source: string): 'unlimited' | 'specified' | undefined {
+  let intent: 'unlimited' | 'specified' | undefined;
+  for (const clause of source.split(/[，,。；;！？\n]/u)) {
+    const text = clause.replace(/\s/gu, '');
+    const relevant = /薪资|薪水|工资|月薪|年薪|日薪|时薪|待遇|\d+(?:\.\d+)?[kK](?![a-zA-Z])|元\/月/u.test(text);
+    if (!relevant) continue;
+    const amounts = [...text.matchAll(/\d+(?:\.\d+)?(?:[kK](?![a-zA-Z])|千|万|元)/gu)];
+    const unrestricted = [...text.matchAll(/(?:薪资|薪水|工资|月薪|待遇)(?:不限|不设限|不限制|无要求|没有要求|随意)|不限(?:薪资|薪水|工资|月薪|待遇)/gu)]
+      .filter(match => !/(?:不是|并非|不接受|不能算)$/u.test(text.slice(0, match.index))).at(-1);
+    intent = unrestricted && unrestricted.index! >= (amounts.at(-1)?.index ?? -1) ? 'unlimited' : 'specified';
+  }
+  return intent;
+}
+
+/** 明确不符合月薪口径才预筛；无法识别的卡片继续读取实际JD。 */
+export function excludeSalaryCard(salary: string, threshold: number | null): boolean {
+  if (threshold === null) return false;
+  const text = salary.replace(/\s/gu, '').replace(/[·・•]\d+(?:-\d+)?薪$/u, '');
+  if (/^(?:日薪|时薪)|\/(?:天|日|小时|时)$/u.test(text)) return true;
+  const match = /^(?:月薪)?(\d+(?:\.\d+)?)([kK])?(?:[-–—~～至](\d+(?:\.\d+)?))?([kK]|元)(?:\/月)?$/u.exec(text);
+  if (!match || match[2] && match[4] === '元' || match[4] === '元' && !text.endsWith('/月')) return false;
+  const lower = Number(match[1]);
+  const upper = Number(match[3] ?? match[1]);
+  if (upper < lower) return false;
+  return upper / (match[4] === '元' ? YUAN_PER_K : 1) < threshold;
 }
 
 
