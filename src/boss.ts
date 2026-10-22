@@ -6,7 +6,7 @@
  * 任何核实失败都返回未确认，由执行器停下整批。
  */
 import type { BrowserState, Target, ContactIdentity } from './contracts.ts';
-import type { Browser } from './browser.ts';
+import { BrowserWaitTimeoutError, type Browser } from './browser.ts';
 import type { GreetingResult, OpenJobResult, Verified, WriteSite } from './executor.ts';
 import { createChatSession, HistoryError, OtherJobConversationError, ORIGIN, type ChatIdentity } from './boss-chat.ts';
 
@@ -57,7 +57,8 @@ export class SiteBlockedError extends Error {
 const HOME_URL = `${ORIGIN}/`;
 const LOGIN_URL = `${ORIGIN}/web/user/`;
 /** 账号区与登录入口在 load 之后才渲染（会话页约数百毫秒）；等到能判定登录状态再探测，避免把加载中当作未知。 */
-const PAGE_LOADED = `document.readyState === "complete" && location.origin === "https://www.zhipin.com" && (() => {
+const PAGE_LOADED = 'document.readyState === "complete" && location.origin === "https://www.zhipin.com"';
+const LOGIN_RENDERED = `(() => {
   const visible = e => e.checkVisibility({checkVisibilityCSS:true,checkOpacity:true});
   return /^\\/web\\/(user|passport)\\//.test(location.pathname) || document.title.includes('安全验证')
     || [...document.querySelectorAll('.nav-figure, .user-nav .user-name')].some(visible)
@@ -75,6 +76,8 @@ const CITY_CODES: Record<string, string> = {
 
 export const SUPPORTED_CITIES = Object.keys(CITY_CODES);
 export const MAX_SEARCH_PAGE = 10;
+const PAGE_SCROLL_ATTEMPTS = 3;
+const PAGE_SCROLL_WAIT_MS = 6_000;
 
 export function validateSearchQuery(q: SearchQuery): void {
   if (typeof q.keyword !== 'string' || !q.keyword.trim() || q.keyword.length > 80
@@ -91,6 +94,12 @@ const PAGE_PROBE = `(() => {
     hasAccount: [...document.querySelectorAll('.nav-figure, .user-nav .user-name')].some(visible),
     loginLink: [...document.querySelectorAll('a,button')].some(e => visible(e) && /^(登录|登录\\/注册)$/.test((e.textContent || '').trim())),
   };
+})()`;
+
+const BLOCKED_PAGE = `(() => {
+  const p = ${PAGE_PROBE};
+  return /\\/web\\/passport\\/zp\\/(verify|security)/.test(new URL(p.url).pathname) || p.title.includes('安全验证')
+    || new URL(p.url).pathname.startsWith('/web/user/') || p.loginLink;
 })()`;
 
 // 岗位卡薪资用站点私有字体显示数字：U+E031–U+E03A 依次对应 0–9。
@@ -147,11 +156,23 @@ export function createBossSite(browser: Browser): Site {
     return { page: p.hasAccount ? 'ready' : 'unknown', url: p.url };
   }
 
+  async function waitPage(expression: string, step: string, timeoutMs?: number): Promise<BrowserState> {
+    try { await browser.waitFor(`(${expression}) || (${BLOCKED_PAGE})`, step, timeoutMs); }
+    catch (error) {
+      const current = await status();
+      if (['verify', 'loggedOut', 'closed'].includes(current.page)) throw new SiteBlockedError(current);
+      throw error;
+    }
+    const current = await status();
+    if (['verify', 'loggedOut', 'closed'].includes(current.page)) throw new SiteBlockedError(current);
+    return current;
+  }
+
   async function goto(url: string): Promise<void> {
     await chat.close();
     await browser.open(url);
-    await browser.waitFor(PAGE_LOADED);
-    const s = await status();
+    await waitPage(PAGE_LOADED, '页面加载');
+    const s = await waitPage(LOGIN_RENDERED, '登录标识');
     if (s.page !== 'ready') throw new SiteBlockedError(s);
   }
 
@@ -204,7 +225,7 @@ export function createBossSite(browser: Browser): Site {
     if ((await legacyOwnMessages(t, expected)).length) return { ok: true, skipped: true, evidence: '提交前出现本方消息，未发送本次招呼' };
     await verifyLegacyChat(t, expected);
     await browser.press('Enter');
-    await browser.waitFor(`(${OWN_MESSAGES}).some((m) => m === ${JSON.stringify(text)})`);
+    await browser.waitFor(`(${OWN_MESSAGES}).some((m) => m === ${JSON.stringify(text)})`, '旧会话发送回显');
     const ok = (await legacyOwnMessages(t, expected)).some((m) => m === text);
     return { ok, evidence: ok ? '招呼原文已出现在会话中' : '发送后会话里找不到这段原文' };
   }
@@ -253,7 +274,7 @@ export function createBossSite(browser: Browser): Site {
     await browser.click(entries[0]!);
     try {
       // 新标签页由 agent-browser 跟随；路由与站内弹层都只作为「已点击生效」的信号，随后统一进入已有会话。
-      await browser.waitFor('location.pathname.startsWith("/web/geek/chat") || Boolean(document.querySelector(".startchat-dialog")?.checkVisibility())');
+      await waitPage('location.pathname.startsWith("/web/geek/chat") || Boolean(document.querySelector(".startchat-dialog")?.checkVisibility())', '联系后会话入口');
       if (expected.kind === 'chatId') await chat.enter(t, expected, true);
       else await verifyLegacyChat(t, expected);
       return { ok: true, evidence: '已进入对应岗位和招聘者的会话页', identity: expected };
@@ -263,10 +284,28 @@ export function createBossSite(browser: Browser): Site {
     }
   }
 
+  async function loadSearchPage(page: number): Promise<void> {
+    const finished = `(() => {
+      const state = document.querySelector('.page-jobs-main')?.__vue__;
+      return state && (state.pageVo?.page >= ${page} || state.hasMore === false)
+        && state.loading === false && state.moreLoading === false;
+    })()`;
+    // 图片和详情渲染可能在首次滚动后增高页面。只读分页允许重新测量底部，最多等待 18 秒。
+    for (let attempt = 1; attempt <= PAGE_SCROLL_ATTEMPTS; attempt++) {
+      await browser.scrollToBottom();
+      try {
+        await waitPage(finished, `搜索分页加载（第 ${page} 批，第 ${attempt} 次滚动）`, PAGE_SCROLL_WAIT_MS);
+        return;
+      } catch (error) {
+        if (!(error instanceof BrowserWaitTimeoutError) || attempt === PAGE_SCROLL_ATTEMPTS) throw error;
+      }
+    }
+  }
+
   async function searchPage(q: SearchQuery): Promise<JobCard[]> {
     const params = new URLSearchParams({ query: q.keyword, city: CITY_CODES[q.city]! });
     await goto(`${ORIGIN}/web/geek/jobs?${params}`);
-    await browser.waitFor(RESULTS_RENDERED);
+    await waitPage(RESULTS_RENDERED, '搜索结果渲染');
     let cards = await browser.eval<JobCard[]>(EXTRACT_CARDS);
     let result = cards;
     // 站点忽略 URL 的 page 参数；每次滚到底部才请求下一批，页面保留已加载岗位。
@@ -276,11 +315,7 @@ export function createBossSite(browser: Browser): Site {
       if (more === false) return [];
       if (more !== true) throw new Error('无法核实岗位列表的分页状态，停止搜索');
       const previous = new Set(cards.map(card => card.jobId));
-      await browser.scrollToBottom();
-      await browser.waitFor(`(() => {
-        const pageState = document.querySelector('.page-jobs-main')?.__vue__;
-        return pageState?.pageVo?.page >= ${page} && pageState.loading === false && pageState.moreLoading === false;
-      })()`);
+      await loadSearchPage(page);
       cards = await browser.eval<JobCard[]>(EXTRACT_CARDS);
       result = cards.filter(card => !previous.has(card.jobId));
     }
@@ -292,7 +327,8 @@ export function createBossSite(browser: Browser): Site {
     async open() {
       await chat.close();
       await browser.open(HOME_URL);
-      await browser.waitFor(PAGE_LOADED);
+      await browser.waitFor(PAGE_LOADED, '页面加载');
+      await browser.waitFor(LOGIN_RENDERED, '登录标识');
       const s = await status();
       if (s.page !== 'loggedOut') return s;
       await browser.open(LOGIN_URL);
@@ -308,6 +344,7 @@ export function createBossSite(browser: Browser): Site {
 
     async jobDetail(card) {
       await goto(card.url);
+      await waitPage(`Boolean(document.querySelector('.job-sec-text')?.innerText?.trim())`, 'JD详情');
       return browser.eval<string>(EXTRACT_DETAIL);
     },
 

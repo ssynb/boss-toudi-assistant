@@ -42,6 +42,9 @@ export function runAgentBrowser(args: string[], opts: { env?: NodeJS.ProcessEnv 
     { ...systemEnvironment(), ...opts.env }, COMMAND_TIMEOUT_MS);
 }
 
+/** 条件没有在限定时间内成立；与命令失败、页面断开分开，调用方只对只读动作使用有限次重观察。 */
+export class BrowserWaitTimeoutError extends Error {}
+
 export class Browser {
   readonly #opts: BrowserOptions;
   #queue: Promise<unknown> = Promise.resolve();
@@ -104,8 +107,13 @@ export class Browser {
     await this.#run(['press', key]);
   }
 
-  async waitFor(expression: string): Promise<void> {
-    await this.#run(['wait', '--fn', expression]);
+  async waitFor(expression: string, step = '页面条件', timeoutMs?: number): Promise<void> {
+    try { await this.#run(['wait', '--fn', expression, ...(timeoutMs === undefined ? [] : ['--timeout', String(timeoutMs)])]); }
+    catch (error) {
+      const message = `${step}等待失败：${(error as Error).message}`;
+      if (/Wait timed out after \d+ms/.test((error as Error).message)) throw new BrowserWaitTimeoutError(message, { cause: error });
+      throw new Error(message, { cause: error });
+    }
   }
 
   /** 只读观察当前标签页对 endpoint 的响应；定位与附着占用命令队列，期间不会有其他命令切换标签页。 */

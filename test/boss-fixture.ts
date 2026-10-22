@@ -209,7 +209,7 @@ export function bossBrowser(browser: Browser, f: BossFixture): Browser {
     get(object, key) {
       if (key === 'open') return (url: string) => object.open(toLocal(url));
       if (key === 'eval') return async (expression: string) => toBoss(await object.eval(toLocal(expression)));
-      if (key === 'waitFor') return (expression: string) => object.waitFor(toLocal(expression));
+      if (key === 'waitFor') return (expression: string, step?: string, timeoutMs?: number) => object.waitFor(toLocal(expression), step, timeoutMs);
       if (key === 'watchResponses') return async (endpoint: string) => {
         const watch = await object.watchResponses(toLocal(endpoint));
         return { get revision() { return watch.revision; }, next: async () => toBoss(await watch.next()), close: () => watch.close() };

@@ -225,7 +225,7 @@ export function createChatSession(browser: ChatBrowser, goto: (url: string) => P
 
   async function loadOlder(): Promise<void> {
     // 站点在内容不足一屏时自动加载下一页，否则要滚到顶部；等列表安静后滚动，两种情况都覆盖。
-    await browser.waitFor(quiet('.chat-conversation .chat-record', QUIET_MS));
+    await browser.waitFor(quiet('.chat-conversation .chat-record', QUIET_MS), '会话历史渲染');
     const height = await browser.eval<number>(`document.querySelector('.chat-conversation .chat-message')?.scrollHeight ?? 0`);
     if (height) await browser.scrollWithin('.chat-conversation .chat-message', 'up', height);
   }
@@ -241,7 +241,7 @@ export function createChatSession(browser: ChatBrowser, goto: (url: string) => P
   }
 
   async function findConversation(id: ChatIdentity, newlyContacted: boolean): Promise<void> {
-    await browser.waitFor(`(() => {const s=document.querySelector('.chat-user')?.__vue__;return Array.isArray(s?.list$)&&Array.isArray(s?.topList$)})()`);
+    await browser.waitFor(`(() => {const s=document.querySelector('.chat-user')?.__vue__;return Array.isArray(s?.list$)&&Array.isArray(s?.topList$)})()`, '会话列表初始化');
     const expression = listState(id);
     for (let page = 0; page < MAX_LIST_SCROLLS; page++) {
       const data = await browser.eval<{count:number;exact:number;otherJob:boolean;hasMore?:boolean}>(expression);
@@ -249,7 +249,7 @@ export function createChatSession(browser: ChatBrowser, goto: (url: string) => P
       if (data.exact > 1) throw new Error('无法唯一识别已存在的目标会话，停止后续动作');
       if (data.hasMore === false) {
         if (newlyContacted) {
-          await browser.waitFor(`(${expression}).exact > 0`).catch(() => { throw new Error('联系后等待新会话出现在列表超时，不重复联系'); });
+          await browser.waitFor(`(${expression}).exact > 0`, '联系后新会话出现').catch(() => { throw new Error('联系后等待新会话出现在列表超时，不重复联系'); });
           newlyContacted = false;
           continue;
         }
@@ -260,7 +260,7 @@ export function createChatSession(browser: ChatBrowser, goto: (url: string) => P
       const height = await browser.eval<number>(`document.querySelector(${js(LIST_VIEWPORT)})?.scrollHeight ?? 0`);
       if (!height) throw new Error('找不到会话列表滚动区域，无法加载更多会话');
       await browser.scrollWithin(LIST_VIEWPORT, 'down', height);
-      await browser.waitFor(`(() => {const s=${expression};return s.exact>0||s.count!==${data.count}||s.hasMore!==true})()`)
+      await browser.waitFor(`(() => {const s=${expression};return s.exact>0||s.count!==${data.count}||s.hasMore!==true})()`, '会话列表分页加载')
         .catch(() => { throw new Error('会话列表加载更多超时，不能确认目标不存在'); });
     }
     throw new Error('会话列表加载达到上限，不能确认目标不存在');
@@ -273,7 +273,7 @@ export function createChatSession(browser: ChatBrowser, goto: (url: string) => P
       const total = await browser.eval<number>(`document.querySelector(${js(LIST_VIEWPORT)})?.scrollHeight ?? 0`);
       if (total) {
         await browser.scrollWithin(LIST_VIEWPORT, 'up', total);
-        await browser.waitFor(quiet('.chat-user', QUIET_MS));
+        await browser.waitFor(quiet('.chat-user', QUIET_MS), '会话列表滚动渲染');
       }
     }
     for (let step = 0; step <= MAX_LIST_SCROLLS; step++) {
@@ -286,7 +286,7 @@ export function createChatSession(browser: ChatBrowser, goto: (url: string) => P
       })()`);
       if (!scroll || !scroll.height || scroll.top + scroll.height >= scroll.total || step === MAX_LIST_SCROLLS) break;
       await browser.scrollWithin(LIST_VIEWPORT, 'down', scroll.height);
-      await browser.waitFor(quiet('.chat-user', QUIET_MS));
+      await browser.waitFor(quiet('.chat-user', QUIET_MS), '会话列表滚动渲染');
     }
     throw new Error('会话列表滚动到底或达到上限，目标行仍未渲染，停止后续动作');
   }
@@ -299,7 +299,7 @@ export function createChatSession(browser: ChatBrowser, goto: (url: string) => P
     const watch = await browser.watchResponses(HISTORY_ENDPOINT);
     try {
       await browser.clickNth(LIST_ITEMS, index);
-      await browser.waitFor(`(${pageState(t, id)}).identity`);
+      await browser.waitFor(`(${pageState(t, id)}).identity`, '当前会话身份同步');
       const page = await read(t, id);
       if (page.uid === null || page.friendId === null) throw new Error('会话缺少账号或招聘者编号，不能核对消息归属');
       const account = { uid: page.uid, friendId: page.friendId };
@@ -353,7 +353,7 @@ export function createChatSession(browser: ChatBrowser, goto: (url: string) => P
       if (beforeFill === null) return { ok: false, evidence: '填写前会话或历史证明已失效，未填写' };
       if (beforeFill) return { ok: true, skipped: true, evidence: '填写前已有本方消息，未发送本次招呼' };
       await browser.fillSelector(CHAT_INPUT, text);
-      await browser.waitFor(quiet(CONTROLS, QUIET_MS));
+      await browser.waitFor(quiet(CONTROLS, QUIET_MS), '招呼输入及控件稳定');
       const own = await measure(t, id);
       if (own === null) return { ok: false, evidence: '填写后当前会话身份或历史证明已变化，未发送' };
       if (own) return { ok: true, skipped: true, evidence: '提交前出现本方消息，未发送本次招呼' };
@@ -366,7 +366,7 @@ export function createChatSession(browser: ChatBrowser, goto: (url: string) => P
       const before = observation!.shown;
       await browser.press('Enter');
       const delivery = deliveryState(t, id, text, before);
-      await browser.waitFor(`(${delivery}) !== 'pending'`);
+      await browser.waitFor(`(${delivery}) !== 'pending'`, '招呼送达确认');
       const delivered = await browser.eval<string>(delivery) === 'delivered' && await measure(t, id) !== null;
       return { ok: delivered, evidence: delivered ? '目标会话中的招呼原文已显示送达或已读' : '发送结果未获目标会话送达确认，不重试' };
     },
