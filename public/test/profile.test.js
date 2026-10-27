@@ -20,13 +20,13 @@ test('个人信息：手机导航可达，一次保存偏好与简历，文件�
   await browser('find','label','求职偏好（可选）','fill','深圳，月薪至少 25K');
   await browser('find','role','button','click','--name','保存','--exact');
   await browser('wait','--text','已保存');
-  assert.deepEqual(writes,[['PUT','/api/inputs',{requirements:'深圳，月薪至少 25K',resume:{text:null}}]]);
+  assert.deepEqual(writes,[['PUT','/api/inputs',{requirements:'深圳，月薪至少 25K',greeting:'',resume:{text:null}}]]);
   await fs.writeFile(file,'%PDF-synthetic');
   await browser('upload','input[type=file]',file);
   await browser('find','label','简历正文','fill','PDF 合成正文');
   await browser('find','role','button','click','--name','保存','--exact');
   await browser('wait','--text','合成文件校验失败');
-  assert.deepEqual(writes[1],['PUT','/api/inputs',{requirements:'深圳，月薪至少 25K',resume:{file:{fileName:'synthetic.pdf',base64:Buffer.from('%PDF-synthetic').toString('base64')},text:'PDF 合成正文'}}]);
+  assert.deepEqual(writes[1],['PUT','/api/inputs',{requirements:'深圳，月薪至少 25K',greeting:'',resume:{file:{fileName:'synthetic.pdf',base64:Buffer.from('%PDF-synthetic').toString('base64')},text:'PDF 合成正文'}}]);
   assert.equal(await browser('get','value','[name=resumeText]'),'PDF 合成正文');
   assert.equal(await app.inspect("document.querySelector('input[type=file]').files[0].name"),'synthetic.pdf');
  }finally{await app.close();}
