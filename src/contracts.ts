@@ -98,11 +98,14 @@ export type BrowserPage =
   | 'unknown'
   | 'loggedOut' // BOSS 登录页或未登录
   | 'verify' // BOSS 安全验证/验证码页：用户本人在浏览器窗口完成
+  | 'restricted' // 账号或 IP 被限制访问：只能等待站点给出的恢复时间，不能刷新、重试或靠验证解除
   | 'ready'; // 已登录且不在验证页
 
 export interface BrowserState {
   page: BrowserPage;
   url: string | null;
+  /** 需要用户知道的站点原文提示（如限制访问的恢复时间）；没有时省略。 */
+  message?: string;
 }
 
 export interface ResumeFileMeta {
