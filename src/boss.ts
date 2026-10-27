@@ -47,6 +47,7 @@ export class SiteBlockedError extends Error {
   constructor(state: BrowserState) {
     super({
       verify: 'BOSS 要求安全验证，请在浏览器窗口中本人完成',
+      restricted: state.message ?? 'BOSS 暂时限制访问，请勿频繁提交刷新请求；请等待站点恢复后再继续。',
       loggedOut: 'BOSS 未登录或登录已失效，请在浏览器窗口中登录',
       closed: 'BOSS 浏览器已关闭，请点「BOSS 登录」重新打开',
     }[state.page as string] ?? '无法确认 BOSS 登录状态，请在浏览器窗口中打开 BOSS 首页确认已登录');
@@ -81,9 +82,16 @@ export function validateSearchQuery(q: SearchQuery): void {
 
 const PAGE_PROBE = `(() => {
   const visible = e => e.checkVisibility({checkVisibilityCSS:true,checkOpacity:true});
+  const body = document.body?.innerText || '';
+  const restricted = /^\\/web\\/passport\\/zp\\/403(?:\\.html)?(?:\\/|$)/.test(location.pathname)
+    || /访问受限|被限制访问/.test(document.title + '\\n' + body);
+  const restrictionText = restricted ? body.split(/[\\r\\n。！？]+/).map(s => s.trim())
+    .filter(s => /访问受限|被限制访问|恢复/.test(s)).join('。') : '';
+
   return {
     url: location.href,
     title: document.title,
+    restriction: restricted ? (restrictionText || 'BOSS 暂时限制访问') + '。请勿频繁提交刷新请求；请等待站点恢复后再继续。' : null,
     hasAccount: [...document.querySelectorAll('.nav-figure, .user-nav .user-name')].some(visible),
     loginLink: [...document.querySelectorAll('a,button')].some(e => {
       if (!visible(e)) return false;
@@ -100,13 +108,13 @@ const PAGE_PROBE = `(() => {
 /** 账号区和登录入口会在 load 后异步出现；等待与状态探测共用相同信号。 */
 const LOGIN_RENDERED = `(() => {
   const p = ${PAGE_PROBE};
-  return /^\\/web\\/(user|passport)\\//.test(location.pathname) || p.title.includes('安全验证') || p.hasAccount || p.loginLink;
+  return /^\\/web\\/(user|passport)\\//.test(location.pathname) || p.title.includes('安全验证') || Boolean(p.restriction) || p.hasAccount || p.loginLink;
 })()`;
 
 const BLOCKED_PAGE = `(() => {
   const p = ${PAGE_PROBE};
   return /\\/web\\/passport\\/zp\\/(verify|security)/.test(new URL(p.url).pathname) || p.title.includes('安全验证')
-    || new URL(p.url).pathname.startsWith('/web/user/') || p.loginLink;
+    || Boolean(p.restriction) || new URL(p.url).pathname.startsWith('/web/user/') || p.loginLink;
 })()`;
 
 // 岗位卡薪资用站点私有字体显示数字：U+E031–U+E03A 依次对应 0–9。
@@ -176,35 +184,41 @@ export function createBossSite(browser: Browser): Site {
   /** 岗位页核实的招聘者身份；联系后在执行器写入目标前作为本次会话身份。 */
   const recipients = new Map<string, ContactIdentity>();
 
-  async function status(): Promise<BrowserState> {
+  async function inspectPage(): Promise<BrowserState> {
     if (!browser.isOpen) return { page: 'closed', url: null };
-    const p = await browser.eval<{ url: string; title: string; loginLink: boolean; hasAccount: boolean }>(PAGE_PROBE).catch(() => null);
+    const p = await browser.eval<{ url: string; title: string; loginLink: boolean; hasAccount: boolean; restriction: string | null }>(PAGE_PROBE).catch(() => null);
     if (!p) return { page: 'unknown', url: null };
-    // 用户关掉窗口后 agent-browser 会自建空白页并弹出空白窗口：按已关闭处理并收起它。
-    if (p.url === 'about:blank') {
-      await browser.close();
-      return { page: 'closed', url: null };
-    }
+    if (p.url === 'about:blank') return { page: 'closed', url: null };
     if (!p.url.startsWith(`${ORIGIN}/`)) return { page: 'unknown', url: p.url };
+    if (p.restriction) return { page: 'restricted', url: p.url, message: p.restriction };
     if (/\/web\/passport\/zp\/(verify|security)/.test(p.url) || p.title.includes('安全验证')) return { page: 'verify', url: p.url };
     if (p.url.startsWith(LOGIN_URL) || p.loginLink) return { page: 'loggedOut', url: p.url };
     return { page: p.hasAccount ? 'ready' : 'unknown', url: p.url };
+  }
+
+  async function status(): Promise<BrowserState> {
+    const current = await inspectPage();
+    // 用户关窗后 CLI 可能自建空白页；主动探测状态时收起该空白窗口。
+    if (current.page === 'closed' && browser.isOpen) await browser.close();
+    return current;
   }
 
   async function waitPage(expression: string, step: string, timeoutMs?: number): Promise<BrowserState> {
     try { await browser.waitFor(`(${expression}) || (${BLOCKED_PAGE})`, step, timeoutMs); }
     catch (error) {
       const current = await status();
-      if (['verify', 'loggedOut', 'closed'].includes(current.page)) throw new SiteBlockedError(current);
+      if (['restricted', 'verify', 'loggedOut', 'closed'].includes(current.page)) throw new SiteBlockedError(current);
       throw error;
     }
     const current = await status();
-    if (['verify', 'loggedOut', 'closed'].includes(current.page)) throw new SiteBlockedError(current);
+    if (['restricted', 'verify', 'loggedOut', 'closed'].includes(current.page)) throw new SiteBlockedError(current);
     return current;
   }
 
   async function goto(url: string): Promise<void> {
     await chat.close();
+    const current = await inspectPage();
+    if (current.page === 'restricted') throw new SiteBlockedError(current);
     await browser.open(url);
     await waitPage(PAGE_LOADED, '页面加载');
     const s = await waitPage(LOGIN_RENDERED, '登录标识');
@@ -384,8 +398,10 @@ export function createBossSite(browser: Browser): Site {
     // 已登录账号访问登录页会在加载后再跳回首页，所以先看首页，只有未登录才进登录页。
     async open() {
       await chat.close();
+      const current = await inspectPage();
+      if (current.page === 'restricted') return current;
       await browser.open(HOME_URL);
-      await browser.waitFor(PAGE_LOADED, '页面加载');
+      await browser.waitFor(`(${PAGE_LOADED}) || (${BLOCKED_PAGE})`, '页面加载');
       await browser.waitFor(LOGIN_RENDERED, '登录标识');
       const s = await status();
       if (s.page !== 'loggedOut') return s;
