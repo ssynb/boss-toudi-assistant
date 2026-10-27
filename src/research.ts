@@ -40,6 +40,7 @@ async function sampleDirection(opts: Options, direction: Direction): Promise<Sam
   for (const keyword of direction.keywords) {
     for (let page = 1; page <= MAX_SEARCH_PAGE; page++) {
       opts.signal.throwIfAborted();
+      opts.state.assertJobReadAvailable();
       const browser = await opts.site.status();
       opts.signal.throwIfAborted();
       if (browser.page !== 'ready' && browser.page !== 'closed') throw new SiteBlockedError(browser);
@@ -50,11 +51,12 @@ async function sampleDirection(opts: Options, direction: Direction): Promise<Sam
         if (seen.has(card.jobId) || opts.state.isContacted(card.jobId)) continue;
         seen.add(card.jobId);
         opts.signal.throwIfAborted();
+        opts.state.assertJobReadAvailable();
         const jd = await opts.site.jobDetail(card);
         opts.signal.throwIfAborted();
         reads++;
         if (jd.trim()) samples.push({ card, jd });
-        if (reads >= RESEARCH_SAMPLE_PER_DIRECTION) return samples;
+        if (reads >= RESEARCH_SAMPLE_PER_DIRECTION || opts.state.remainingJobReads() === 0) return samples;
       }
     }
   }

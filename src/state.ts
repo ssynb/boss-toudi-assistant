@@ -14,7 +14,7 @@ import { DatabaseSync } from 'node:sqlite';
 import {
   CHAT_HISTORY_LIMIT, CHAT_MESSAGE_MAX_CHARS,
   type ResearchState, type ResearchDirection, type ChatState,
-  GREETING_MAX_CHARS,
+  GREETING_MAX_CHARS, DAILY_JOB_READ_LIMIT,
   MAX_BATCH_TARGETS,
   RESUME_EXTENSIONS,
   type SaveInputsRequest,
@@ -57,6 +57,8 @@ export interface RecentTask {
 }
 
 export interface StateSnapshot {
+  greeting: string;
+  jobReadsToday: number;
   research: ResearchState;
   chat: ChatState;
   discovery: DiscoveryState;
@@ -72,8 +74,8 @@ const DEFAULT_DISCOVERY: DiscoveryState = { status: 'idle', message: null, direc
 const DEFAULT_RESEARCH: ResearchState = { status: 'idle', city: null, startedAt: null, finishedAt: null, message: null, directions: [] };
 const DEFAULT_CHAT: ChatState = { pending: false, messages: [] };
 const FIT_ORDER = { high: 0, medium: 1, low: 2 };
-const CONTACT_TIME_ZONE = 'Asia/Shanghai';
-const CONTACT_DAY_FORMAT = new Intl.DateTimeFormat('en-CA', { timeZone: CONTACT_TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit', timeZoneName: 'longOffset' });
+const BUSINESS_TIME_ZONE = 'Asia/Shanghai';
+const BUSINESS_DAY_FORMAT = new Intl.DateTimeFormat('en-CA', { timeZone: BUSINESS_TIME_ZONE, year: 'numeric', month: '2-digit', day: '2-digit', timeZoneName: 'longOffset' });
 const CRASH_REASON = '上次运行意外中断：中断时正在进行的步骤结果未确认，请到 BOSS 上自行核对。';
 
 const STEP_COLUMN: Record<Step, string> = { contact: 'contact', greeting: 'greeting_state' };
@@ -123,6 +125,31 @@ interface TargetRow {
 
 const now = () => new Date().toISOString();
 
+export class JobReadLimitError extends AppError {
+  constructor() { super('busy', '今日浏览上限已到，明天继续'); }
+}
+
+export function requireJobReadBudget(used: number): void {
+  if (used >= DAILY_JOB_READ_LIMIT) throw new JobReadLimitError();
+}
+
+export function requireFixedGreeting(greeting: string): string {
+  if (!greeting.trim()) throw new AppError('inputs_incomplete', '请到个人信息页设置固定招呼语并保存');
+  return greeting;
+}
+
+function businessDay() {
+  const parts = BUSINESS_DAY_FORMAT.formatToParts(new Date());
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find(part => part.type === type)!.value;
+  const year = Number(part('year'));
+  const month = Number(part('month')) - 1;
+  const date = Number(part('day'));
+  const offset = part('timeZoneName').replace('GMT', '');
+  const dateKey = (day: number) => new Date(Date.UTC(year, month, day)).toISOString().slice(0, 10);
+  const midnight = (day: number) => new Date(`${dateKey(day)}T00:00:00${offset}`).toISOString();
+  return { key: dateKey(date), start: midnight(date), end: midnight(date + 1) };
+}
+
 export function openState(file: string): State {
   return new State(file);
 }
@@ -152,8 +179,11 @@ export class State {
   }
 
   snapshot(): StateSnapshot {
+    const day = businessDay();
     const count = this.#db.prepare('SELECT COUNT(*) AS n FROM contacts').get() as { n: number };
     return {
+      greeting: this.#kv('greeting', ''),
+      jobReadsToday: this.#jobReadsOn(day.key),
       research: this.#kv('research', DEFAULT_RESEARCH),
       chat: this.#kv('chat', DEFAULT_CHAT),
       discovery: { ...DEFAULT_DISCOVERY, ...this.#kv('discovery', DEFAULT_DISCOVERY) },
@@ -161,7 +191,7 @@ export class State {
       resume: this.#kv('resume', DEFAULT_RESUME),
       batch: this.#batch(),
       contactedCount: count.n,
-      contactedToday: this.#contactedToday(),
+      contactedToday: this.#contactedToday(day),
     };
   }
 
@@ -172,6 +202,8 @@ export class State {
       const input = prepareInputs(request, this.#kv('resume', DEFAULT_RESUME));
       if (input.data === null) this.#db.exec('DELETE FROM resume_file');
       else if (input.data !== undefined) this.#db.prepare('INSERT INTO resume_file (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data').run(input.data);
+      this.#setKv('greeting', input.greeting);
+      this.#db.prepare("UPDATE targets SET greeting = ?, updated_at = ? WHERE greeting_state = 'todo' AND greeting != ? AND EXISTS (SELECT 1 FROM batch WHERE status != 'done')").run(input.greeting, now(), input.greeting);
       this.#setKv('requirements', input.requirements);
       this.#setKv('resume', input.resume);
       this.#setKv('discovery', { ...this.#kv('discovery', DEFAULT_DISCOVERY), message: null });
@@ -185,6 +217,8 @@ export class State {
       if (!this.#kv('resume', DEFAULT_RESUME).text.trim()) {
         throw new AppError('inputs_incomplete', '请先统一保存具体要求和有效简历正文');
       }
+      requireFixedGreeting(this.#kv('greeting', ''));
+      this.assertJobReadAvailable();
       this.#setKv('recent_task', { kind: 'delivery', plan, status: 'running', result: null, selected: 0, delivered: 0, batchId: null } satisfies RecentTask);
       this.#setKv('discovery', { status: 'running', message: '正在发现岗位…', directions, startedAt: now(), finishedAt: null, autoSend });
     });
@@ -238,6 +272,7 @@ export class State {
       this.#assertNotRunning();
       this.#assertIdle();
       if (!this.#kv('resume', DEFAULT_RESUME).text.trim()) throw new AppError('inputs_incomplete', '请先保存有效简历正文');
+      this.assertJobReadAvailable();
       this.#setKv('recent_task', { kind: 'research', plan: { city }, status: 'running', result: null, selected: 0, delivered: 0, batchId: null } satisfies RecentTask);
       this.#setKv('research', { ...DEFAULT_RESEARCH, city, status: 'running', startedAt: now(), message: '正在提出候选方向…' });
     });
@@ -381,6 +416,7 @@ export class State {
       const t = batch.targets.find((x) => x.id === id);
       if (!t) throw new AppError('not_found', '目标不存在');
       if (t.steps.contact !== 'todo') throw new AppError('bad_request', '该目标已开始处理，不能再修改');
+      if (p.greeting !== undefined && greetingText(p.greeting) !== this.#kv('greeting', '')) throw new AppError('bad_request', '请到个人信息页统一修改固定招呼语，不能单独改岗位招呼');
       const greeting = p.greeting === undefined ? t.greeting : greetingText(p.greeting);
       const removed = p.removed === undefined ? t.removed : p.removed === true;
       this.#db.prepare('UPDATE targets SET greeting = ?, removed = ?, updated_at = ? WHERE id = ?').run(greeting, removed ? 1 : 0, now(), id);
@@ -395,6 +431,7 @@ export class State {
       if (version !== batch.version) throw new AppError('stale_version', '批次已被修改，请刷新后重新核对');
       const active = batch.targets.filter((t) => !t.removed);
       if (active.length === 0) throw new AppError('not_approvable', '批次中没有要执行的目标');
+      if (active.some(target => !target.greeting.trim())) throw new AppError('not_approvable', '请先在个人信息页设置固定招呼语并保存');
       if (batch.status !== 'paused') this.#db.prepare("UPDATE batch SET status = 'approved'").run();
       this.#db.prepare('UPDATE batch SET approved_version = ?').run(version);
     });
@@ -566,16 +603,30 @@ export class State {
     }
   }
 
-  #contactedToday(): number {
-    const parts = CONTACT_DAY_FORMAT.formatToParts(new Date());
-    const part = (type: Intl.DateTimeFormatPartTypes) => parts.find(part => part.type === type)!.value;
-    const year = Number(part('year'));
-    const month = Number(part('month')) - 1;
-    const day = Number(part('day'));
-    const offset = part('timeZoneName').replace('GMT', '');
-    // 北京现行自然日没有夏令时；日期和偏移均取自指定时区，不读取宿主机的午夜。
-    const midnight = (date: number) => new Date(`${new Date(Date.UTC(year, month, date)).toISOString().slice(0, 10)}T00:00:00${offset}`).toISOString();
-    const row = this.#db.prepare('SELECT COUNT(*) AS n FROM contacts WHERE at >= ? AND at < ?').get(midnight(day), midnight(day + 1)) as { n: number };
+  remainingJobReads(): number {
+    return Math.max(0, DAILY_JOB_READ_LIMIT - this.#jobReadsOn(businessDay().key));
+  }
+
+  assertJobReadAvailable(): void {
+    requireJobReadBudget(this.#jobReadsOn(businessDay().key));
+  }
+
+  /** 在真实详情页导航前持久占用名额；失败不退回，以免未确认的访问重复计作免费。 */
+  recordJobRead(): void {
+    this.#tx(() => {
+      const day = businessDay().key;
+      const count = this.#jobReadsOn(day);
+      requireJobReadBudget(count);
+      this.#setKv(`job_reads:${day}`, count + 1);
+    });
+  }
+
+  #jobReadsOn(day: string): number {
+    return this.#kv(`job_reads:${day}`, 0);
+  }
+
+  #contactedToday(day: ReturnType<typeof businessDay>): number {
+    const row = this.#db.prepare('SELECT COUNT(*) AS n FROM contacts WHERE at >= ? AND at < ?').get(day.start, day.end) as { n: number };
     return row.n;
   }
 

@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { CHAT_MESSAGE_MAX_CHARS, DAILY_CONTACT_LIMIT, type ChatRequest, type AppState, type ApproveRequest, type BrowserState, type CodexState, type DoctorCheck, type SaveInputsRequest, type TargetPatch } from './contracts.ts';
+import { CHAT_MESSAGE_MAX_CHARS, DAILY_CONTACT_LIMIT, DAILY_JOB_READ_LIMIT, GREETING_MAX_CHARS, type ChatRequest, type AppState, type ApproveRequest, type BrowserState, type CodexState, type DoctorCheck, type SaveInputsRequest, type TargetPatch } from './contracts.ts';
 import { Browser } from './browser.ts';
 import { SUPPORTED_CITIES, createBossSite, type Site } from './boss.ts';
 import { CodexClient } from './codex.ts';
@@ -18,7 +18,7 @@ import { requireQuota, type SearchPlan } from './search-plan.ts';
 import { runDoctor } from './doctor.ts';
 import { AppError } from './errors.ts';
 import { Executor } from './executor.ts';
-import { openState, type State, type DraftTarget } from './state.ts';
+import { openState, requireFixedGreeting, type State, type DraftTarget } from './state.ts';
 
 export const APP_NAME = 'boss-toudi-assistant';
 
@@ -45,7 +45,7 @@ export function dataLayout(dataDir: string) {
 export interface AppOptions {
   dataDir: string;
   /** 站点实现；默认用 agent-browser 驱动真实 BOSS。 */
-  site?: Site;
+  site?: (beforeJobOpen: () => void) => Site;
   /** 发现阶段的读取节奏时钟；默认使用真实可取消等待。 */
   readClock?: ReadClock;
 }
@@ -75,9 +75,13 @@ export class App extends EventEmitter {
     this.#codex = new CodexClient({ codexHome: this.#layout.codexHome, userHome: this.#layout.codexUserHome, workDir: this.#layout.codexWork });
     this.#codex.on('account', () => void this.#refreshAccount());
     this.#codex.on('log', (t: string) => this.#log(t));
-    this.#site =
-      opts.site ??
-      createBossSite(new Browser({ profileDir: this.#layout.browserProfile, headed: true, namespace: `${APP_NAME}-cloak-${createHash('sha256').update(path.resolve(opts.dataDir)).digest('hex').slice(0, 12)}` }));
+    const beforeJobOpen = () => {
+      this.#assistantAbort?.signal.throwIfAborted();
+      this.#state.recordJobRead();
+      this.#changed();
+    };
+    this.#site = opts.site ? opts.site(beforeJobOpen)
+      : createBossSite(new Browser({ profileDir: this.#layout.browserProfile, headed: true, namespace: `${APP_NAME}-cloak-${createHash('sha256').update(path.resolve(opts.dataDir)).digest('hex').slice(0, 12)}` }), beforeJobOpen);
     this.#doctor = runDoctor(opts.dataDir);
     void this.#refreshAccount();
   }
@@ -100,6 +104,8 @@ export class App extends EventEmitter {
       doctor,
       supportedCities: [...SUPPORTED_CITIES],
       dailyContactLimit: DAILY_CONTACT_LIMIT,
+      dailyJobReadLimit: DAILY_JOB_READ_LIMIT,
+      greetingMaxChars: GREETING_MAX_CHARS,
       codex: { ...this.#codexState, pendingLoginUrl: this.#codex.pendingLoginUrl },
       browser,
       ...this.#state.snapshot(),
@@ -140,6 +146,8 @@ export class App extends EventEmitter {
   // ---------- 对话驱动任务 ----------
 
   async #deliver(plan: SearchPlan, abort: AbortController): Promise<void> {
+    requireFixedGreeting(this.#state.snapshot().greeting);
+    this.#state.assertJobReadAvailable();
     if (plan.sendNow) requireQuota(plan.directions.reduce((sum, direction) => sum + direction.count, 0), this.#state.snapshot().contactedToday);
     this.#state.beginDiscovery(plan.sendNow, plan.directions.map(({ name, count }) => ({ name, count, selected: 0 })), plan);
     this.#changed();
@@ -298,6 +306,8 @@ export class App extends EventEmitter {
   }
 
   #executeBatch(request?: ApproveRequest): void {
+    requireFixedGreeting(this.#state.snapshot().greeting);
+    this.#state.assertJobReadAvailable();
     if (this.#executor) throw new AppError('batch_running', '批次已在执行');
     const snapshot = this.#state.snapshot();
     requireQuota(snapshot.batch?.targets.filter(target => !target.removed && target.steps.contact === 'todo' && !this.#state.isContacted(target.jobId)).length ?? 0, snapshot.contactedToday);

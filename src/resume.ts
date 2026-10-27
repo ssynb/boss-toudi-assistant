@@ -1,7 +1,7 @@
 /** 本地输入解析：不写文件，不修改状态；原始简历字节交给 SQLite 与其他输入一起提交。 */
 import crypto from 'node:crypto';
 import path from 'node:path';
-import { RESUME_EXTENSIONS, RESUME_MAX_BYTES, type ResumeExtension, type ResumeState, type SaveInputsRequest } from './contracts.ts';
+import { GREETING_MAX_CHARS, RESUME_EXTENSIONS, RESUME_MAX_BYTES, type ResumeExtension, type ResumeState, type SaveInputsRequest } from './contracts.ts';
 import { AppError } from './errors.ts';
 
 const MAX_TEXT = 50_000;
@@ -13,6 +13,7 @@ const MAGIC: Partial<Record<ResumeExtension, Buffer>> = {
 };
 
 export interface PreparedInputs {
+  greeting: string;
   requirements: string;
   resume: ResumeState;
   /** undefined 保留原字节；null 删除；Buffer 替换。 */
@@ -51,6 +52,7 @@ export function prepareInputs(request: SaveInputsRequest, previous: ResumeState)
   if (!request || typeof request.requirements !== 'string' || request.requirements.length > MAX_REQUIREMENTS || !request.resume) {
     throw new AppError('bad_request', '具体要求须为不超过 10000 字的文本，并提供简历保存操作');
   }
+  if (typeof request.greeting !== 'string' || request.greeting.trim().length > GREETING_MAX_CHARS) throw new AppError('bad_request', `固定招呼语须为不超过${GREETING_MAX_CHARS}字的文本`);
   const { file, text } = request.resume;
   if (text !== null && (typeof text !== 'string' || text.length > MAX_TEXT)) throw new AppError('bad_request', '简历正文须为不超过 50000 字的文本或 null');
   const uploaded = file === undefined || file === null ? null : decodeFile(file);
@@ -61,6 +63,7 @@ export function prepareInputs(request: SaveInputsRequest, previous: ResumeState)
   const fromFile = uploaded ? uploaded.text === nextText : file === undefined && previous.textSource === 'file' && previous.text === nextText;
   return {
     requirements: request.requirements,
+    greeting: request.greeting.trim(),
     resume: { file: nextFile, text: nextText, textSource: nextText.trim() ? (fromFile ? 'file' : 'pasted') : null },
     data: file === null ? null : uploaded?.data,
   };

@@ -120,6 +120,7 @@ export class Executor {
         return this.#skipRest(t, '此前已联系过，不再联系');
       }
       this.#checkDailyQuota();
+      this.#state.assertJobReadAvailable();
       const opened = await this.#site.openJob(t);
       if (opened.kind === 'blocked') throw new Stop(`页面需要处理后才能继续：${opened.evidence}`);
       if (opened.kind === 'missing') {
@@ -131,6 +132,7 @@ export class Executor {
         return this.#skipRest(t, '站点显示已有会话，不再发送');
       }
       this.#checkpoint();
+      this.#state.assertJobReadAvailable();
       if (opened.kind === 'existingConversation') {
         this.#set(t, 'contact', 'done', opened.evidence, opened.identity);
       } else {

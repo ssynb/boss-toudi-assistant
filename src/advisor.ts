@@ -1,6 +1,6 @@
-import { CHAT_MESSAGE_MAX_CHARS, DAILY_CONTACT_LIMIT, type StepState, type TargetSteps } from './contracts.ts';
+import { CHAT_MESSAGE_MAX_CHARS, DAILY_CONTACT_LIMIT, DAILY_JOB_READ_LIMIT, type StepState, type TargetSteps } from './contracts.ts';
 import type { CodexClient } from './codex.ts';
-import { chatText, type RecentTask, type StateSnapshot } from './state.ts';
+import { chatText, requireFixedGreeting, requireJobReadBudget, type RecentTask, type StateSnapshot } from './state.ts';
 import { modelAction } from './model-task.ts';
 
 import { SUPPORTED_CITIES } from './boss.ts';
@@ -39,6 +39,7 @@ export function askAdvisor(codex: CodexClient, signal: AbortSignal, state: State
   const salaryEvidence = [state.requirements, ...(previousPlan ? [previousPlan.salaryMinK === null ? '薪资不限' : `月薪阈值${previousPlan.salaryMinK}K`, previousPlan.criteria] : []), ...userMessages.slice(0, -1)];
   const authorize = (value: unknown) => {
     requireQuote((value as { quote?: unknown })?.quote, latest);
+    requireJobReadBudget(state.jobReadsToday);
     if (!state.resume.text.trim()) throw new Error('请先保存有效简历正文');
   };
   return modelAction<AdvisorAction>({
@@ -47,9 +48,11 @@ export function askAdvisor(codex: CodexClient, signal: AbortSignal, state: State
 quote只证明最新消息有明确开始意图，例如“开始投”“再投147个”“投吧”“继续”；城市、方向、薪资和筛选条件可以沿用lastTask中的最近计划及对话中用户明确说过的条件，不要求用户每次重述。最新明确修改优先，其余条件继续沿用。只有这些来源合起来仍缺必要条件或相互矛盾时才用reply澄清。用户仅讨论时不启动；明确要求开始时直接调用工具，不弹确认卡。
 start_delivery按方向分别给出配额及用户方向范围内、与简历相关的关键词。每方向建议ceil(count/5)个不同词，至少3、最多20，不为凑数扩到无关领域。sendNow=true表示边找边投：每个实际JD判定入选后立即执行当前目标，再读取下一个JD；配额按入选计，送达、跳过、失败、未确认另计；用户说只找、先存草稿则false。criteria必须完整保留沿用和新补充的筛选约束，尤其“不要猎头/中介/外包”。调用工具时用完整参数复述城市、月薪、筛选条件和方向配额，程序会在对话里显示这些条件；个人偏好仅作背景。
 salaryMinK是月薪区间上限须达到的K/月阈值，不是岗位区间下限。例如用户说“月薪上限到20K就行”，必须填salaryMinK=20，不能置null或只写criteria；15-25K满足20K阈值，10-18K不满足，“·13薪”不改变月薪。只有用户明确薪资不限才填null，继续时沿用已明确的薪资条件；金额含糊则澄清。
+投递逐字使用用户在个人信息页保存的固定招呼语，判定回合不撰写或修改招呼；未设置时请明确提醒去个人信息页设置并保存，不启动找岗或投递。每天打开岗位详情页的上限以dailyJobReadLimit为准，额度用尽不启动浏览或投递任务，只回复“今日浏览上限已到，明天继续”。
+筛选采用宽松口径：只看城市、月薪区间上限、用户明确排除的外包/猎头/中介、岗位属于计划方向大类。不得把JD列出的年限、学历、技术栈或加分项自动加成硬条件；只有用户明确要求才保留为额外条件。
 所有动作必须给出最新消息的逐字quote；工具拒绝后通过reply说明原文或额度问题，不假称已执行。每轮只能选择一个动作或回复，工具成功后立即结束回合，搜索和执行由程序负责。
 可依据lastTask.result中的方向预算和拒绝分类解释不足并建议调整，但不能擅自放宽城市、月薪或排除条件。投递事实以delivery为准，旧对话不能覆盖当前账本；区分联系、送达、未知和零记录。公司名单仅含当前批次且可能截断，不能当作全部历史；不知道的事实说明缺少依据，不将上下文缺失说成没有记录。仅获受限任务工具，不运行shell或通用浏览器动作。`,
-    input: { lastTask, resume: state.resume.text, requirements: state.requirements, research: state.research, delivery: deliveryOverview(state), supportedCities: SUPPORTED_CITIES, messages: state.chat.messages },
+    input: { lastTask, greetingConfigured: Boolean(state.greeting), jobReadsToday: state.jobReadsToday, dailyJobReadLimit: DAILY_JOB_READ_LIMIT, resume: state.resume.text, requirements: state.requirements, research: state.research, delivery: deliveryOverview(state), supportedCities: SUPPORTED_CITIES, messages: state.chat.messages },
     tools: [
       { tool: 'reply', description: '回答建议、澄清问题或说明工具拒绝原因。',
         schema: { type: 'object', properties: { text: { type: 'string', minLength: 1, maxLength: CHAT_MESSAGE_MAX_CHARS } }, required: ['text'], additionalProperties: false },
@@ -67,6 +70,7 @@ salaryMinK是月薪区间上限须达到的K/月阈值，不是岗位区间下�
       { tool: 'start_delivery', description: '按最新用户授权开始按方向配额找岗；sendNow控制直接投递或仅存草稿。', schema: SEARCH_PLAN_SCHEMA,
         read(value) {
           authorize(value);
+          requireFixedGreeting(state.greeting);
           const plan = readSearchPlan(value, latest, state.contactedToday, salaryEvidence);
           const previousCriteria = lastTask?.plan && 'criteria' in lastTask.plan ? lastTask.plan.criteria : '';
           const userSources = [previousCriteria, ...userMessages];
@@ -77,6 +81,8 @@ salaryMinK是月薪区间上限须达到的K/月阈值，不是岗位区间下�
         schema: { type: 'object', properties: { quote: { type: 'string' } }, required: ['quote'], additionalProperties: false },
         read(value) {
           requireQuote((value as { quote?: unknown })?.quote, latest);
+          requireFixedGreeting(state.greeting);
+          requireJobReadBudget(state.jobReadsToday);
           if (!state.batch || state.batch.status === 'done') throw new Error('没有可继续投递的已保存批次');
           requireQuota(state.batch.targets.filter(target => !target.removed && target.steps.contact === 'todo').length, state.contactedToday);
           return { kind: 'saved' };
