@@ -17,6 +17,8 @@ export const LOCAL_HEADER_VALUE = '1';
 export const MAX_BATCH_TARGETS = 150;
 /** 定制招呼每段上限（字）。 */
 export const GREETING_MAX_CHARS = 200;
+/** 每日打开岗位详情页上限（北京时间自然日）。依据：日读约430份未触发风控、约1800份被限制访问 3 天；留足余量。 */
+export const DAILY_JOB_READ_LIMIT = 300;
 /** 简历文件上限（字节）。 */
 export const RESUME_MAX_BYTES = 10 * 1024 * 1024;
 /** 允许上传的简历扩展名；txt/md 自动读取正文，无法解析的 pdf/docx 由用户补充正文，统一保存即确认。 */
@@ -67,6 +69,12 @@ export interface AppState {
   contactedToday: number;
   /** 每日主动联系上限，等于 DAILY_CONTACT_LIMIT；UI 只读这个字段，不另写一份。 */
   dailyContactLimit: number;
+  /** 北京时间今天已打开的岗位详情页数（读 JD 与联系前打开都算）；与 dailyJobReadLimit 比较。 */
+  jobReadsToday: number;
+  /** 每日打开岗位详情页上限，等于 DAILY_JOB_READ_LIMIT；用尽即停止，防止触发站点风控。 */
+  dailyJobReadLimit: number;
+  /** 用户保存的固定招呼语；投递时逐字发送，模型不再逐岗位撰写。空串表示尚未设置，不能开始投递。 */
+  greeting: string;
 }
 
 export interface DoctorCheck {
@@ -307,6 +315,8 @@ export interface Batch {
 export interface SaveInputsRequest {
   /** 唯一具体要求自由文本，最多 10000 字；可保存空草稿，但开始发现前必须非空。 */
   requirements: string;
+  /** 固定招呼语，去首尾空白后不超过 GREETING_MAX_CHARS 字；与简历同一事务保存。 */
+  greeting: string;
   resume: {
     /**
      * 省略：保留已保存文件；null：删除已保存文件；对象：用本次文件替换。
