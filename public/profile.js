@@ -35,6 +35,8 @@ export function profilePanel({mutate, dirty, updateControls}) {
  });
  function render(state) {
   current = state;
+  form.elements.greeting.maxLength = state.greetingMaxChars;
+  count();
   if (dirty.has('inputs')) return;
   form.elements.requirements.value = state.requirements;
   form.elements.greeting.value = state.greeting;
