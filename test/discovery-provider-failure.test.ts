@@ -22,7 +22,7 @@ test('真实 Codex 收到模型失败事件后记录错误终态及完成时间'
   fs.writeFileSync(path.join(dir, 'codex-home', 'config.toml'), mockProviderToml(`http://127.0.0.1:${(provider.address() as { port: number }).port}/v1`, 'gpt-mock'));
   const app = new App({ dataDir: dir });
   try {
-    app.saveInputs({ requirements: '北京前端，薪资不限', resume: { text: '简历' } });
+    app.saveInputs({ greeting: '您好，我有五年 React 经验', requirements: '北京前端，薪资不限', resume: { text: '简历' } });
     app.startChat({ message: '北京前端，薪资不限，找10个' });
     const finished = await new Promise<AppState>((resolve, reject) => {
       const cleanup = () => { clearTimeout(timer); app.off('changed', check); };

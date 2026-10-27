@@ -5,7 +5,7 @@ import path from 'node:path';
 import { startServer } from '../src/server.ts';
 import { MAX_SEARCH_PAGE, SiteBlockedError, type Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
-import { instantReadClock, api, LOCAL, tempDir } from './helpers.ts';
+import { countedSite, instantReadClock, api, LOCAL, tempDir } from './helpers.ts';
 import { mockProviderToml, startMockModel, type MockItem } from './mock-responses.ts';
 
 const requestText = '北京前端，月薪至少20K，只找不投';
@@ -47,8 +47,8 @@ async function setup(script: MockItem[][], model: string) {
   fs.mkdirSync(path.join(dataDir, 'codex-home'), { recursive: true });
   fs.writeFileSync(path.join(dataDir, 'codex-home', 'config.toml'), mockProviderToml(mock.baseUrl, model));
   const fake = fakeSite();
-  const server = await startServer({ readClock: instantReadClock, dataDir, port: 0, site: fake.site });
-  const saved = await api(server.url, 'PUT', '/api/inputs', { requirements: '北京前端，月薪至少20K，最多1个，不考虑乙公司', resume: { text: '张三，五年前端经验，React/TypeScript' } });
+  const server = await startServer({ readClock: instantReadClock, dataDir, port: 0, site: countedSite(fake.site) });
+  const saved = await api(server.url, 'PUT', '/api/inputs', { greeting: '您好，我有五年 React 经验', requirements: '北京前端，月薪至少20K，最多1个，不考虑乙公司', resume: { text: '张三，五年前端经验，React/TypeScript' } });
   assert.equal(saved.status, 200);
   return { mock, dataDir, fake, server };
 }
@@ -75,7 +75,7 @@ async function discover(base: string): Promise<AppState> {
 }
 
 const end: MockItem[] = [{ type: 'message', text: '完成本轮' }];
-const selection = (jobId: string, selected = true) => ({ jobId, decision: selected ? 'select' : 'reject', reason: selected ? 'React经验匹配实际JD' : '实际JD与简历不匹配', ...(selected ? { greeting: '您好，我有五年 React 经验' } : { rejectionCategory: '其他' }) });
+const selection = (jobId: string, selected = true) => ({ jobId, decision: selected ? 'select' : 'reject', reason: selected ? 'React经验匹配实际JD' : '实际JD与简历不匹配', ...(!selected ? { rejectionCategory: '岗位方向不符' } : {}) });
 const judgments = (items: ReturnType<typeof selection>[]): MockItem[] => [{ type: 'function_call', name: 'submit_decisions', args: { decisions: items } }];
 const planned = (maxTargets: number, keywords = ['前端']): MockItem[] => [{ type: 'function_call', name: 'start_delivery', args: { city: '北京', salaryMinK: 20, criteria: '前端，月薪至少20K，不考虑乙公司', sendNow: false, quote: requestText, directions: [{ name: '前端', keywords, count: maxTargets }] } }];
 
@@ -162,7 +162,7 @@ test('缺关键要求在对话里澄清，不搜索、不产生任务', async ()
 });
 
 for (const count of [100, 289, 700]) test(`程序累计判定并正常保存，候选${count}`, { timeout: 60_000 }, async () => {
-  const readLimit = Math.min(count, 600);
+  const readLimit = Math.min(count, 300);
   const ids = Array.from({ length: readLimit }, (_, i) => `j${i}`);
   const select = (id: string) => count === 100 || Number(id.slice(1)) % 10 === 0;
   const { mock, fake, server } = await setup(scriptFor(ids, 100, select), 'gpt-mock');
@@ -171,12 +171,12 @@ for (const count of [100, 289, 700]) test(`程序累计判定并正常保存，�
   fake.site.search = async q => { searched.push(q.page); return q.page === 1 ? Array.from({ length: count }, (_, i) => job(`j${i}`)) : []; };
   fake.site.jobDetail = async c => { read.push(c.jobId); return `真实JD-${c.jobId}-END`; };
   try {
-    await api(server.url, 'PUT', '/api/inputs', { requirements: '北京前端，月薪至少20K，目标100个', resume: { text: null } });
+    await api(server.url, 'PUT', '/api/inputs', { greeting: '您好，我有五年 React 经验', requirements: '北京前端，月薪至少20K，目标100个', resume: { text: null } });
     const state = await discover(server.url);
-    assert.equal(state.batch?.targets.length, count === 100 ? 100 : count === 289 ? 29 : 60);
-    assert.equal(read.length, readLimit, '100目标允许最多600次详情读取，不能在147次后由模型结束');
+    assert.equal(state.batch?.targets.length, count === 100 ? 100 : count === 289 ? 29 : 30);
+    assert.equal(read.length, readLimit, '100目标仍尽量寻找，但当日最多打开300份详情');
     assert.deepEqual(searched, count === 289 ? [1, 2] : [1], '达到目标或预算后不再搜索');
-    if (count !== 100) assert.match(state.discovery.message!, count === 289 ? /计划范围.*不代表全站/ : /详情.*预算/);
+    if (count !== 100) assert.match(state.discovery.message!, count === 289 ? /计划范围.*不代表全站/ : /今日浏览上限已到/);
     for (const request of mock.requests.filter(r => JSON.stringify(r.input).includes('真实JD-'))) {
       const text = JSON.stringify(request.input);
       const unique = new Set(text.match(/真实JD-j\d+-END/g));
@@ -210,10 +210,10 @@ test('程序连续遍历计划关键词与页码，跨页去重；空JD不送给
   } finally { await server.close(); mock.close(); }
 });
 
-for (const invalid of ['foreign', 'missing', 'duplicate', 'greeting'] as const) test(`本批判断校验失败后仅重试本批一次：${invalid}`, async () => {
+for (const invalid of ['foreign', 'missing', 'duplicate'] as const) test(`本批判断校验失败后仅重试本批一次：${invalid}`, async () => {
   const valid = selection('j1');
   const bad = invalid === 'foreign' ? [selection('invented')] : invalid === 'missing' ? []
-    : invalid === 'duplicate' ? [valid, valid] : [{ ...valid, greeting: '长'.repeat(201) }];
+    : invalid === 'duplicate' ? [valid, valid] : [valid, valid];
   const { mock, fake, server } = await setup([planned(1), end, judgments(bad), end, judgments([valid]), end], 'gpt-mock');
   try {
     const state = await discover(server.url);

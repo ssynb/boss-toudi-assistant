@@ -45,3 +45,33 @@ export const instantReadClock = {
   random: () => 0.5,
   async wait(_milliseconds: number, signal: AbortSignal): Promise<void> { signal.throwIfAborted(); },
 };
+
+/** 站点替身模拟导航事件：读JD会开页，紧接着执行同一岗位可复用；切到搜索或会话即离开详情页。 */
+export function countedSite(site: import('../src/boss.ts').Site) {
+  return (beforeJobOpen: () => void): import('../src/boss.ts').Site => {
+    let currentJob: string | null = null;
+    return new Proxy(site, {
+      get(target, key) {
+        if (key === 'jobDetail') return async (card: import('../src/boss.ts').JobCard) => {
+          currentJob = null;
+          beforeJobOpen();
+          const text = await target.jobDetail(card);
+          currentJob = card.jobId;
+          return text;
+        };
+        if (key === 'openJob') return async (job: import('../src/contracts.ts').Target) => {
+          if (currentJob !== job.jobId) { currentJob = null; beforeJobOpen(); }
+          const result = await target.openJob(job);
+          currentJob = result.kind === 'canContact' ? job.jobId : null;
+          return result;
+        };
+        const value = Reflect.get(target, key, target);
+        if (typeof value !== 'function') return value;
+        return (...args: unknown[]) => {
+          if (['search', 'contact', 'readChat', 'open', 'close'].includes(String(key))) currentJob = null;
+          return value.apply(target, args);
+        };
+      },
+    });
+  };
+}

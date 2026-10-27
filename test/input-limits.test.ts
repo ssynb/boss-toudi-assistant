@@ -10,7 +10,7 @@ test('10 MB 文件可统一保存，超过整个 JSON 上限时原输入不变',
     const bytes = Buffer.alloc(10 * 1024 * 1024, 0x20);
     bytes.write('%PDF-1.7\n');
     const saved = await api<AppState>(server.url, 'PUT', '/api/inputs', {
-      requirements: '北京前端，薪资不限',
+      greeting: '您好，我有五年 React 经验', requirements: '北京前端，薪资不限',
       resume: { file: { fileName: 'resume.pdf', base64: bytes.toString('base64') }, text: '用于匹配的正文' },
     });
     assert.equal(saved.status, 200);

@@ -9,7 +9,7 @@ import { startServer } from '../src/server.ts';
 import { api, tempDir } from './helpers.ts';
 import type { AppState, ApiError, SaveInputsRequest } from '../src/contracts.ts';
 
-const inputs = (text: string): SaveInputsRequest => ({ requirements: text, resume: { file: { fileName: 'resume.txt', base64: Buffer.from(text).toString('base64') }, text: null } });
+const inputs = (text: string): SaveInputsRequest => ({ greeting: '您好，我有五年 React 经验', requirements: text, resume: { file: { fileName: 'resume.txt', base64: Buffer.from(text).toString('base64') }, text: null } });
 const draft = { jobId: 'a', company: '公司', title: '前端', salary: '', url: 'https://www.zhipin.com/job_detail/a.html', reason: '', greeting: '你好' };
 
 for (const action of ['replace', 'delete'] as const) {
@@ -25,7 +25,7 @@ for (const action of ['replace', 'delete'] as const) {
     db.exec("CREATE TRIGGER reject_resume BEFORE INSERT ON kv WHEN NEW.key = 'resume' BEGIN SELECT RAISE(ABORT, 'storage failure'); END;");
     db.close();
     state = openState(file);
-    const request = action === 'replace' ? inputs('新资料') : { requirements: '新要求', resume: { file: null, text: null } };
+    const request = action === 'replace' ? inputs('新资料') : { greeting: '您好，我有五年 React 经验', requirements: '新要求', resume: { file: null, text: null } };
     assert.throws(() => state.saveInputs(request), /storage failure/);
     assert.deepEqual(state.snapshot(), before);
     state.close();

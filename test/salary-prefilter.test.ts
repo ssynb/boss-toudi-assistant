@@ -5,7 +5,7 @@ import path from 'node:path';
 import { startServer } from '../src/server.ts';
 import type { Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
-import { instantReadClock, api, tempDir } from './helpers.ts';
+import { countedSite, instantReadClock, api, tempDir } from './helpers.ts';
 import { startMockModel, mockProviderToml, type MockItem } from './mock-responses.ts';
 
 async function discover(salaries: [string, string][], selected: string[], salaryMinK: number | null, initialSalary?: number | null) {
@@ -14,7 +14,7 @@ async function discover(salaries: [string, string][], selected: string[], salary
   const action = (value: typeof plan): MockItem[] => [{ type: 'function_call', name: 'start_delivery', args: value }];
   const mock = await startMockModel([
     ...(initialSalary !== undefined ? [action({ ...plan, salaryMinK: initialSalary })] : []), action(plan), [{ type: 'message', text: '计划完成' }],
-    [{ type: 'function_call', name: 'submit_decisions', args: { decisions: selected.map(jobId => ({ jobId, decision: 'select', reason: 'Python主要职责匹配，月薪口径符合要求', greeting: '您好，我有Python经验' })) } }],
+    [{ type: 'function_call', name: 'submit_decisions', args: { decisions: selected.map(jobId => ({ jobId, decision: 'select', reason: 'Python主要职责匹配，月薪口径符合要求' })) } }],
     [{ type: 'message', text: '完成' }],
   ]);
   const dir = tempDir('boss-salary-prefilter-');
@@ -28,9 +28,9 @@ async function discover(salaries: [string, string][], selected: string[], salary
     jobDetail: async card => { reads.push(card.jobId); return `实际JD-${card.jobId}：Python开发，明确月薪区间20-25K`; },
     openJob: forbidden, contact: forbidden, readChat: forbidden, sendGreeting: forbidden,
   };
-  const server = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site });
+  const server = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site: countedSite(site) });
   try {
-    await api(server.url, 'PUT', '/api/inputs', { requirements: '', resume: { text: 'Python开发经验' } });
+    await api(server.url, 'PUT', '/api/inputs', { greeting: '您好，我有五年 React 经验', requirements: '', resume: { text: 'Python开发经验' } });
     await api(server.url, 'POST', '/api/chat', { message });
     const state = await new Promise<AppState>((resolve, reject) => {
       const cleanup = () => { clearTimeout(timer); server.app.off('changed', check); };

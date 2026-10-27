@@ -5,15 +5,15 @@ import path from 'node:path';
 import { startServer } from '../src/server.ts';
 import type { Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
-import { instantReadClock, tempDir, api } from './helpers.ts';
+import { countedSite, instantReadClock, tempDir, api } from './helpers.ts';
 import { mockProviderToml, startMockModel, type MockItem } from './mock-responses.ts';
 
 const end: MockItem[] = [{ type: 'message', text: '完成' }];
-const select = (jobId: string) => ({ jobId, decision: 'select', reason: '主要职责匹配Python经验', greeting: '您好，我有Python经验' });
-const reject = (jobId: string, rejectionCategory: string) => ({ jobId, decision: 'reject', reason: `私有拒绝说明-${jobId}`, rejectionCategory });
+const select = (jobId: string) => ({ jobId, decision: 'select', reason: '主要职责匹配Python经验' });
+const reject = (jobId: string, rejectionCategory: string) => ({ jobId, decision: 'reject', reason: `私有拒绝说明-${jobId}`, rejectionCategory, ...(rejectionCategory === '用户明确条件' ? { requirementQuote: '必须有Python项目' } : {}) });
 
 async function run(directions: { name: string; count: number }[], cards: Record<string, string[]>, decisions: object[][]) {
-  const message = `深圳，月薪至少20K，${directions.map(d => `${d.name}${d.count}个`).join('、')}，先存草稿`;
+  const message = `深圳，月薪至少20K，${directions.map(d => `${d.name}${d.count}个`).join('、')}，必须有Python项目，先存草稿`;
   const script: MockItem[][] = [
     [{ type: 'function_call', name: 'start_delivery', args: { city: '深圳', salaryMinK: 20, criteria: 'Python，月薪至少20K，不要猎头和外包', sendNow: false, quote: message, directions: directions.map(d => ({ ...d, keywords: [d.name] })) } }], end,
     ...decisions.flatMap(items => [[{ type: 'function_call' as const, name: 'submit_decisions', args: { decisions: items } }], end]),
@@ -31,9 +31,9 @@ async function run(directions: { name: string; count: number }[], cards: Record<
     jobDetail: async c => { reads.push(c.jobId); return `实际JD-${c.jobId}：主要职责Python开发，了解前端工具加分`; },
     openJob: forbidden, contact: forbidden, readChat: forbidden, sendGreeting: forbidden,
   };
-  const server = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site });
+  const server = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site: countedSite(site) });
   try {
-    await api(server.url, 'PUT', '/api/inputs', { requirements: '', resume: { text: 'Python后端开发经验' } });
+    await api(server.url, 'PUT', '/api/inputs', { greeting: '您好，我有五年 React 经验', requirements: '', resume: { text: 'Python后端开发经验' } });
     await api(server.url, 'POST', '/api/chat', { message });
     const state = await new Promise<AppState>((resolve, reject) => {
       const cleanup = () => { clearTimeout(timer); server.app.off('changed', check); };
@@ -46,7 +46,7 @@ async function run(directions: { name: string; count: number }[], cards: Record<
 }
 
 test('第一方向拒绝率高不能消耗后续预算；拒绝原因按方向分类计数而不保存全文', async () => {
-  const categories = ['薪资不足', '外包/猎头/中介', '年限学历', '技术栈不符', '岗位方向不符', '其他'];
+  const categories = ['城市不符', '薪资不足', '外包/猎头/中介', '用户明确条件', '岗位方向不符', '岗位方向不符'];
   const rounds = categories.map((category, i) => [reject(`a${i * 2}`, category), reject(`a${i * 2 + 1}`, category)]);
   const { state, reads, searches } = await run([{ name: 'AI开发', count: 2 }, { name: '后端', count: 1 }],
     { AI开发: Array.from({ length: 20 }, (_, i) => `a${i}`), 后端: ['b'] }, [...rounds, [select('b')]]);
@@ -55,7 +55,8 @@ test('第一方向拒绝率高不能消耗后续预算；拒绝原因按方向�
   assert.deepEqual(state.batch!.targets.map(t => t.jobId), ['b']);
   assert.match(state.discovery.message!, /AI开发.*读取 12\/12.*入选 0\/2.*预算/);
   assert.match(state.discovery.message!, /后端.*读取 1\/6.*入选 1\/1.*配额/);
-  for (const category of categories) assert.ok(state.discovery.message!.includes(`${category} 2`), category);
+  for (const category of ['城市不符', '薪资不足', '外包/猎头/中介', '用户明确条件']) assert.ok(state.discovery.message!.includes(`${category} 2`), category);
+  assert.ok(state.discovery.message!.includes('岗位方向不符 4'));
   assert.ok(!JSON.stringify(state).includes('私有拒绝说明'), '持久状态只保存拒绝类别计数，不存reject理由全文');
 });
 

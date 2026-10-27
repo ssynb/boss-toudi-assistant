@@ -6,14 +6,14 @@ import { startServer, type RunningServer } from '../src/server.ts';
 import { openState } from '../src/state.ts';
 import { SiteBlockedError, type Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
-import { instantReadClock, api, tempDir } from './helpers.ts';
+import { countedSite, instantReadClock, api, tempDir } from './helpers.ts';
 import { startMockModel, mockProviderToml, type MockItem } from './mock-responses.ts';
 
 const end: MockItem[] = [{ type: 'message', text: '完成' }];
 const call = (name: string, args: unknown): MockItem[] => [{ type: 'function_call', name, args }];
 const message = '深圳AI开发，月薪至少30K，找10个直接投递';
 const plan = { city: '深圳', salaryMinK: 30, criteria: 'Python和Agent开发', sendNow: true, quote: message, directions: [{ name: 'AI开发', keywords: ['Agent'], count: 10 }] };
-const decision = (jobId: string, select = true) => ({ jobId, decision: select ? 'select' : 'reject', reason: select ? '实际JD匹配Python经验' : '猎头不符合用户排除条件', ...(select ? { greeting: '您好，我有Python经验' } : { rejectionCategory: '外包/猎头/中介' }) });
+const decision = (jobId: string, select = true) => ({ jobId, decision: select ? 'select' : 'reject', reason: select ? '实际JD匹配Python经验' : '猎头不符合用户排除条件', ...(!select ? { rejectionCategory: '外包/猎头/中介' } : {}) });
 const judge = (...jobIds: string[]) => call('submit_decisions', { decisions: jobIds.map(id => decision(id)) });
 const card = (jobId: string) => ({ jobId, title: 'AI工程师', company: jobId, salary: '30-40K', area: '深圳', snippet: '', url: `https://www.zhipin.com/job_detail/${jobId}.html` });
 const timeout = () => new Error('浏览器命令 wait 失败：Wait timed out after 25000ms');
@@ -24,7 +24,7 @@ async function setup(script: MockItem[][]) {
   fs.mkdirSync(path.join(dir, 'codex-home'));
   fs.writeFileSync(path.join(dir, 'codex-home', 'config.toml'), mockProviderToml(mock.baseUrl, 'gpt-mock'));
   const db = openState(path.join(dir, 'state.sqlite'));
-  db.saveInputs({ requirements: '', resume: { text: 'Python与Agent开发经验' } });
+  db.saveInputs({ greeting: '您好，我有五年 React 经验', requirements: '', resume: { text: 'Python与Agent开发经验' } });
   const original = db.replaceBatch([{ ...card('old'), reason: '原批次', greeting: '您好' }]);
   db.close();
   const writes: string[] = [];
@@ -36,7 +36,7 @@ async function setup(script: MockItem[][]) {
     readChat: async () => ({ ourMessages: 0, evidence: '' }),
     sendGreeting: async t => { writes.push(`greeting:${t.jobId}`); return { ok: true, evidence: '' }; },
   };
-  const server = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site });
+  const server = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site: countedSite(site) });
   return { mock, dir, server, site, writes, original };
 }
 
@@ -159,7 +159,7 @@ test('失败任务重启后仍向顾问提供计划与原因；最新继续意�
     await idle(current);
     await current.close();
     site.search = async q => q.page === 1 ? [card('headhunter'), card('direct')] : [];
-    current = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site });
+    current = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site: countedSite(site) });
     await api(current.url, 'POST', '/api/chat', { message: again });
     const state = await idle(current);
     const previous = context(mock, 2).lastTask;
@@ -200,7 +200,7 @@ test('清空对话并重启后继续：顾问判定条件不恢复已经解除�
     assert.equal((await api(current.url, 'POST', '/api/chat/clear')).status, 200);
     await current.close();
     site.search = async q => q.page === 1 ? [card('agency')] : [];
-    current = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site });
+    current = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site: countedSite(site) });
     await api(current.url, 'POST', '/api/chat', { message: again });
     const state = await idle(current);
     assert.equal(context(mock, 2).messages.length, 1, '旧对话已清空，续接只依赖持久任务计划');

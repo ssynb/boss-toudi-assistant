@@ -8,7 +8,7 @@ import { Executor, type WriteSite } from '../src/executor.ts';
 import { requireQuota } from '../src/search-plan.ts';
 import type { Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
-import { instantReadClock, api, tempDir } from './helpers.ts';
+import { countedSite, instantReadClock, api, tempDir } from './helpers.ts';
 import { mockProviderToml, startMockModel, type MockItem } from './mock-responses.ts';
 
 const end: MockItem[] = [{ type: 'message', text: '完成' }];
@@ -17,7 +17,7 @@ const message = '在北京找AI开发2个、后端1个，薪资不限，先存�
 const plan = { city: '北京', salaryMinK: null, criteria: 'Python和Agent经验匹配', sendNow: false, quote: message,
   directions: [{ name: 'AI开发', keywords: ['Agent'], count: 2 }, { name: '后端', keywords: ['Python'], count: 1 }] };
 const job = (jobId: string) => ({ jobId, title: '工程师', company: `公司${jobId}`, salary: '20-40K', url: `https://www.zhipin.com/job_detail/${jobId}.html`, area: '北京', snippet: '' });
-const decisions = (...ids: string[]) => call('submit_decisions', { decisions: ids.map(jobId => ({ jobId, decision: 'select', reason: '实际JD匹配Python', greeting: '您好，我有Python经验' })) });
+const decisions = (...ids: string[]) => call('submit_decisions', { decisions: ids.map(jobId => ({ jobId, decision: 'select', reason: '实际JD匹配Python' })) });
 
 async function setup(script: MockItem[][], contacted = 0) {
   const mock = await startMockModel(script);
@@ -25,7 +25,7 @@ async function setup(script: MockItem[][], contacted = 0) {
   fs.mkdirSync(path.join(dir, 'codex-home'));
   fs.writeFileSync(path.join(dir, 'codex-home', 'config.toml'), mockProviderToml(mock.baseUrl, 'gpt-mock'));
   const db = openState(path.join(dir, 'state.sqlite'));
-  db.saveInputs({ requirements: '', resume: { text: 'Python后端和Agent经验' } });
+  db.saveInputs({ greeting: '您好，我有五年 React 经验', requirements: '', resume: { text: 'Python后端和Agent经验' } });
   if (contacted) {
     const batch = db.replaceBatch(Array.from({ length: contacted }, (_, i) => ({ ...job(`old${i}`), reason: '旧记录', greeting: '您好' })));
     batch.targets.forEach(t => db.setStep(t, 'contact', 'done', '测试账本'));
@@ -40,7 +40,7 @@ async function setup(script: MockItem[][], contacted = 0) {
     contact: async t => { writes.push(`contact:${t.jobId}`); return { ok: true, evidence: '', identity: { jobId: t.jobId, recruiterUrl: `https://www.zhipin.com/boss_detail/${t.jobId}.html` } }; },
     readChat: async () => ({ ourMessages: 0, evidence: '' }), sendGreeting: async t => { writes.push(`greeting:${t.jobId}`); return { ok: true, evidence: '' }; },
   };
-  const server = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site });
+  const server = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site: countedSite(site) });
   const idle = () => new Promise<AppState>((resolve, reject) => {
     const cleanup = () => { clearTimeout(timer); server.app.off('changed', check); };
     const check = () => void server.app.getState().then(s => {

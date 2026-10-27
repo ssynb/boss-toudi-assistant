@@ -6,14 +6,14 @@ import { startServer, type RunningServer } from '../src/server.ts';
 import { openState } from '../src/state.ts';
 import { SiteBlockedError, type Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
-import { api, instantReadClock, tempDir } from './helpers.ts';
+import { countedSite, api, instantReadClock, tempDir } from './helpers.ts';
 import { mockProviderToml, startMockModel, type MockItem } from './mock-responses.ts';
 
 const message = '深圳Python，薪资不限，只找不投';
 const end: MockItem[] = [{ type: 'message', text: '完成' }];
 const action = (count: number): MockItem[] => [{ type: 'function_call', name: 'start_delivery', args: { city: '深圳', salaryMinK: null, criteria: 'Python', sendNow: false, quote: message, directions: [{ name: 'Python', keywords: ['Python'], count }] } }];
 const verdicts = (ids: string[], selected: string[] = ids): MockItem[] => [{ type: 'function_call', name: 'submit_decisions', args: { decisions: ids.map(jobId => selected.includes(jobId)
-  ? { jobId, decision: 'select', reason: '主要职责匹配Python经验', greeting: '您好，我有Python经验' }
+  ? { jobId, decision: 'select', reason: '主要职责匹配Python经验' }
   : { jobId, decision: 'reject', reason: '方向不符', rejectionCategory: '岗位方向不符' }) } }];
 const job = (jobId: string) => ({ jobId, company: '测试公司', title: 'Python开发', salary: '20-40K', url: `https://www.zhipin.com/job_detail/${jobId}.html`, area: '深圳', snippet: '' });
 
@@ -31,8 +31,8 @@ async function fixture(script: MockItem[][], clock = instantReadClock) {
     jobDetail: async c => { events.push(`detail:${c.jobId}`); return '实际JD Python开发'; },
     openJob: forbidden('open'), contact: forbidden('contact'), readChat: forbidden('readChat'), sendGreeting: forbidden('greeting'),
   };
-  const server = await startServer({ dataDir: dir, port: 0, site, readClock: clock });
-  await api(server.url, 'PUT', '/api/inputs', { requirements: '', resume: { text: 'Python开发经验' } });
+  const server = await startServer({ dataDir: dir, port: 0, site: countedSite(site), readClock: clock });
+  await api(server.url, 'PUT', '/api/inputs', { greeting: '您好，我有五年 React 经验', requirements: '', resume: { text: 'Python开发经验' } });
   return { mock, dir, server, site, events, writes };
 }
 
@@ -45,7 +45,7 @@ function idle(server: RunningServer): Promise<AppState> {
   });
 }
 
-test('搜索、翻页、重试及每个新JD之前随机等待1.5–3秒，结果说明节奏', async () => {
+test('搜索、翻页、重试及每个新JD之前随机等待3–6秒，结果说明节奏', async () => {
   let index = 0;
   const values = [0, 1 - Number.EPSILON, 0.5];
   const order: string[] = [];
@@ -57,9 +57,9 @@ test('搜索、翻页、重试及每个新JD之前随机等待1.5–3秒，结�
   try {
     await api(server.url, 'POST', '/api/chat', { message });
     const state = await idle(server);
-    assert.deepEqual(order, ['wait:1500', 'search:1', 'wait:3000', 'detail:a', 'wait:2250', 'search:2', 'wait:1500', 'search:2', 'wait:3000', 'detail:b']);
+    assert.deepEqual(order, ['wait:3000', 'search:1', 'wait:6000', 'detail:a', 'wait:4500', 'search:2', 'wait:3000', 'search:2', 'wait:6000', 'detail:b']);
     assert.equal(state.batch!.targets.length, 2);
-    assert.match(state.discovery.message!, /1\.5.*3.*秒/);
+    assert.match(state.discovery.message!, /3.*6.*秒/);
     assert.deepEqual(writes, []);
   } finally { await server.close(); mock.close(); }
 });

@@ -8,7 +8,7 @@ import { tempDir } from './helpers.ts';
 test('具体要求重启保留，删除旧条件入口时不删除简历或联系账本', () => {
   const file = path.join(tempDir('boss-requirements-'), 'state.sqlite');
   let state = openState(file);
-  state.saveInputs({ requirements: '', resume: { file: { fileName: 'resume.pdf', base64: Buffer.from('%PDF-1.7\n').toString('base64') }, text: '简历正文' } });
+  state.saveInputs({ greeting: '您好，我有五年 React 经验', requirements: '', resume: { file: { fileName: 'resume.pdf', base64: Buffer.from('%PDF-1.7\n').toString('base64') }, text: '简历正文' } });
   const originalHash = state.snapshot().resume.file!.sha256;
   const b = state.replaceBatch([{ jobId: 'job', company: '公司', title: '前端', salary: '', url: 'https://www.zhipin.com/job_detail/job.html', reason: '', greeting: '你好' }]);
   state.setStep(b.targets[0]!, 'contact', 'done', '已联系');
@@ -21,7 +21,7 @@ test('具体要求重启保留，删除旧条件入口时不删除简历或联�
   state = openState(file);
   assert.equal(state.snapshot().requirements, '');
   assert.equal(state.snapshot().batch!.status, 'draft', '旧条件的批准不继续有效');
-  state.saveInputs({ requirements: '上海前端，薪资不限', resume: { text: null } });
+  state.saveInputs({ greeting: '您好，我有五年 React 经验', requirements: '上海前端，薪资不限', resume: { text: null } });
   state.close();
   state = openState(file);
   const saved = state.snapshot();

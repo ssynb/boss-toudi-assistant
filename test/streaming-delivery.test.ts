@@ -7,14 +7,14 @@ import { openState } from '../src/state.ts';
 import { Executor, type WriteSite } from '../src/executor.ts';
 import { SiteBlockedError, type Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
-import { instantReadClock, tempDir, api } from './helpers.ts';
+import { countedSite, instantReadClock, tempDir, api } from './helpers.ts';
 import { startMockModel, mockProviderToml, type MockItem } from './mock-responses.ts';
 
 const message = '深圳AI开发，薪资不限，找到就投';
 const plan = (count: number) => ({ city: '深圳', salaryMinK: null, criteria: 'Python开发', sendNow: true, quote: message, directions: [{ name: 'AI开发', keywords: ['Python'], count }] });
 const end: MockItem[] = [{ type: 'message', text: '完成' }];
 const call = (name: string, args: unknown): MockItem[] => [{ type: 'function_call', name, args }];
-const judge = (jobId: string) => call('submit_decisions', { decisions: [{ jobId, decision: 'select', reason: '实际JD匹配Python经验', greeting: '您好，我有Python经验' }] });
+const judge = (jobId: string) => call('submit_decisions', { decisions: [{ jobId, decision: 'select', reason: '实际JD匹配Python经验' }] });
 const card = (jobId: string) => ({ jobId, company: `公司${jobId}`, title: '工程师', salary: '20-40K', area: '深圳', snippet: '', url: `https://www.zhipin.com/job_detail/${jobId}.html` });
 const draft = (jobId: string) => ({ ...card(jobId), reason: '匹配', greeting: '您好' });
 
@@ -35,7 +35,7 @@ async function setup(count: number, ids: string[], tail: MockItem[][] = []) {
   fs.mkdirSync(path.join(dir, 'codex-home'));
   fs.writeFileSync(path.join(dir, 'codex-home', 'config.toml'), mockProviderToml(mock.baseUrl, 'gpt-mock'));
   const state = openState(path.join(dir, 'state.sqlite'));
-  state.saveInputs({ requirements: '', resume: { text: 'Python开发经验' } });
+  state.saveInputs({ greeting: '您好，我有五年 React 经验', requirements: '', resume: { text: 'Python开发经验' } });
   state.replaceBatch([draft('old')]);
   state.close();
   const events: string[] = [];
@@ -48,7 +48,7 @@ async function setup(count: number, ids: string[], tail: MockItem[][] = []) {
     readChat: async () => ({ ourMessages: 0, evidence: '' }),
     sendGreeting: async t => { events.push(`greeting:${t.jobId}`); return { ok: true, evidence: '已送达' }; },
   };
-  const server = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site });
+  const server = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site: countedSite(site) });
   return { mock, dir, server, site, events };
 }
 
@@ -142,7 +142,7 @@ for (const failure of ['blocked', 'unknown', 'later-read'] as const) test(`边�
 function streamingState(count: number) {
   const file = path.join(tempDir('boss-stream-state-'), 'state.sqlite');
   const state = openState(file);
-  state.saveInputs({ requirements: '', resume: { text: 'Python开发经验' } });
+  state.saveInputs({ greeting: '您好，我有五年 React 经验', requirements: '', resume: { text: 'Python开发经验' } });
   return { state, file, begin: () => state.beginDiscovery(true, [{ name: 'AI开发', count, selected: 0 }], plan(count)) };
 }
 

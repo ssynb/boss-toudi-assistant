@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { App } from '../src/app.ts';
 import type { Site } from '../src/boss.ts';
-import { tempDir } from './helpers.ts';
+import { countedSite, tempDir } from './helpers.ts';
 import { startMockModel, mockProviderToml } from './mock-responses.ts';
 
 test('调研认证预检查期间已互斥，停止正常返回且不启动任何浏览器读取', async () => {
@@ -18,9 +18,9 @@ test('调研认证预检查期间已互斥，停止正常返回且不启动任�
     open: forbidden, close: async () => {}, status: async () => ({ page: 'ready', url: null }),
     search: forbidden, jobDetail: forbidden, openJob: forbidden, contact: forbidden, readChat: forbidden, sendGreeting: forbidden,
   };
-  const app = new App({ dataDir: dir, site });
+  const app = new App({ dataDir: dir, site: countedSite(site) });
   try {
-    app.saveInputs({ requirements: '', resume: { text: 'Python开发经验' } });
+    app.saveInputs({ greeting: '您好，我有五年 React 经验', requirements: '', resume: { text: 'Python开发经验' } });
     app.startChat({ message: '调研北京方向' });
     assert.throws(() => app.startChat({ message: '建议？' }), { code: 'busy' });
     app.stopResearch();

@@ -7,7 +7,7 @@ import { startServer, type RunningServer } from '../src/server.ts';
 import { openState } from '../src/state.ts';
 import { SiteBlockedError, SUPPORTED_CITIES, type Site } from '../src/boss.ts';
 import { CHAT_HISTORY_LIMIT, CHAT_MESSAGE_MAX_CHARS, RESEARCH_SAMPLE_PER_DIRECTION, type AppState } from '../src/contracts.ts';
-import { api, tempDir } from './helpers.ts';
+import { countedSite, api, tempDir } from './helpers.ts';
 import { mockProviderToml, startMockModel, type MockItem } from './mock-responses.ts';
 
 const names = ['AI开发', 'Agent开发', 'AI产品', 'FDE', '后端'];
@@ -17,7 +17,7 @@ const researchAction = call('start_research', { city: '北京', quote: '调研�
 const plan = call('suggest_directions', { directions: names.map(name => ({ name, keywords: [name] })) });
 const evaluation = (fit: string, matched = 2) => call('evaluate_direction', { fit, reason: '实际JD需要已有Python与Agent经验', gaps: '需要补充生产项目规模经验', matched });
 const reply = (text: string) => call('reply', { text });
-const inputs = { requirements: '希望探索AI方向', resume: { text: 'Python后端、Agent项目、客户交付和产品设计经验' } };
+const inputs = { greeting: '您好，我有五年 React 经验', requirements: '希望探索AI方向', resume: { text: 'Python后端、Agent项目、客户交付和产品设计经验' } };
 const job = (id: string, salary = '20-30K') => ({ jobId: id, company: '测试公司', title: '工程师', salary, url: `https://www.zhipin.com/job_detail/${id}.html`, area: '北京', snippet: '卡片不是实际JD' });
 
 async function fixture(script: MockItem[][], baseUrl?: string) {
@@ -34,7 +34,7 @@ async function fixture(script: MockItem[][], baseUrl?: string) {
     jobDetail: async card => { reads.push(`detail:${card.jobId}`); return `实际JD-${card.jobId}：Python与Agent开发`; },
     openJob: forbidden('openJob'), contact: forbidden('contact'), readChat: forbidden('readChat'), sendGreeting: forbidden('sendGreeting'),
   };
-  const server = await startServer({ dataDir: dir, port: 0, site });
+  const server = await startServer({ dataDir: dir, port: 0, site: countedSite(site) });
   await api(server.url, 'PUT', '/api/inputs', inputs);
   return { mock, dir, server, site, reads, writes };
 }
@@ -132,7 +132,7 @@ test('调研采样上限、去重、排除已联系；无JD不编造匹配度和
   const batch = state.replaceBatch([{ ...job('contacted'), reason: '旧记录', greeting: '你好' }]);
   state.setStep(batch.targets[0]!, 'contact', 'done', '已联系');
   state.close();
-  const restarted = await startServer({ dataDir: dir, port: 0, site });
+  const restarted = await startServer({ dataDir: dir, port: 0, site: countedSite(site) });
   try {
     assert.equal((await api(restarted.url, 'POST', '/api/chat', { message: '调研北京方向' })).status, 200);
     const result = await waitState(restarted, s => !s.chat.pending && s.research.status === 'idle');

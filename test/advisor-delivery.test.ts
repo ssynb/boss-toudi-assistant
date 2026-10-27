@@ -19,7 +19,7 @@ for (const size of [4, 150]) test(`顾问收到真实账本与批次概况，当
   const codex = new CodexClient({ codexHome: path.join(dir, 'codex-home'), userHome: path.join(dir, 'home'), workDir: path.join(dir, 'work') });
   const state = openState(path.join(dir, 'state.sqlite'));
   try {
-    state.saveInputs({ requirements: '深圳AI开发', resume: { text: 'Python与Agent经验' } });
+    state.saveInputs({ greeting: '您好，我有五年 React 经验', requirements: '深圳AI开发', resume: { text: 'Python与Agent经验' } });
     const drafts = Array.from({ length: 150 }, (_, i) => ({ jobId: `j${i}`, company: `公司${i}`, title: 'AI工程师', salary: '20-40K', url: `https://www.zhipin.com/job_detail/j${i}.html`, reason: '匹配', greeting: '你好' }));
     const history = state.replaceBatch(drafts);
     for (const target of history.targets) state.setStep(target, 'contact', 'done', '历史记录');

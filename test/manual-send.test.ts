@@ -5,12 +5,13 @@ import { openState } from '../src/state.ts';
 import { startServer } from '../src/server.ts';
 import type { Site } from '../src/boss.ts';
 import type { AppState, ApiError } from '../src/contracts.ts';
-import { api, tempDir } from './helpers.ts';
+import { countedSite, api, tempDir } from './helpers.ts';
 
 for (const previousUnknown of [false, true]) {
   test(`一次确认即投递且拒绝旧版本；保留未知联系=${previousUnknown}`, async () => {
     const dataDir = tempDir('boss-manual-send-');
     const state = openState(path.join(dataDir, 'state.sqlite'));
+    state.saveInputs({ greeting: '你好', requirements: '', resume: { text: '' } });
     const drafts = ['a', 'b'].map(jobId => ({ jobId, url: `https://www.zhipin.com/job_detail/${jobId}.html`, title: '前端', company: '公司', salary: '20-30K', reason: '匹配', greeting: '你好' }));
     const batch = state.replaceBatch(drafts);
     if (previousUnknown) state.setStep(batch.targets[0]!, 'contact', 'unknown', '此前点击结果未确认');
@@ -24,7 +25,7 @@ for (const previousUnknown of [false, true]) {
       readChat: async () => ({ ourMessages: 1, evidence: '已有招呼' }),
       sendGreeting: async () => { throw new Error('已有本方消息不能重发'); },
     };
-    const server = await startServer({ dataDir, port: 0, site });
+    const server = await startServer({ dataDir, port: 0, site: countedSite(site) });
     try {
       const stale = await api<ApiError>(server.url, 'POST', '/api/batch/start', { version: batch.version - 1 });
       assert.equal(stale.json.error.code, 'stale_version');

@@ -6,7 +6,7 @@ import path from 'node:path';
 import { startServer } from '../src/server.ts';
 import type { Site } from '../src/boss.ts';
 import type { AppState, BrowserPage } from '../src/contracts.ts';
-import { instantReadClock, api, LOCAL, tempDir } from './helpers.ts';
+import { countedSite, instantReadClock, api, LOCAL, tempDir } from './helpers.ts';
 import { mockProviderToml, startMockModel, type MockItem } from './mock-responses.ts';
 
 const requestText = '北京前端，薪资不限，找150个';
@@ -18,7 +18,7 @@ const card = { jobId: 'j1', url: 'https://www.zhipin.com/job_detail/j1.html', ti
 const script = (sendNow: boolean): MockItem[][] => [
   [plan(sendNow)],
   [{ type: 'message', text: '计划完成' }],
-  [{ type: 'function_call', name: 'submit_decisions', args: { decisions: [{ jobId: 'j1', decision: 'select', reason: 'React 匹配', greeting: '您好，我有五年 React 经验' }] } }],
+  [{ type: 'function_call', name: 'submit_decisions', args: { decisions: [{ jobId: 'j1', decision: 'select', reason: 'React 匹配' }] } }],
   [{ type: 'message', text: '判定完成' }],
 ];
 
@@ -39,9 +39,9 @@ async function run(body: unknown, page: BrowserPage = 'ready') {
     readChat: async () => ({ ourMessages: 0, evidence: '' }),
     sendGreeting: async (_t, text) => { calls.push(`greet:${text}`); return { ok: true, evidence: '' }; },
   };
-  const server = await startServer({ readClock: instantReadClock, dataDir, port: 0, site });
+  const server = await startServer({ readClock: instantReadClock, dataDir, port: 0, site: countedSite(site) });
   try {
-    await api(server.url, 'PUT', '/api/inputs', { requirements: '北京前端，薪资不限，找 150 个', resume: { text: '五年 React 经验' } });
+    await api(server.url, 'PUT', '/api/inputs', { greeting: '您好，我有五年 React 经验', requirements: '北京前端，薪资不限，找 150 个', resume: { text: '五年 React 经验' } });
     const controller = new AbortController();
     const reader = (await fetch(`${server.url}/api/events`, { headers: LOCAL, signal: controller.signal })).body!.getReader();
     const started = await api<AppState>(server.url, 'POST', '/api/chat', { message: requestText });
@@ -111,7 +111,7 @@ for (const terminal of ['failed', 'cancelled'] as const) {
       search: async q => q.page === 1 ? [card] : [], jobDetail: async () => '岗位职责：React前端开发',
       openJob: forbidden('openJob'), contact: forbidden('contact'), readChat: forbidden('readChat'), sendGreeting: forbidden('sendGreeting'),
     };
-    const server = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site });
+    const server = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site: countedSite(site) });
     const idle = () => new Promise<AppState>((resolve, reject) => {
       const cleanup = () => { clearTimeout(timer); server.app.off('changed', check); };
       const check = () => void server.app.getState().then(state => {
@@ -122,7 +122,7 @@ for (const terminal of ['failed', 'cancelled'] as const) {
       check();
     });
     try {
-      await api(server.url, 'PUT', '/api/inputs', { requirements: '北京前端，薪资不限，找150个', resume: { text: '五年React经验' } });
+      await api(server.url, 'PUT', '/api/inputs', { greeting: '您好，我有五年 React 经验', requirements: '北京前端，薪资不限，找150个', resume: { text: '五年React经验' } });
       server.app.startChat({ message: requestText });
       const original = (await idle()).batch;
       assert.ok(original);

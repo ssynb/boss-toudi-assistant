@@ -14,7 +14,7 @@ test('旧批次的批准不能用于替换后的新批次，重启后也不能',
   const file = path.join(tempDir('boss-version-'), 'state.sqlite');
   let state = openState(file);
   const old = state.replaceBatch([draft('A')]);
-  state.patchTarget(old.targets[0]!.id, { greeting: '修改后' });
+  state.saveInputs({ greeting: '修改后', requirements: '', resume: { text: '' } });
   const reviewedVersion = state.snapshot().batch!.version;
   state.close();
   state = openState(file);

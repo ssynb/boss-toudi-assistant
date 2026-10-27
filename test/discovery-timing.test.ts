@@ -6,10 +6,10 @@ import { openState } from '../src/state.ts';
 import { startServer, type RunningServer } from '../src/server.ts';
 import type { Site } from '../src/boss.ts';
 import type { AppState, ApiError } from '../src/contracts.ts';
-import { instantReadClock, api, tempDir } from './helpers.ts';
+import { countedSite, instantReadClock, api, tempDir } from './helpers.ts';
 import { mockProviderToml, startMockModel } from './mock-responses.ts';
 
-const inputs = { requirements: '北京前端，薪资不限', resume: { text: '前端简历' } };
+const inputs = { greeting: '您好，我有五年 React 经验', requirements: '北京前端，薪资不限', resume: { text: '前端简历' } };
 
 for (const ending of ['完成', '已停止', '发现失败：连接中断']) {
   test(`发现${ending}时固定结束时间，刷新/保存/重启不重置`, () => {
@@ -102,7 +102,7 @@ test('真实 Codex 工具在途时停止：先 stopping、禁保存，工具结�
     search: async () => { entered(); await gate; return []; }, jobDetail: async () => '',
     openJob: forbidden, contact: forbidden, readChat: forbidden, sendGreeting: forbidden,
   };
-  const server = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site });
+  const server = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site: countedSite(site) });
   try {
     await api(server.url, 'PUT', '/api/inputs', inputs);
     const start = await api<AppState>(server.url, 'POST', '/api/chat', { message: inputs.requirements });

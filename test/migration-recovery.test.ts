@@ -11,7 +11,7 @@ test('迁移已提交但旧文件清理失败时，保留数据库字节和恢�
   const file = path.join(dir, 'state.sqlite');
   const bytes = Buffer.from('迁移后的简历');
   const state = openState(file);
-  state.saveInputs({ requirements: '旧要求', resume: { file: { fileName: 'resume.txt', base64: bytes.toString('base64') }, text: null } });
+  state.saveInputs({ greeting: '您好，我有五年 React 经验', requirements: '旧要求', resume: { file: { fileName: 'resume.txt', base64: bytes.toString('base64') }, text: null } });
   const original = state.snapshot().resume;
   state.close();
   const meta = original.file!;
