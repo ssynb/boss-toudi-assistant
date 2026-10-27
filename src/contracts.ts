@@ -75,6 +75,8 @@ export interface AppState {
   dailyJobReadLimit: number;
   /** 用户保存的固定招呼语；投递时逐字发送，模型不再逐岗位撰写。空串表示尚未设置，不能开始投递。 */
   greeting: string;
+  /** 招呼语字数上限，等于 GREETING_MAX_CHARS；UI 只读这个字段。 */
+  greetingMaxChars: number;
 }
 
 export interface DoctorCheck {
