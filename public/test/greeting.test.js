@@ -18,7 +18,8 @@ test('固定招呼语随资料保存，对话页提示未设置招呼语与今�
   });
   await t.test('个人信息页填写招呼语显示字数，与简历一起保存',async()=>{
    await browser('find','label','固定招呼语','fill','您好，我有五年前端经验');
-   assert.match(await body(),/11\/200/);
+   assert.match(await body(),/11\/120/);
+   assert.equal(await app.inspect("document.querySelector('textarea[name=greeting]').maxLength"),120,'输入上限来自状态');
    await browser('find','role','button','click','--name','保存','--exact');
    await browser('wait','--text','已保存');
    assert.deepEqual(writes,[['PUT','/api/inputs',{requirements:'',greeting:'您好，我有五年前端经验',resume:{text:null}}]]);
