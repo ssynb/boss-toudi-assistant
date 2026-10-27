@@ -1,11 +1,13 @@
 import {$, text} from './dom.js';
 
-/** 个人信息：简历文件、正文与可选求职偏好，一次 PUT /api/inputs 保存；未保存的草稿不被刷新覆盖。 */
+/** 个人信息：简历文件、正文、固定招呼语与可选求职偏好，一次 PUT /api/inputs 保存；未保存的草稿不被刷新覆盖。 */
 export function profilePanel({mutate, dirty, updateControls}) {
  const form = $('inputs');
  let current = null;
+ const count = () => text('greeting-count', `${form.elements.greeting.value.length}/${form.elements.greeting.maxLength}`);
  const markDirty = () => { dirty.add('inputs'); form.querySelector('output').textContent = '有未保存修改'; updateControls(); };
  form.addEventListener('input', markDirty);
+ form.elements.greeting.addEventListener('input', count);
  form.elements.file.addEventListener('change', () => {
   const file = form.elements.file.files[0];
   form.elements.resumeText.value = '';
@@ -22,7 +24,7 @@ export function profilePanel({mutate, dirty, updateControls}) {
    resume.file = {fileName:file.name, base64:data.slice(data.indexOf(',') + 1)};
   }
   if (!$('resume-body').hidden) resume.text = form.elements.resumeText.value;
-  return {requirements:form.elements.requirements.value, resume};
+  return {requirements:form.elements.requirements.value, greeting:form.elements.greeting.value, resume};
  }
  form.addEventListener('submit', async event => {
   event.preventDefault();
@@ -35,6 +37,8 @@ export function profilePanel({mutate, dirty, updateControls}) {
   current = state;
   if (dirty.has('inputs')) return;
   form.elements.requirements.value = state.requirements;
+  form.elements.greeting.value = state.greeting;
+  count();
   form.elements.resumeText.value = state.resume.text;
   $('resume-body').hidden = !(state.resume.file && ['.pdf', '.docx'].includes(state.resume.file.extension));
   text('file', state.resume.file?.fileName ?? '尚未上传');

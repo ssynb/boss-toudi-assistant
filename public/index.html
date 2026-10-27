@@ -16,6 +16,8 @@
 <div id="chat-empty" class="empty" hidden>
 <h1>想找什么样的工作？</h1>
 <p>告诉我方向和数量，我会调研或直接开始投递。</p>
+<p id="greeting-missing" class="setup" hidden>还没有固定招呼语，投递前请先设置。<a href="#profile">去设置</a></p>
+<p id="read-quota" class="quota"></p>
 <div class="examples"><button type="button">我适合投哪些方向？</button><button type="button">Agent开发投30个，AI应用投20个</button><button type="button">深圳 AI 应用岗位一般要求什么？</button></div>
 </div>
 <ol id="chat-log" role="log" aria-live="polite" aria-label="对话记录"></ol>
@@ -23,6 +25,8 @@
 </div>
 </div>
 <div class="composer-wrap"><div class="column">
+<p id="restricted" class="banner danger" role="alert" hidden><span id="restricted-text"></span> 请勿刷新 BOSS 页面或反复重试，等到恢复时间后再继续。</p>
+<p id="read-limit" class="banner" role="status" hidden></p>
 <div id="progress" class="progress" role="status" aria-label="任务进度" hidden><span class="pulse" aria-hidden="true"></span><span id="progress-text"></span><button id="progress-stop" type="button" class="stop">停止</button></div>
 <form id="chat-form" class="composer"><label for="chat-input" class="sr-only">发消息</label><textarea id="chat-input" name="message" rows="1" maxlength="2000" placeholder="例如：Agent开发投30个"></textarea><button id="chat-send" class="send">发送</button></form>
 <div class="composer-foot"><span>说出数量即直接开始投递；结果未确认的不会自动重试</span><button id="chat-clear" type="button" class="link" hidden>清空对话</button></div>
@@ -34,6 +38,7 @@
 <form id="inputs"><fieldset>
 <label class="field">简历文件<input name="file" type="file" accept=".txt,.md,.pdf,.docx"><span id="file" class="hint"></span></label>
 <label class="field" id="resume-body" hidden>简历正文<textarea name="resumeText" rows="8" maxlength="50000" placeholder="粘贴 PDF / DOCX 正文，保存即确认用于匹配"></textarea></label>
+<label class="field">固定招呼语<textarea name="greeting" rows="3" maxlength="200" aria-describedby="greeting-count" placeholder="投递时逐字发给 HR，例如：您好，我有五年前端经验，期待和您沟通"></textarea><span id="greeting-count" class="hint"></span></label>
 <label class="field">求职偏好（可选）<textarea name="requirements" rows="4" maxlength="10000" placeholder="例如：深圳，月薪至少 25K，不考虑外包"></textarea></label>
 <div class="form-foot"><button id="save" class="primary">保存</button><output></output></div>
 <p class="hint">简历只在本机用于匹配，不会上传 BOSS。</p>

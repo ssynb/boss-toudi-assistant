@@ -26,10 +26,11 @@ function busy() {
 }
 function controls() {
  for (const button of document.querySelectorAll('[data-action]')) button.disabled = pending || !state;
+ if (state?.browser.page === 'restricted') $('browser').disabled = true; // 受限时打开或刷新 BOSS 会延长限制
  if (!state) return;
  for (const panel of panels) panel.controls(state, {pending, pendingAction, locked:busy()});
 }
-const pageNames = {closed:'BOSS 登录', unknown:'BOSS · 状态未知', loggedOut:'BOSS 登录', verify:'BOSS · 请完成验证', ready:'BOSS · 已登录'};
+const pageNames = {closed:'BOSS 登录', unknown:'BOSS · 状态未知', loggedOut:'BOSS 登录', verify:'BOSS · 请完成验证', restricted:'BOSS · 访问受限', ready:'BOSS · 已登录'};
 function render(next) {
  state = next;
  text('codex', state.codex.signedIn ? `Codex · ${state.codex.email ?? '已登录'}` : 'Codex 登录');

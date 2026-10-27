@@ -1,6 +1,9 @@
 import {$, text, el, richText, nearBottom} from './dom.js';
 import {delivered, keptTargets} from './outcome.js';
 
+/** 剩余浏览额度不足上限的这一比例时提示明天继续。 */
+const READ_WARNING_RATIO = 0.1;
+
 /** 当前运行中的任务（含等待 AI 决定）及其停止接口；对话是唯一开始入口，这里只提供停止。 */
 function runningTask(state) {
  if (state.research.status !== 'idle') return {status:state.research.status, stop:'research/stop', label:`正在调研${state.research.city ? ` · ${state.research.city}` : ''} · 已完成 ${state.research.directions.length} 个方向`};
@@ -53,8 +56,22 @@ export function chatPanel({mutate, updateControls}) {
   $('chat-empty').hidden = messages.length > 0 || pending;
   $('chat-clear').hidden = !messages.length;
   task = runningTask(state);
+  const reads = `今日已浏览 ${state.jobReadsToday}/${state.dailyJobReadLimit}`;
   $('progress').hidden = !task;
-  if (task) text('progress-text', `${task.label} · 今日已联系 ${state.contactedToday}/${state.dailyContactLimit}`);
+  if (task) text('progress-text', `${task.label} · 今日已联系 ${state.contactedToday}/${state.dailyContactLimit} · ${reads}`);
+  text('read-quota', reads);
+  $('greeting-missing').hidden = Boolean(state.greeting);
+  renderLimits(state);
+ }
+ /** 浏览额度接近或用尽、站点限制访问时的持久提示；限制访问只显示站点原文与等待说明，不给重试入口。 */
+ function renderLimits(state) {
+  const remaining = state.dailyJobReadLimit - state.jobReadsToday;
+  const near = remaining <= state.dailyJobReadLimit * READ_WARNING_RATIO;
+  $('read-limit').hidden = !near;
+  if (near) text('read-limit', remaining > 0 ? `今日浏览快到上限，还能看 ${remaining} 个岗位；用完后请明天再继续` : '今日浏览已达上限，请明天再继续');
+  const restricted = state.browser.page === 'restricted';
+  $('restricted').hidden = !restricted;
+  if (restricted) text('restricted-text', state.browser.message ?? 'BOSS 暂时限制访问。');
  }
  function controls(state, {pending, pendingAction, locked}) {
   $('chat-send').disabled = locked || !input.value.trim();

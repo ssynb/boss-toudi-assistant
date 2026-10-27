@@ -69,6 +69,9 @@ textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3
 .scroller { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 24px 0 8px; }
 .empty { padding: 12vh 0 0; text-align: center; }
 .empty p { color: var(--muted); margin: 8px 0 24px; }
+.empty .setup { color: var(--amber); margin: -12px 0 20px; }
+.setup a { margin-left: 6px; color: var(--accent); font-weight: 600; }
+.empty .quota { margin: 20px 0 0; font-size: 13px; font-variant-numeric: tabular-nums; }
 .examples { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 .examples button { min-height: var(--control); padding: 6px 14px; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); transition: background-color .15s ease, border-color .15s ease; }
 .examples button:hover { background: var(--hover); border-color: var(--field); }
@@ -83,6 +86,8 @@ textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3
 .thinking { color: var(--muted); margin: 18px 2px 0; animation: breathe 1.4s ease-in-out infinite; }
 @keyframes breathe { 50% { opacity: .45; } }
 .composer-wrap { padding: 8px 0 16px; }
+.banner { margin: 0 0 8px; padding: 8px 14px; border-radius: 12px; background: var(--amber-soft); color: var(--amber); font-size: 13px; }
+.banner.danger { background: var(--red-soft); color: var(--red); }
 .progress { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; padding: 6px 6px 6px 14px; border-radius: 12px; background: var(--accent-soft); color: #0d544e; font-size: 13px; font-variant-numeric: tabular-nums; transition: opacity .2s var(--ease-enter), transform .2s var(--ease-enter); }
 @starting-style { .progress { opacity: 0; transform: translateY(4px); } }
 .progress #progress-text { flex: 1; min-width: 0; }
