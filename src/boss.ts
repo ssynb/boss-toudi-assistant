@@ -180,7 +180,7 @@ function identityUrl(href: string, kind: 'job_detail' | 'boss_detail'): string |
   }
 }
 
-export function createBossSite(browser: Browser): Site {
+export function createBossSite(browser: Browser, beforeJobOpen?: () => void): Site {
   /** 岗位页核实的招聘者身份；联系后在执行器写入目标前作为本次会话身份。 */
   const recipients = new Map<string, ContactIdentity>();
 
@@ -215,10 +215,11 @@ export function createBossSite(browser: Browser): Site {
     return current;
   }
 
-  async function goto(url: string): Promise<void> {
+  async function goto(url: string, beforeOpen?: () => void): Promise<void> {
     await chat.close();
     const current = await inspectPage();
     if (current.page === 'restricted') throw new SiteBlockedError(current);
+    beforeOpen?.();
     await browser.open(url);
     await waitPage(PAGE_LOADED, '页面加载');
     const s = await waitPage(LOGIN_RENDERED, '登录标识');
@@ -417,18 +418,22 @@ export function createBossSite(browser: Browser): Site {
     },
 
     async jobDetail(card) {
-      await goto(card.url);
+      await goto(card.url, beforeJobOpen);
       await waitPage(`Boolean(document.querySelector('.job-sec-text')?.innerText?.trim())`, 'JD详情');
       return browser.eval<string>(EXTRACT_DETAIL);
     },
 
     async openJob(t: Target): Promise<OpenJobResult> {
       recipients.delete(t.jobId);
+      let hookFailed = false;
       try {
         await chat.close();
-        if (!(await currentJobReady(t))) await goto(t.url);
+        if (!(await currentJobReady(t))) await goto(t.url, () => {
+          try { beforeJobOpen?.(); }
+          catch (error) { hookFailed = true; throw error; }
+        });
       } catch (e) {
-        if (e instanceof SiteBlockedError) return { kind: 'blocked', evidence: e.message };
+        if (!hookFailed && e instanceof SiteBlockedError) return { kind: 'blocked', evidence: e.message };
         throw e;
       }
       if (await browser.eval<string>('location.pathname') !== `/job_detail/${t.jobId}.html`) return { kind: 'blocked', evidence: '当前页面岗位与目标不符，未点击沟通' };
