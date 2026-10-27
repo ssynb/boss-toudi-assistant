@@ -36,3 +36,16 @@ for(const operation of ['jobDetail','openJob'] as const)for(const error of [new 
     }finally{await site.close();await f.close();}
   });
 }
+
+test('当前站点已限制访问时不导航，也不调用岗位读取回调',async()=>{
+  const f=await startBoss();const browser=localBrowser('job-open-hook-restricted');let calls=0;
+  const site=createBossSite(bossBrowser(browser,f),()=>{calls++;});
+  try {
+    await browser.open(f.origin+'/job_detail/jobA.html');
+    await browser.eval(`(document.body.innerText='访问受限，已暂时被限制访问，请勿刷新', true)`);
+    await assert.rejects(site.jobDetail(draft()),e=>e instanceof SiteBlockedError&&e.state.page==='restricted');
+    assert.equal((await site.openJob(draft() as Target)).kind,'blocked');
+    assert.equal(calls,0);
+    assert.deepEqual(f.jobVisits,['jobA']);
+  }finally{await site.close();await f.close();}
+});
