@@ -1,4 +1,4 @@
-import { CHAT_MESSAGE_MAX_CHARS, DAILY_CONTACT_LIMIT, DAILY_JOB_READ_LIMIT, type StepState, type TargetSteps } from './contracts.ts';
+import { CHAT_MESSAGE_MAX_CHARS, DAILY_CONTACT_LIMIT, type StepState, type TargetSteps } from './contracts.ts';
 import type { CodexClient } from './codex.ts';
 import { chatText, requireFixedGreeting, requireJobReadBudget, type RecentTask, type StateSnapshot } from './state.ts';
 import { modelAction } from './model-task.ts';
@@ -39,7 +39,7 @@ export function askAdvisor(codex: CodexClient, signal: AbortSignal, state: State
   const salaryEvidence = [state.requirements, ...(previousPlan ? [previousPlan.salaryMinK === null ? '薪资不限' : `月薪阈值${previousPlan.salaryMinK}K`, previousPlan.criteria] : []), ...userMessages.slice(0, -1)];
   const authorize = (value: unknown) => {
     requireQuote((value as { quote?: unknown })?.quote, latest);
-    requireJobReadBudget(state.jobReadsToday);
+    requireJobReadBudget(state);
     if (!state.resume.text.trim()) throw new Error('请先保存有效简历正文');
   };
   return modelAction<AdvisorAction>({
@@ -52,7 +52,7 @@ salaryMinK是月薪区间上限须达到的K/月阈值，不是岗位区间下�
 筛选采用宽松口径：只看城市、月薪区间上限、用户明确排除的外包/猎头/中介、岗位属于计划方向大类。不得把JD列出的年限、学历、技术栈或加分项自动加成硬条件；只有用户明确要求才保留为额外条件。
 所有动作必须给出最新消息的逐字quote；工具拒绝后通过reply说明原文或额度问题，不假称已执行。每轮只能选择一个动作或回复，工具成功后立即结束回合，搜索和执行由程序负责。
 可依据lastTask.result中的方向预算和拒绝分类解释不足并建议调整，但不能擅自放宽城市、月薪或排除条件。投递事实以delivery为准，旧对话不能覆盖当前账本；区分联系、送达、未知和零记录。公司名单仅含当前批次且可能截断，不能当作全部历史；不知道的事实说明缺少依据，不将上下文缺失说成没有记录。仅获受限任务工具，不运行shell或通用浏览器动作。`,
-    input: { lastTask, greetingConfigured: Boolean(state.greeting), jobReadsToday: state.jobReadsToday, dailyJobReadLimit: DAILY_JOB_READ_LIMIT, resume: state.resume.text, requirements: state.requirements, research: state.research, delivery: deliveryOverview(state), supportedCities: SUPPORTED_CITIES, messages: state.chat.messages },
+    input: { lastTask, greetingConfigured: Boolean(state.greeting), jobReadsToday: state.jobReadsToday, dailyJobReadLimit: state.dailyJobReadLimit, resume: state.resume.text, requirements: state.requirements, research: state.research, delivery: deliveryOverview(state), supportedCities: SUPPORTED_CITIES, messages: state.chat.messages },
     tools: [
       { tool: 'reply', description: '回答建议、澄清问题或说明工具拒绝原因。',
         schema: { type: 'object', properties: { text: { type: 'string', minLength: 1, maxLength: CHAT_MESSAGE_MAX_CHARS } }, required: ['text'], additionalProperties: false },
@@ -82,7 +82,7 @@ salaryMinK是月薪区间上限须达到的K/月阈值，不是岗位区间下�
         read(value) {
           requireQuote((value as { quote?: unknown })?.quote, latest);
           requireFixedGreeting(state.greeting);
-          requireJobReadBudget(state.jobReadsToday);
+          requireJobReadBudget(state);
           if (!state.batch || state.batch.status === 'done') throw new Error('没有可继续投递的已保存批次');
           requireQuota(state.batch.targets.filter(target => !target.removed && target.steps.contact === 'todo').length, state.contactedToday);
           return { kind: 'saved' };

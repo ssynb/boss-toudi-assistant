@@ -17,7 +17,7 @@ export const LOCAL_HEADER_VALUE = '1';
 export const MAX_BATCH_TARGETS = 150;
 /** 定制招呼每段上限（字）。 */
 export const GREETING_MAX_CHARS = 200;
-/** 本应用每日主动打开岗位详情页的保护上限（北京时间自然日），不是平台许可额度，不保证免除风控。 */
+/** 本应用每日主动打开岗位详情页的默认保护上限（北京时间自然日），不是平台许可额度，不保证免除风控。 */
 export const DAILY_JOB_READ_LIMIT = 300;
 /** 简历文件上限（字节）。 */
 export const RESUME_MAX_BYTES = 10 * 1024 * 1024;
@@ -71,7 +71,10 @@ export interface AppState {
   dailyContactLimit: number;
   /** 北京时间今天已打开的岗位详情页数（读 JD 与联系前打开都算）；与 dailyJobReadLimit 比较。 */
   jobReadsToday: number;
-  /** 每日打开岗位详情页上限，等于 DAILY_JOB_READ_LIMIT；用尽即停止，不保证免除站点风控。 */
+  /**
+   * 北京时间今天实际生效的岗位详情页上限：默认 DAILY_JOB_READ_LIMIT，运维可在服务停止期间临时提高当日值，次日回到默认。
+   * 所有浏览额度检查共用此值；UI 只读这个字段，用尽即停止，不保证免除站点风控。
+   */
   dailyJobReadLimit: number;
   /** 用户保存的固定招呼语；投递时逐字发送，模型不再逐岗位撰写。空串表示尚未设置，不能开始投递。 */
   greeting: string;

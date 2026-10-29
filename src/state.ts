@@ -59,6 +59,7 @@ export interface RecentTask {
 export interface StateSnapshot {
   greeting: string;
   jobReadsToday: number;
+  dailyJobReadLimit: number;
   research: ResearchState;
   chat: ChatState;
   discovery: DiscoveryState;
@@ -129,8 +130,8 @@ export class JobReadLimitError extends AppError {
   constructor() { super('busy', '今日浏览上限已到，明天继续'); }
 }
 
-export function requireJobReadBudget(used: number): void {
-  if (used >= DAILY_JOB_READ_LIMIT) throw new JobReadLimitError();
+export function requireJobReadBudget(state: Pick<StateSnapshot, 'jobReadsToday' | 'dailyJobReadLimit'>): void {
+  if (state.jobReadsToday >= state.dailyJobReadLimit) throw new JobReadLimitError();
 }
 
 export function requireFixedGreeting(greeting: string): string {
@@ -183,7 +184,7 @@ export class State {
     const count = this.#db.prepare('SELECT COUNT(*) AS n FROM contacts').get() as { n: number };
     return {
       greeting: this.#kv('greeting', ''),
-      jobReadsToday: this.#jobReadsOn(day.key),
+      ...this.#readQuotaOn(day.key),
       research: this.#kv('research', DEFAULT_RESEARCH),
       chat: this.#kv('chat', DEFAULT_CHAT),
       discovery: { ...DEFAULT_DISCOVERY, ...this.#kv('discovery', DEFAULT_DISCOVERY) },
@@ -604,25 +605,39 @@ export class State {
   }
 
   remainingJobReads(): number {
-    return Math.max(0, DAILY_JOB_READ_LIMIT - this.#jobReadsOn(businessDay().key));
+    const reads = this.#readQuotaOn(businessDay().key);
+    return Math.max(0, reads.dailyJobReadLimit - reads.jobReadsToday);
   }
 
   assertJobReadAvailable(): void {
-    requireJobReadBudget(this.#jobReadsOn(businessDay().key));
+    requireJobReadBudget(this.#readQuotaOn(businessDay().key));
   }
 
   /** 在真实详情页导航前持久占用名额；失败不退回，以免未确认的访问重复计作免费。 */
   recordJobRead(): void {
     this.#tx(() => {
       const day = businessDay().key;
-      const count = this.#jobReadsOn(day);
-      requireJobReadBudget(count);
-      this.#setKv(`job_reads:${day}`, count + 1);
+      const reads = this.#readQuotaOn(day);
+      requireJobReadBudget(reads);
+      this.#setKv(`job_reads:${day}`, reads.jobReadsToday + 1);
     });
   }
 
-  #jobReadsOn(day: string): number {
-    return this.#kv(`job_reads:${day}`, 0);
+  /**
+   * 运维在服务停止期间授权北京时间当日的浏览上限（不是模型工具或 HTTP 入口）。
+   * 只改当日上限、不动已读计数；次日自动回到 DAILY_JOB_READ_LIMIT。
+   */
+  grantJobReadLimit(limit: number): void {
+    if (!Number.isSafeInteger(limit) || limit < DAILY_JOB_READ_LIMIT) throw new AppError('bad_request', `当日浏览额度须为不低于 ${DAILY_JOB_READ_LIMIT} 的整数`);
+    this.#tx(() => {
+      this.#assertNotRunning();
+      this.#assertIdle();
+      this.#setKv(`job_read_limit:${businessDay().key}`, limit);
+    });
+  }
+
+  #readQuotaOn(day: string): Pick<StateSnapshot, 'jobReadsToday' | 'dailyJobReadLimit'> {
+    return { jobReadsToday: this.#kv(`job_reads:${day}`, 0), dailyJobReadLimit: this.#kv(`job_read_limit:${day}`, DAILY_JOB_READ_LIMIT) };
   }
 
   #contactedToday(day: ReturnType<typeof businessDay>): number {

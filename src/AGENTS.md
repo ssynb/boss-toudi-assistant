@@ -16,5 +16,5 @@
 
 - 改发现读取节奏：范围以`discovery.ts`的READ_PACING_MS为准，等待支持取消；验收经AppOptions注入ReadClock，不通过环境变量跳过生产等待。
 
-- 改浏览上限：计数由站点实际导航前的beforeJobOpen回调触发，复用不计；State按北京时间日持久计数，不能按jobDetail/openJob调用次数猜导航。
+- 改浏览上限：计数由站点实际导航前的beforeJobOpen回调触发，复用不计；State按北京时间日持久计数，不能按jobDetail/openJob调用次数猜导航；当日上限只经State快照的dailyJobReadLimit读取，临时授权仅限运维在无任务时调用。
 - 改招呼与筛选：固定招呼只从统一保存入口写入，判定工具不生成文本；只按硬条件和方向大类筛选，用户明确额外限制才可拒绝，须核对原文。
