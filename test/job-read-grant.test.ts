@@ -26,8 +26,8 @@ async function setup(script: MockItem[][], used: number, limit: number) {
   const state = openState(path.join(dir, 'state.sqlite'));
   try {
     state.saveInputs({ requirements: '深圳AI开发', greeting, resume: { text: 'Python经验' } });
-    for (let i = 0; i < used; i++) state.recordJobRead();
     state.grantJobReadLimit(limit);
+    for (let i = 0; i < used; i++) state.recordJobRead();
   } catch (error) { mock.close(); throw error; }
   finally { state.close(); }
   const calls: string[] = [];
