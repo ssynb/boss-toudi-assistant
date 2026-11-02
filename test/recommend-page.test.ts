@@ -14,7 +14,7 @@ async function fixture(mode: 'normal' | 'verify') {
   const html = `<!doctype html><meta charset="utf-8"><title>推荐</title><div class="nav-figure">账号</div><ul class="rec-list"></ul>
 <script>
 const batches=${JSON.stringify(BATCHES)};let shown=0,busy=false;
-const card=id=>'<li style="height:900px"><a href="${BOSS}/job_detail/'+id+'.html?lid=x"><span class="job-name">岗位'+id+'</span></a><span class="salary">20-30K</span><span class="company-name">公司'+id+'</span><span class="job-area">深圳·南山区</span></li>';
+const card=id=>'<li style="height:900px"><a href="/job_detail/'+id+'.html?lid=x"><span class="job-name">岗位'+id+'</span></a><span class="salary">20-30K</span><span class="company-name">公司'+id+'</span><span class="job-area">深圳·南山区</span></li>';
 const render=()=>{document.querySelector('.rec-list').innerHTML=batches.slice(0,shown).flat().map(card).join('');};
 setTimeout(()=>{shown=1;render();},300);
 addEventListener('scroll',()=>{
