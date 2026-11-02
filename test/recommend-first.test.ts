@@ -26,10 +26,11 @@ async function run(directions: { name: string; count: number }[], feed: Feed, de
   fs.mkdirSync(path.join(dir, 'codex-home'));
   fs.writeFileSync(path.join(dir, 'codex-home', 'config.toml'), mockProviderToml(model.baseUrl, 'gpt-mock'));
   const events: string[] = [];
+  const cities = new Set<string>();
   const forbidden = async (): Promise<never> => { throw new Error('只找不投不能联系'); };
   const site: Site = {
     open: async () => ({ page: 'ready', url: null }), status: async () => ({ page: 'ready', url: null }), close: async () => {},
-    recommend: async page => { events.push(`recommend:${page}`); return feed.recommend(page); },
+    recommend: async q => { events.push(`recommend:${q.page}`); cities.add(q.city); return feed.recommend(q.page); },
     search: async q => { events.push(`search:${q.keyword}:${q.page}`); return feed.search?.(q.page) ?? []; },
     jobDetail: async c => { events.push(`detail:${c.jobId}`); return feed.detail ? feed.detail(c.jobId) : `实际JD-${c.jobId}`; },
     openJob: forbidden, contact: forbidden, readChat: forbidden, sendGreeting: forbidden,
@@ -44,16 +45,17 @@ async function run(directions: { name: string; count: number }[], feed: Feed, de
       const timer = setTimeout(() => { cleanup(); reject(new Error('发现未结束')); }, 20_000);
       server.app.on('changed', check); check();
     });
-    return { state, events };
+    return { state, events, cities };
   } finally { await server.close(); model.close(); }
 }
 
 test('先遍历推荐页再读JD；推荐满足各方向配额时不搜索，异地与低薪卡片不打开详情', async () => {
   const pages = [[card('r1'), card('far', '北京·朝阳区'), card('low', '深圳', '10-15K'), card('r2', '深圳')], [card('r1')]];
-  const { state, events } = await run([{ name: 'AI开发', count: 1 }, { name: '后端', count: 1 }],
+  const { state, events, cities } = await run([{ name: 'AI开发', count: 1 }, { name: '后端', count: 1 }],
     { recommend: async page => pages[page - 1] ?? [] }, judged(select('r1', 'AI开发'), select('r2', '后端')));
   assert.deepEqual(events, ['recommend:1', 'recommend:2', 'detail:r1', 'detail:r2'], '推荐流只遍历一次且去重，读完卡片后才打开详情');
   assert.deepEqual(state.batch!.targets.map(t => t.jobId), ['r1', 'r2']);
+  assert.deepEqual([...cities], ['深圳'], '推荐页按计划城市打开，仍逐卡核对地区');
   assert.deepEqual(state.discovery.directions.map(d => [d.name, d.selected]), [['AI开发', 1], ['后端', 1]]);
   assert.equal(state.jobReadsToday, 2, '卡片过滤不占详情额度');
 });
