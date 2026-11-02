@@ -27,7 +27,7 @@ async function fixture(script: MockItem[][], clock = instantReadClock) {
   const forbidden = (name: string) => async (): Promise<never> => { writes.push(name); throw new Error('只找不投不能联系'); };
   const site: Site = {
     open: async () => ({ page: 'ready', url: null }), status: async () => ({ page: 'ready', url: null }), close: async () => {},
-    search: async q => { events.push(`search:${q.page}`); return q.page === 1 ? [job('a')] : []; },
+    recommend: async () => [], search: async q => { events.push(`search:${q.page}`); return q.page === 1 ? [job('a')] : []; },
     jobDetail: async c => { events.push(`detail:${c.jobId}`); return '实际JD Python开发'; },
     openJob: forbidden('open'), contact: forbidden('contact'), readChat: forbidden('readChat'), sendGreeting: forbidden('greeting'),
   };
@@ -52,12 +52,13 @@ test('搜索、翻页、重试及每个新JD之前随机等待3–6秒，结果�
   const clock = { random: () => values[index++ % values.length]!, async wait(ms: number, signal: AbortSignal) { signal.throwIfAborted(); order.push(`wait:${ms}`); } };
   const { mock, server, site, writes } = await fixture([action(2), end, verdicts(['a']), end, verdicts(['b']), end], clock);
   let failed = false;
+  site.recommend = async page => { order.push(`recommend:${page}`); return []; };
   site.search = async q => { order.push(`search:${q.page}`); if (q.page === 2 && !failed) { failed = true; throw new Error('测试读取超时'); } return [job(q.page === 1 ? 'a' : 'b')]; };
   site.jobDetail = async card => { order.push(`detail:${card.jobId}`); return '实际JD Python开发'; };
   try {
     await api(server.url, 'POST', '/api/chat', { message });
     const state = await idle(server);
-    assert.deepEqual(order, ['wait:3000', 'search:1', 'wait:6000', 'detail:a', 'wait:4500', 'search:2', 'wait:3000', 'search:2', 'wait:6000', 'detail:b']);
+    assert.deepEqual(order, ['wait:3000', 'recommend:1', 'wait:6000', 'search:1', 'wait:4500', 'detail:a', 'wait:3000', 'search:2', 'wait:6000', 'search:2', 'wait:4500', 'detail:b']);
     assert.equal(state.batch!.targets.length, 2);
     assert.match(state.discovery.message!, /3.*6.*秒/);
     assert.deepEqual(writes, []);
@@ -70,7 +71,7 @@ test('等待下一页时停止会取消等待、不再搜索，并保存此前�
   const waiting = new Promise<void>(r => { entered = r; });
   const clock = { random: () => 0.5, async wait(_ms: number, signal: AbortSignal) {
     signal.throwIfAborted();
-    if (++waits !== 3) return;
+    if (++waits !== 4) return;
     entered();
     await new Promise<void>((_resolve, reject) => { signal.addEventListener('abort', () => reject(signal.reason), { once: true }); });
   } };

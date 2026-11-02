@@ -30,7 +30,7 @@ async function setup(script: MockItem[][]) {
   const writes: string[] = [];
   const site: Site = {
     open: async () => ({ page: 'ready', url: null }), close: async () => {}, status: async () => ({ page: 'ready', url: null }),
-    search: async () => [], jobDetail: async c => `实际JD-${c.jobId} Python开发`,
+    recommend: async () => [], search: async () => [], jobDetail: async c => `实际JD-${c.jobId} Python开发`,
     openJob: async () => ({ kind: 'canContact', evidence: '' }),
     contact: async t => { writes.push(`contact:${t.jobId}`); return { ok: true, evidence: '', identity: { jobId: t.jobId, recruiterUrl: `https://www.zhipin.com/boss_detail/${t.jobId}.html` } }; },
     readChat: async () => ({ ourMessages: 0, evidence: '' }),

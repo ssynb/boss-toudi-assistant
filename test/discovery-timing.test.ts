@@ -99,7 +99,7 @@ test('真实 Codex 工具在途时停止：先 stopping、禁保存，工具结�
   const forbidden = async (): Promise<never> => { throw new Error('不能联系'); };
   const site: Site = {
     open: async () => ({ page: 'ready', url: null }), status: async () => ({ page: 'ready', url: null }), close: async () => {},
-    search: async () => { entered(); await gate; return []; }, jobDetail: async () => '',
+    recommend: async () => [], search: async () => { entered(); await gate; return []; }, jobDetail: async () => '',
     openJob: forbidden, contact: forbidden, readChat: forbidden, sendGreeting: forbidden,
   };
   const server = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site: countedSite(site) });

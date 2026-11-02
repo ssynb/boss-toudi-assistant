@@ -30,7 +30,7 @@ test('日剩余额度不足时按方向配额缩小预算，不能让首方向�
   const forbidden = async (): Promise<never> => { throw new Error('只找不投'); };
   const site: Site = {
     open: async () => ({ page: 'ready', url: null }), status: async () => ({ page: 'ready', url: null }), close: async () => {},
-    search: async q => Array.from({ length: 40 }, (_, i) => ({ jobId: `${q.keyword}${i}`, url: `https://www.zhipin.com/job_detail/${q.keyword}${i}.html`, company: '测试', title: '销售', salary: '20-40K', area: '深圳', snippet: '' })),
+    recommend: async () => [], search: async q => Array.from({ length: 40 }, (_, i) => ({ jobId: `${q.keyword}${i}`, url: `https://www.zhipin.com/job_detail/${q.keyword}${i}.html`, company: '测试', title: '销售', salary: '20-40K', area: '深圳', snippet: '' })),
     jobDetail: async c => { reads.push(c.jobId); return '主要职责是销售'; },
     openJob: forbidden, contact: forbidden, readChat: forbidden, sendGreeting: forbidden,
   };

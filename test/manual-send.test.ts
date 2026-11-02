@@ -19,7 +19,7 @@ for (const previousUnknown of [false, true]) {
     const contacts: string[] = [];
     const site: Site = {
       open: async () => ({ page: 'ready', url: null }), status: async () => ({ page: 'ready', url: null }), close: async () => {},
-      search: async () => [], jobDetail: async () => '',
+      recommend: async () => [], search: async () => [], jobDetail: async () => '',
       openJob: async () => ({ kind: 'canContact', evidence: '' }),
       contact: async target => { contacts.push(target.jobId); return { ok: true, evidence: '合成会话已打开' }; },
       readChat: async () => ({ ourMessages: 1, evidence: '已有招呼' }),

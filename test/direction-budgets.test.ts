@@ -27,7 +27,7 @@ async function run(directions: { name: string; count: number }[], cards: Record<
   const forbidden = async (): Promise<never> => { throw new Error('只找不投不能联系'); };
   const site: Site = {
     open: async () => ({ page: 'ready', url: null }), status: async () => ({ page: 'ready', url: null }), close: async () => {},
-    search: async q => { searches.push(q.keyword); return (q.page === 1 ? cards[q.keyword] ?? [] : []).map(jobId => ({ jobId, title: '工程师', company: '测试公司', salary: '20-40K', area: '深圳', snippet: '', url: `https://www.zhipin.com/job_detail/${jobId}.html` })); },
+    recommend: async () => [], search: async q => { searches.push(q.keyword); return (q.page === 1 ? cards[q.keyword] ?? [] : []).map(jobId => ({ jobId, title: '工程师', company: '测试公司', salary: '20-40K', area: '深圳', snippet: '', url: `https://www.zhipin.com/job_detail/${jobId}.html` })); },
     jobDetail: async c => { reads.push(c.jobId); return `实际JD-${c.jobId}：主要职责Python开发，了解前端工具加分`; },
     openJob: forbidden, contact: forbidden, readChat: forbidden, sendGreeting: forbidden,
   };

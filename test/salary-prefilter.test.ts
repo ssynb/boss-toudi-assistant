@@ -24,7 +24,7 @@ async function discover(salaries: [string, string][], selected: string[], salary
   const forbidden = async (): Promise<never> => { throw new Error('只找不投不能联系'); };
   const site: Site = {
     open: async () => ({ page: 'ready', url: null }), close: async () => {}, status: async () => ({ page: 'ready', url: null }),
-    search: async q => q.page === 1 ? salaries.map(([jobId, salary]) => ({ jobId, salary, title: 'Python开发', company: '测试公司', area: '深圳', snippet: '', url: `https://www.zhipin.com/job_detail/${jobId}.html` })) : [],
+    recommend: async () => [], search: async q => q.page === 1 ? salaries.map(([jobId, salary]) => ({ jobId, salary, title: 'Python开发', company: '测试公司', area: '深圳', snippet: '', url: `https://www.zhipin.com/job_detail/${jobId}.html` })) : [],
     jobDetail: async card => { reads.push(card.jobId); return `实际JD-${card.jobId}：Python开发，明确月薪区间20-25K`; },
     openJob: forbidden, contact: forbidden, readChat: forbidden, sendGreeting: forbidden,
   };

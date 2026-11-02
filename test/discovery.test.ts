@@ -25,7 +25,7 @@ function fakeSite() {
     open: async () => ({ page: 'ready', url: 'https://www.zhipin.com/' }),
     status: async () => ({ page: 'ready', url: 'https://www.zhipin.com/' }),
     close: async () => {},
-    search: async (q) => {
+    recommend: async () => [], search: async (q) => {
       reads.push(`search:${q.keyword}:${q.city}:${q.page}`);
       return cards;
     },

@@ -34,7 +34,7 @@ async function setup(script: MockItem[][], used: number, limit: number) {
   const texts: string[] = [];
   const site: Site = {
     open: async () => ({ page: 'ready', url: null }), status: async () => ({ page: 'ready', url: null }), close: async () => {},
-    search: async q => q.page === 1 ? [job('a'), job('b')] : [],
+    recommend: async () => [], search: async q => q.page === 1 ? [job('a'), job('b')] : [],
     jobDetail: async c => { calls.push(`detail:${c.jobId}`); return '主要职责：AI应用开发'; },
     openJob: async t => { calls.push(`open:${t.jobId}`); return { kind: 'canContact', evidence: '' }; },
     contact: async t => { calls.push(`contact:${t.jobId}`); return { ok: true, evidence: '', identity: { jobId: t.jobId, recruiterUrl: `https://www.zhipin.com/boss_detail/${t.jobId}.html` } }; },

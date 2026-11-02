@@ -41,7 +41,7 @@ async function setup(count: number, ids: string[], tail: MockItem[][] = []) {
   const events: string[] = [];
   const site: Site = {
     open: async () => ({ page: 'ready', url: null }), status: async () => ({ page: 'ready', url: null }), close: async () => {},
-    search: async q => q.page === 1 ? ids.map(card) : [],
+    recommend: async () => [], search: async q => q.page === 1 ? ids.map(card) : [],
     jobDetail: async c => { events.push(`detail:${c.jobId}`); return `实际JD-${c.jobId} Python开发`; },
     openJob: async t => { events.push(`open:${t.jobId}`); return { kind: 'canContact', evidence: '' }; },
     contact: async t => { events.push(`contact:${t.jobId}`); return { ok: true, evidence: '', identity: { jobId: t.jobId, recruiterUrl: `https://www.zhipin.com/boss_detail/${t.jobId}.html` } }; },

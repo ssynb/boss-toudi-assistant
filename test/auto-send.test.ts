@@ -32,7 +32,7 @@ async function run(body: unknown, page: BrowserPage = 'ready') {
     open: async () => ({ page: 'ready', url: 'https://www.zhipin.com/' }),
     status: async () => ({ page, url: null }),
     close: async () => {},
-    search: async q => { calls.push('search'); return q.page === 1 ? [card] : []; },
+    recommend: async () => [], search: async q => { calls.push('search'); return q.page === 1 ? [card] : []; },
     jobDetail: async () => '岗位职责：前端开发',
     openJob: async () => { calls.push('open'); return { kind: 'canContact', evidence: '' }; },
     contact: async (t) => { calls.push('contact'); return { ok: true, evidence: '', identity: { jobId: t.jobId, recruiterUrl: 'https://www.zhipin.com/boss_detail/hr.html' } }; },
@@ -108,7 +108,7 @@ for (const terminal of ['failed', 'cancelled'] as const) {
     const forbidden = (name: string) => async (): Promise<never> => { writes.push(name); throw new Error('不能联系'); };
     const site: Site = {
       open: async () => ({ page: 'ready', url: null }), status: async () => ({ page: 'ready', url: null }), close: async () => {},
-      search: async q => q.page === 1 ? [card] : [], jobDetail: async () => '岗位职责：React前端开发',
+      recommend: async () => [], search: async q => q.page === 1 ? [card] : [], jobDetail: async () => '岗位职责：React前端开发',
       openJob: forbidden('openJob'), contact: forbidden('contact'), readChat: forbidden('readChat'), sendGreeting: forbidden('sendGreeting'),
     };
     const server = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site: countedSite(site) });

@@ -20,7 +20,7 @@ test('多方向结果超过单条消息上限时分条写回，不截断后续�
   fs.writeFileSync(path.join(dir, 'codex-home', 'config.toml'), mockProviderToml(mock.baseUrl, 'gpt-mock'));
   const forbidden = async (): Promise<never> => { throw new Error('无候选时不应有详情或联系动作'); };
   const site: Site = {
-    open: async () => ({ page: 'ready', url: null }), status: async () => ({ page: 'ready', url: null }), close: async () => {}, search: async () => [],
+    open: async () => ({ page: 'ready', url: null }), status: async () => ({ page: 'ready', url: null }), close: async () => {}, recommend: async () => [], search: async () => [],
     jobDetail: forbidden, openJob: forbidden, contact: forbidden, readChat: forbidden, sendGreeting: forbidden,
   };
   const server = await startServer({ readClock: instantReadClock, dataDir: dir, port: 0, site: countedSite(site) });

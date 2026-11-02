@@ -35,7 +35,7 @@ async function setup(script: MockItem[][], contacted = 0) {
   const writes: string[] = [];
   const site: Site = {
     open: async () => ({ page: 'ready', url: null }), close: async () => {}, status: async () => ({ page: 'ready', url: null }),
-    search: async q => { searches.push(`${q.keyword}:${q.page}`); return q.page !== 1 ? [] : q.keyword === 'Agent' ? [job('a1'), job('a2'), job('a3')] : [job('a1'), job('b1')]; },
+    recommend: async () => [], search: async q => { searches.push(`${q.keyword}:${q.page}`); return q.page !== 1 ? [] : q.keyword === 'Agent' ? [job('a1'), job('a2'), job('a3')] : [job('a1'), job('b1')]; },
     jobDetail: async c => `实际JD-${c.jobId}需要Python`, openJob: async () => ({ kind: 'canContact', evidence: '' }),
     contact: async t => { writes.push(`contact:${t.jobId}`); return { ok: true, evidence: '', identity: { jobId: t.jobId, recruiterUrl: `https://www.zhipin.com/boss_detail/${t.jobId}.html` } }; },
     readChat: async () => ({ ourMessages: 0, evidence: '' }), sendGreeting: async t => { writes.push(`greeting:${t.jobId}`); return { ok: true, evidence: '' }; },

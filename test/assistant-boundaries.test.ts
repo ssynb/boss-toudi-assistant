@@ -16,7 +16,7 @@ test('调研认证预检查期间已互斥，停止正常返回且不启动任�
   const forbidden = async (): Promise<never> => { calls.push('action'); throw new Error('预检查停止后不应操作站点'); };
   const site: Site = {
     open: forbidden, close: async () => {}, status: async () => ({ page: 'ready', url: null }),
-    search: forbidden, jobDetail: forbidden, openJob: forbidden, contact: forbidden, readChat: forbidden, sendGreeting: forbidden,
+    recommend: forbidden, search: forbidden, jobDetail: forbidden, openJob: forbidden, contact: forbidden, readChat: forbidden, sendGreeting: forbidden,
   };
   const app = new App({ dataDir: dir, site: countedSite(site) });
   try {

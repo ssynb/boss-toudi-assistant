@@ -30,7 +30,7 @@ async function fixture(script: MockItem[][], baseUrl?: string) {
   const forbidden = (name: string) => async (): Promise<never> => { writes.push(name); throw new Error('不能联系'); };
   const site: Site = {
     open: async () => ({ page: 'ready', url: null }), status: async () => ({ page: 'ready', url: null }), close: async () => {},
-    search: async q => { reads.push(`search:${q.keyword}:${q.city}:${q.page}`); return q.page === 1 ? [job(`${q.keyword}-1`), job(`${q.keyword}-2`, '30-40K')] : []; },
+    recommend: async () => [], search: async q => { reads.push(`search:${q.keyword}:${q.city}:${q.page}`); return q.page === 1 ? [job(`${q.keyword}-1`), job(`${q.keyword}-2`, '30-40K')] : []; },
     jobDetail: async card => { reads.push(`detail:${card.jobId}`); return `实际JD-${card.jobId}：Python与Agent开发`; },
     openJob: forbidden('openJob'), contact: forbidden('contact'), readChat: forbidden('readChat'), sendGreeting: forbidden('sendGreeting'),
   };

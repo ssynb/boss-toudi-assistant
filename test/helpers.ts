@@ -68,7 +68,7 @@ export function countedSite(site: import('../src/boss.ts').Site) {
         const value = Reflect.get(target, key, target);
         if (typeof value !== 'function') return value;
         return (...args: unknown[]) => {
-          if (['search', 'contact', 'readChat', 'open', 'close'].includes(String(key))) currentJob = null;
+          if (['recommend', 'search', 'contact', 'readChat', 'open', 'close'].includes(String(key))) currentJob = null;
           return value.apply(target, args);
         };
       },
