@@ -93,7 +93,7 @@ function recommendMessage(report: RecommendReport, selected: number): string {
   return `推荐页：加载 ${report.pages} 批，异地或未标城市排除 ${report.offCity} 个，卡片预筛排除 ${report.prefiltered} 个，尝试读取 ${report.reads}/${report.budget} 个，入选 ${selected} 个${overflow}；${report.stopped}。拒绝（含卡片预筛）：${rejectionText(report.rejected)}。`;
 }
 
-/** 推荐页不按计划城市过滤，城市是硬条件：只有卡片地区明确属于计划城市才读取。 */
+/** 推荐页按计划城市打开，但城市是硬条件：只有卡片地区明确属于计划城市才读取。 */
 const inCity = (area: string, city: string) => city === '全国' ? Boolean(area.trim()) : area === city || area.startsWith(`${city}·`);
 
 class SiteUnavailableError extends Error {}
@@ -247,7 +247,7 @@ async function recommendCards(run: Run, report: RecommendReport): Promise<JobCar
   for (let page = 1; page <= RECOMMEND_MAX_PAGES && eligible.length < report.budget; page++) {
     opts.signal.throwIfAborted();
     opts.log(`读取推荐页第 ${page}/${RECOMMEND_MAX_PAGES} 批`);
-    const result = await reader.read('recommend', `推荐页第 ${page} 批`, () => siteRead(opts, () => opts.site.recommend(page)));
+    const result = await reader.read('recommend', `推荐页第 ${page} 批`, () => siteRead(opts, () => opts.site.recommend({ city: opts.plan.city, page })));
     if (!result.ok) { report.stopped = '推荐页加载失败，转搜索补充'; return eligible; }
     report.pages = page;
     const fresh = result.value.filter(card => !seen.has(card.jobId));
