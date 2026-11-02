@@ -52,7 +52,7 @@ test('搜索、翻页、重试及每个新JD之前随机等待3–6秒，结果�
   const clock = { random: () => values[index++ % values.length]!, async wait(ms: number, signal: AbortSignal) { signal.throwIfAborted(); order.push(`wait:${ms}`); } };
   const { mock, server, site, writes } = await fixture([action(2), end, verdicts(['a']), end, verdicts(['b']), end], clock);
   let failed = false;
-  site.recommend = async page => { order.push(`recommend:${page}`); return []; };
+  site.recommend = async q => { order.push(`recommend:${q.page}`); return []; };
   site.search = async q => { order.push(`search:${q.page}`); if (q.page === 2 && !failed) { failed = true; throw new Error('测试读取超时'); } return [job(q.page === 1 ? 'a' : 'b')]; };
   site.jobDetail = async card => { order.push(`detail:${card.jobId}`); return '实际JD Python开发'; };
   try {
