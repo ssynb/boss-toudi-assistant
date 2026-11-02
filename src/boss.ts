@@ -28,6 +28,11 @@ export interface SearchQuery {
 }
 
 export interface ReadSite {
+  /**
+   * 账号推荐页的第 page 批新增岗位卡：1 打开推荐页，之后在同一页面滚动加载；空数组表示推荐流不再增加。
+   * 推荐内容随刷新变化，必须从 1 起连续调用，中途不能离开页面。不按城市过滤，调用方核对卡片 area。
+   */
+  recommend(page: number): Promise<JobCard[]>;
   search(q: SearchQuery): Promise<JobCard[]>;
   jobDetail(card: Pick<JobCard, 'jobId' | 'url'>): Promise<string>;
 }
@@ -56,6 +61,7 @@ export class SiteBlockedError extends Error {
 }
 
 const HOME_URL = `${ORIGIN}/`;
+const RECOMMEND_PATH = '/web/geek/recommend';
 const LOGIN_URL = `${ORIGIN}/web/user/`;
 const PAGE_LOADED = 'document.readyState === "complete" && location.origin === "https://www.zhipin.com"';
 /** 搜索页在 load 之后才异步渲染岗位卡或「没有找到相关职位」，在此之前提取只会得到空列表。 */
@@ -72,6 +78,10 @@ export const SUPPORTED_CITIES = Object.keys(CITY_CODES);
 export const MAX_SEARCH_PAGE = 10;
 const PAGE_SCROLL_ATTEMPTS = 3;
 const PAGE_SCROLL_WAIT_MS = 6_000;
+/** 推荐流没有可核实的结束标记：连续两次滚动都没有新增岗位即视为本次推荐已用尽。 */
+const RECOMMEND_SCROLL_ATTEMPTS = 2;
+const JOB_IDS = `[...document.querySelectorAll('a[href*="/job_detail/"]')].map(a => a.href.match(/\\/job_detail\\/([^/?#.]+)\\.html/)?.[1]).filter(Boolean)`;
+const SCROLL_LAST_JOB = `(() => { [...document.querySelectorAll('a[href*="/job_detail/"]')].at(-1)?.scrollIntoView({ block: 'end' }); return true; })()`;
 
 export function validateSearchQuery(q: SearchQuery): void {
   if (typeof q.keyword !== 'string' || !q.keyword.trim() || q.keyword.length > 80
@@ -227,6 +237,9 @@ export function createBossSite(browser: Browser, beforeJobOpen?: () => void): Si
   }
 
   const chat = createChatSession(browser, goto);
+  /** 当前推荐页已返回的岗位；推荐页每批可能整表重绘，只按岗位 ID 区分新增。 */
+  let recommended = new Set<string>();
+  let recommendPages = 0;
 
   async function currentJobReady(t: Target): Promise<boolean> {
     if (!browser.isOpen) return false;
@@ -375,6 +388,41 @@ export function createBossSite(browser: Browser, beforeJobOpen?: () => void): Si
     }
   }
 
+  /** 滚到最后一张卡片与页面底部（列表可能在内部滚动容器中），等待出现未返回过的岗位。 */
+  async function loadMoreRecommend(): Promise<boolean> {
+    const fresh = `(${JOB_IDS}).some(id => !${JSON.stringify([...recommended])}.includes(id))`;
+    for (let attempt = 1; attempt <= RECOMMEND_SCROLL_ATTEMPTS; attempt++) {
+      await browser.eval(SCROLL_LAST_JOB);
+      await browser.scrollToBottom();
+      try {
+        await waitPage(fresh, `推荐分页加载（第 ${recommendPages + 1} 批，第 ${attempt} 次滚动）`, PAGE_SCROLL_WAIT_MS);
+        return true;
+      } catch (error) {
+        if (!(error instanceof BrowserWaitTimeoutError)) throw error;
+      }
+    }
+    return false;
+  }
+
+  async function recommendPage(page: number): Promise<JobCard[]> {
+    if (page === 1) {
+      recommended = new Set();
+      recommendPages = 0;
+      await goto(`${ORIGIN}${RECOMMEND_PATH}`);
+      await waitPage(`(${JOB_IDS}).length > 0`, '推荐岗位渲染');
+    } else {
+      // 重新打开会得到另一轮推荐，只能在原页面续读；某批失败时 recommendPages 不前进，可重试同一批。
+      if (page !== recommendPages + 1 || await browser.eval<string>('location.pathname') !== RECOMMEND_PATH) {
+        throw new Error('推荐页已离开或批次不连续，不能续读推荐');
+      }
+      if (!(await loadMoreRecommend())) return [];
+    }
+    const cards = (await browser.eval<JobCard[]>(EXTRACT_CARDS)).filter(card => !recommended.has(card.jobId));
+    for (const card of cards) recommended.add(card.jobId);
+    recommendPages = page;
+    return cards;
+  }
+
   async function searchPage(q: SearchQuery): Promise<JobCard[]> {
     const params = new URLSearchParams({ query: q.keyword, city: CITY_CODES[q.city]! });
     await goto(`${ORIGIN}/web/geek/jobs?${params}`);
@@ -411,6 +459,11 @@ export function createBossSite(browser: Browser, beforeJobOpen?: () => void): Si
     },
     status,
     async close() { await chat.close(); await browser.close(); },
+
+    async recommend(page) {
+      if (!Number.isInteger(page) || page < 1) throw new Error('推荐批次无效');
+      return recommendPage(page);
+    },
 
     async search(q) {
       validateSearchQuery(q);
