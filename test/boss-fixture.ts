@@ -42,6 +42,8 @@ export interface Scenario {
   /** 输入时页面切到另一会话。 */
   switchOnInput?: boolean;
   delivery?: 'delivered' | 'failed' | 'pending';
+  /** 输入变化后站点启用发送按钮的延迟（毫秒，默认 100；页面不可见时定时器会被推迟）；never 表示始终不启用。 */
+  sendEnableDelay?: number | 'never';
 }
 
 export interface BossFixture {
@@ -106,7 +108,7 @@ async function load(){const f=current,st=state;st.loading=true;
   ${s.late === 'after-history' ? "if(!window.lateDone){window.lateDone=true;addEventListener('fixture:late-message',()=>render({mid:9001,from:{uid:" + UID + "},to:{uid:f.friendId},body:{text:'站点默认招呼'}}),{once:true});}" : ''}
   if(st.hasMore&&box.scrollHeight<=box.clientHeight)load();}
 box.addEventListener('scroll',()=>{if(box.scrollTop<=40&&state&&state.hasMore&&!state.loading)setTimeout(()=>{if(!state.loading)load();},200);});
-let timer;new MutationObserver(()=>{clearTimeout(timer);timer=setTimeout(()=>send.classList.toggle('disabled',!input.innerText.trim()),100);}).observe(input,{childList:true,subtree:true,characterData:true});
+let timer;new MutationObserver(()=>{clearTimeout(timer);${s.sendEnableDelay === 'never' ? '' : `timer=setTimeout(()=>send.classList.toggle('disabled',!input.innerText.trim()),${s.sendEnableDelay ?? 100});`}}).observe(input,{childList:true,subtree:true,characterData:true});
 input.addEventListener('input',()=>{if(inputSeen)return;inputSeen=true;
   ${s.late === 'on-input' ? "render({mid:9002,from:{uid:" + UID + "},to:{uid:current.friendId},body:{text:'站点默认招呼'}});" : ''}
   ${s.mangleInput ? "setTimeout(()=>input.append(' 草稿'),20);" : ''}
