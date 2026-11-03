@@ -45,6 +45,14 @@ export function runAgentBrowser(args: string[], opts: { env?: NodeJS.ProcessEnv 
 /** 条件没有在限定时间内成立；与命令失败、页面断开分开，调用方只对只读动作使用有限次重观察。 */
 export class BrowserWaitTimeoutError extends Error {}
 
+/** 本应用控制的页面不可见且无法恢复：没有渲染时机时滚动事件不派发，站点不会加载更多。 */
+export class BrowserHiddenError extends Error {}
+
+const PAGE_VISIBLE = 'document.visibilityState === "visible"';
+/** 切回标签页并恢复窗口后等待页面可见的上限；正常恢复在一秒内完成。 */
+const VISIBLE_WAIT_MS = 3_000;
+type Tab = { active: boolean; tabId: string; targetId: string };
+
 export class Browser {
   readonly #opts: BrowserOptions;
   #queue: Promise<unknown> = Promise.resolve();
@@ -86,13 +94,20 @@ export class Browser {
     await this.#run(['find', 'nth', String(index), selector, 'click']);
   }
 
-  async scrollWithin(selector: string, direction: 'up' | 'down', amount: number): Promise<void> {
-    await this.#run(['scroll', direction, String(amount), '--selector', selector]);
+  /** 滚动都先确保页面可见：页面依赖滚动事件加载更多，不可见时滚了也不会加载。 */
+  scrollWithin(selector: string, direction: 'up' | 'down', amount: number): Promise<void> {
+    return this.#serial(async () => {
+      await this.#ensureVisible();
+      await this.#exec(['scroll', direction, String(amount), '--selector', selector]);
+    });
   }
 
-  async scrollToBottom(): Promise<void> {
-    const height = await this.eval<number>('document.scrollingElement.scrollHeight');
-    await this.#run(['scroll', 'down', String(height)]);
+  scrollToBottom(): Promise<void> {
+    return this.#serial(async () => {
+      await this.#ensureVisible();
+      const { result } = (await this.#exec(['eval', 'JSON.stringify(document.scrollingElement.scrollHeight)'])) as { result: string };
+      await this.#exec(['scroll', 'down', result]);
+    });
   }
 
   async fill(ref: string, text: string): Promise<void> {
@@ -121,11 +136,32 @@ export class Browser {
     if (!this.#open) return Promise.reject(new Error('浏览器未打开，无法观察接口响应'));
     return this.#serial(async () => {
       const { cdpUrl } = (await this.#exec(['get', 'cdp-url'])) as { cdpUrl: string };
-      const { tabs } = (await this.#exec(['tab'])) as { tabs: { active: boolean; targetId: string }[] };
-      const active = tabs.filter(tab => tab.active);
-      if (active.length !== 1) throw new Error('无法确定当前标签页，未开始观察接口响应');
-      return watchResponses(cdpUrl, active[0]!.targetId, endpoint);
+      return watchResponses(cdpUrl, (await this.#controlledTab('未开始观察接口响应')).targetId, endpoint);
     });
+  }
+
+  async #controlledTab(consequence: string): Promise<Tab> {
+    const { tabs } = (await this.#exec(['tab'])) as { tabs: Tab[] };
+    const active = tabs.filter(tab => tab.active);
+    if (active.length !== 1) throw new Error(`无法确定当前标签页，${consequence}`);
+    return active[0]!;
+  }
+
+  /**
+   * 窗口最小化、其他标签切到前台等使页面不可见时，重新选中本应用控制的同一标签页：
+   * agent-browser 选中标签会把它切到前台并恢复所在窗口。只作用于本会话的 Cloak，不注入可见状态。
+   */
+  async #ensureVisible(): Promise<void> {
+    const visible = async () => JSON.parse(((await this.#exec(['eval', `JSON.stringify(${PAGE_VISIBLE})`])) as { result: string }).result) === true;
+    if (await visible()) return;
+    const tab = await this.#controlledTab('无法恢复不可见的页面');
+    try { await this.#exec(['tab', tab.tabId]); }
+    catch (error) { throw new BrowserHiddenError(`BOSS 页面不可见，切回本应用标签页失败：${(error as Error).message}`); }
+    try { await this.#exec(['wait', '--fn', PAGE_VISIBLE, '--timeout', String(VISIBLE_WAIT_MS)]); }
+    catch (error) {
+      if (!/Wait timed out after \d+ms/.test((error as Error).message)) throw error;
+      throw new BrowserHiddenError('BOSS 浏览器窗口已切回本应用标签页并尝试恢复，页面仍不可见：可能屏幕已锁定、显示器休眠或系统不允许切换窗口；解锁或唤醒后再继续');
+    }
   }
 
   async close(): Promise<void> {

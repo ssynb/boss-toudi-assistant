@@ -6,9 +6,9 @@
  * 任何核实失败都返回未确认，由执行器停下整批。
  */
 import type { BrowserState, Target, ContactIdentity } from './contracts.ts';
-import { BrowserWaitTimeoutError, type Browser } from './browser.ts';
+import { BrowserHiddenError, BrowserWaitTimeoutError, type Browser } from './browser.ts';
 import type { GreetingResult, OpenJobResult, Verified, WriteSite } from './executor.ts';
-import { createChatSession, domQuiet, HistoryError, OtherJobConversationError, ORIGIN, PAGE_HIDDEN, WINDOW_HIDDEN_MESSAGE, type ChatIdentity } from './boss-chat.ts';
+import { createChatSession, domQuiet, HistoryError, OtherJobConversationError, ORIGIN, type ChatIdentity } from './boss-chat.ts';
 
 export interface JobCard {
   jobId: string;
@@ -383,8 +383,10 @@ export function createBossSite(browser: Browser, beforeJobOpen?: () => void): Si
     })()`;
     // 图片和详情渲染可能在首次滚动后增高页面。只读分页允许重新测量底部，最多等待 18 秒。
     for (let attempt = 1; attempt <= PAGE_SCROLL_ATTEMPTS; attempt++) {
-      if (await browser.eval<boolean>(PAGE_HIDDEN)) throw new SiteBlockedError({ page: 'unknown', url: null, message: WINDOW_HIDDEN_MESSAGE });
-      await browser.scrollToBottom();
+      // 无法恢复可见时整轮停止，不当作单页失败重试或转去搜索。
+      await browser.scrollToBottom().catch(error => {
+        throw error instanceof BrowserHiddenError ? new SiteBlockedError({ page: 'unknown', url: null, message: error.message }) : error;
+      });
       try {
         await waitPage(finished, `职位分页加载（第 ${page} 批，第 ${attempt} 次滚动）`, PAGE_SCROLL_WAIT_MS);
         return;
