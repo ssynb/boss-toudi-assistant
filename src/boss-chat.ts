@@ -9,7 +9,7 @@
  * 不重放带安全参数的接口，不保存请求 URL 或消息原文。
  */
 import type { ContactIdentity, Target } from './contracts.ts';
-import type { Browser } from './browser.ts';
+import { BrowserWaitTimeoutError, type Browser } from './browser.ts';
 import type { ResponseObservation, ResponseWatch } from './browser-responses.ts';
 import type { GreetingResult } from './executor.ts';
 
@@ -23,8 +23,12 @@ const HISTORY_ENDPOINT = `${ORIGIN}/wapi/zpchat/geek/historyMsg`;
 const MAX_HISTORY_PAGES = 30;
 const MAX_LIST_SCROLLS = 80;
 const LIST_VIEWPORT = '.chat-user .user-list-content';
-/** 站点输入框的启用状态在内容变化 100ms 防抖后才更新；安静时长须覆盖它，否则 Enter 会被吞掉。 */
 const QUIET_MS = 300;
+/** 站点在输入变化后经 100ms 定时器防抖才启用发送；页面不可见时定时器被推迟，须等真实启用而非固定时长。 */
+const SEND_READY_TIMEOUT_MS = 10_000;
+/** 窗口最小化或被隐藏时页面没有渲染时机，滚动事件不派发，站点不会加载更多；必须由用户恢复窗口。 */
+export const PAGE_HIDDEN = 'document.visibilityState === "hidden"';
+export const WINDOW_HIDDEN_MESSAGE = 'BOSS 浏览器窗口已最小化或被隐藏，页面不会继续加载；请把窗口恢复显示（可以放在其他窗口后面）后再继续';
 
 const LIST_ITEMS = '.chat-user .chat-content li[role="listitem"]';
 const CONTROLS = '.chat-conversation .message-controls';
@@ -223,11 +227,16 @@ export function createChatSession(browser: ChatBrowser, goto: (url: string) => P
 
   const read = (t: Target, id: ChatIdentity) => browser.eval<PageState>(pageState(t, id));
 
+  async function scrollWithin(selector: string, direction: 'up' | 'down', amount: number): Promise<void> {
+    if (await browser.eval<boolean>(PAGE_HIDDEN)) throw new Error(WINDOW_HIDDEN_MESSAGE);
+    await browser.scrollWithin(selector, direction, amount);
+  }
+
   async function loadOlder(): Promise<void> {
     // 站点在内容不足一屏时自动加载下一页，否则要滚到顶部；等列表安静后滚动，两种情况都覆盖。
     await browser.waitFor(domQuiet('.chat-conversation .chat-record', QUIET_MS), '会话历史渲染');
     const height = await browser.eval<number>(`document.querySelector('.chat-conversation .chat-message')?.scrollHeight ?? 0`);
-    if (height) await browser.scrollWithin('.chat-conversation .chat-message', 'up', height);
+    if (height) await scrollWithin('.chat-conversation .chat-message', 'up', height);
   }
 
   function listState(id: ChatIdentity): string {
@@ -259,7 +268,7 @@ export function createChatSession(browser: ChatBrowser, goto: (url: string) => P
       if (data.hasMore !== true) throw new Error('会话列表分页状态未知，不能确认目标不存在');
       const height = await browser.eval<number>(`document.querySelector(${js(LIST_VIEWPORT)})?.scrollHeight ?? 0`);
       if (!height) throw new Error('找不到会话列表滚动区域，无法加载更多会话');
-      await browser.scrollWithin(LIST_VIEWPORT, 'down', height);
+      await scrollWithin(LIST_VIEWPORT, 'down', height);
       await browser.waitFor(`(() => {const s=${expression};return s.exact>0||s.count!==${data.count}||s.hasMore!==true})()`, '会话列表分页加载')
         .catch(() => { throw new Error('会话列表加载更多超时，不能确认目标不存在'); });
     }
@@ -272,7 +281,7 @@ export function createChatSession(browser: ChatBrowser, goto: (url: string) => P
     if (!(await browser.eval<number[]>(matchingIndices(id))).length) {
       const total = await browser.eval<number>(`document.querySelector(${js(LIST_VIEWPORT)})?.scrollHeight ?? 0`);
       if (total) {
-        await browser.scrollWithin(LIST_VIEWPORT, 'up', total);
+        await scrollWithin(LIST_VIEWPORT, 'up', total);
         await browser.waitFor(domQuiet('.chat-user', QUIET_MS), '会话列表滚动渲染');
       }
     }
@@ -285,7 +294,7 @@ export function createChatSession(browser: ChatBrowser, goto: (url: string) => P
         return e ? {top:e.scrollTop,height:e.clientHeight,total:e.scrollHeight} : null;
       })()`);
       if (!scroll || !scroll.height || scroll.top + scroll.height >= scroll.total || step === MAX_LIST_SCROLLS) break;
-      await browser.scrollWithin(LIST_VIEWPORT, 'down', scroll.height);
+      await scrollWithin(LIST_VIEWPORT, 'down', scroll.height);
       await browser.waitFor(domQuiet('.chat-user', QUIET_MS), '会话列表滚动渲染');
     }
     throw new Error('会话列表滚动到底或达到上限，目标行仍未渲染，停止后续动作');
@@ -353,7 +362,10 @@ export function createChatSession(browser: ChatBrowser, goto: (url: string) => P
       if (beforeFill === null) return { ok: false, evidence: '填写前会话或历史证明已失效，未填写' };
       if (beforeFill) return { ok: true, skipped: true, evidence: '填写前已有本方消息，未发送本次招呼' };
       await browser.fillSelector(CHAT_INPUT, text);
-      await browser.waitFor(domQuiet(CONTROLS, QUIET_MS), '招呼输入及控件稳定');
+      await browser.waitFor(domQuiet(CONTROLS, QUIET_MS), '招呼输入稳定');
+      // 原文被改动时立即停止等待；按钮迟迟不启用时超时后按下文核对结果处理，不提交。
+      await browser.waitFor(`(s => !s.exact || s.sendable)(${inputState(text)})`, '发送按钮启用', SEND_READY_TIMEOUT_MS)
+        .catch(error => { if (!(error instanceof BrowserWaitTimeoutError)) throw error; });
       const own = await measure(t, id);
       if (own === null) return { ok: false, evidence: '填写后当前会话身份或历史证明已变化，未发送' };
       if (own) return { ok: true, skipped: true, evidence: '提交前出现本方消息，未发送本次招呼' };

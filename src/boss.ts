@@ -8,7 +8,7 @@
 import type { BrowserState, Target, ContactIdentity } from './contracts.ts';
 import { BrowserWaitTimeoutError, type Browser } from './browser.ts';
 import type { GreetingResult, OpenJobResult, Verified, WriteSite } from './executor.ts';
-import { createChatSession, domQuiet, HistoryError, OtherJobConversationError, ORIGIN, type ChatIdentity } from './boss-chat.ts';
+import { createChatSession, domQuiet, HistoryError, OtherJobConversationError, ORIGIN, PAGE_HIDDEN, WINDOW_HIDDEN_MESSAGE, type ChatIdentity } from './boss-chat.ts';
 
 export interface JobCard {
   jobId: string;
@@ -52,9 +52,9 @@ export type Site = SiteControl & ReadSite & WriteSite;
 export class SiteBlockedError extends Error {
   readonly state: BrowserState;
   constructor(state: BrowserState) {
-    super({
+    super(state.message ?? {
       verify: 'BOSS 要求安全验证，请在浏览器窗口中本人完成',
-      restricted: state.message ?? 'BOSS 暂时限制访问，请勿频繁提交刷新请求；请等待站点恢复后再继续。',
+      restricted: 'BOSS 暂时限制访问，请勿频繁提交刷新请求；请等待站点恢复后再继续。',
       loggedOut: 'BOSS 未登录或登录已失效，请在浏览器窗口中登录',
       closed: 'BOSS 浏览器已关闭，请点「BOSS 登录」重新打开',
     }[state.page as string] ?? '无法确认 BOSS 登录状态，请在浏览器窗口中打开 BOSS 首页确认已登录');
@@ -383,6 +383,7 @@ export function createBossSite(browser: Browser, beforeJobOpen?: () => void): Si
     })()`;
     // 图片和详情渲染可能在首次滚动后增高页面。只读分页允许重新测量底部，最多等待 18 秒。
     for (let attempt = 1; attempt <= PAGE_SCROLL_ATTEMPTS; attempt++) {
+      if (await browser.eval<boolean>(PAGE_HIDDEN)) throw new SiteBlockedError({ page: 'unknown', url: null, message: WINDOW_HIDDEN_MESSAGE });
       await browser.scrollToBottom();
       try {
         await waitPage(finished, `职位分页加载（第 ${page} 批，第 ${attempt} 次滚动）`, PAGE_SCROLL_WAIT_MS);
