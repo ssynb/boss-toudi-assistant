@@ -6,18 +6,20 @@ import { startServer } from '../src/server.ts';
 import type { Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
 import { countedSite, instantReadClock, tempDir, api } from './helpers.ts';
-import { mockProviderToml, startMockModel, type MockItem } from './mock-responses.ts';
+import { mockProviderToml, ruleModel, startMockModel, type MockItem } from './mock-responses.ts';
 
 const end: MockItem[] = [{ type: 'message', text: '完成' }];
 const select = (jobId: string) => ({ jobId, decision: 'select', reason: '主要职责匹配Python经验' });
 const reject = (jobId: string, rejectionCategory: string) => ({ jobId, decision: 'reject', reason: `私有拒绝说明-${jobId}`, rejectionCategory, ...(rejectionCategory === '用户明确条件' ? { requirementQuote: '必须有Python项目' } : {}) });
 
-async function run(directions: { name: string; count: number }[], cards: Record<string, string[]>, decisions: object[][]) {
+/** decisions 为函数时按 jobId 判定（批次划分由程序的探索/分配决定），为数组时按请求顺序回放。 */
+async function run(directions: { name: string; count: number }[], cards: Record<string, string[]>, decisions: object[][] | ((jobId: string) => object)) {
   const message = `深圳，月薪至少20K，${directions.map(d => `${d.name}${d.count}个`).join('、')}，必须有Python项目，先存草稿`;
-  const script: MockItem[][] = [
-    [{ type: 'function_call', name: 'start_delivery', args: { city: '深圳', salaryMinK: 20, criteria: 'Python，月薪至少20K，不要猎头和外包', sendNow: false, quote: message, directions: directions.map(d => ({ ...d, keywords: [d.name] })) } }], end,
+  const plan = { city: '深圳', salaryMinK: 20, criteria: 'Python，月薪至少20K，不要猎头和外包', sendNow: false, quote: message, directions: directions.map(d => ({ ...d, keywords: [d.name] })) };
+  const script = typeof decisions === 'function' ? ruleModel(plan, decisions) : [
+    [{ type: 'function_call', name: 'start_delivery', args: plan }], end,
     ...decisions.flatMap(items => [[{ type: 'function_call' as const, name: 'submit_decisions', args: { decisions: items } }], end]),
-  ];
+  ] as MockItem[][];
   const model = await startMockModel(script);
   const dir = tempDir('boss-direction-budget-');
   fs.mkdirSync(path.join(dir, 'codex-home'));
@@ -45,32 +47,32 @@ async function run(directions: { name: string; count: number }[], cards: Record<
   } finally { await server.close(); model.close(); }
 }
 
-test('第一方向拒绝率高不能消耗后续预算；拒绝原因按方向分类计数而不保存全文', async () => {
+test('第一方向拒绝率高不能消耗后续方向的探索份额；拒绝原因按方向分类计数而不保存全文', async () => {
   const categories = ['城市不符', '薪资不足', '外包/猎头/中介', '用户明确条件', '岗位方向不符', '岗位方向不符'];
-  const rounds = categories.map((category, i) => [reject(`a${i * 2}`, category), reject(`a${i * 2 + 1}`, category)]);
+  const decide = (jobId: string) => jobId === 'b' ? select('b') : reject(jobId, categories[Math.floor(Number(jobId.slice(1)) / 2)] ?? '岗位方向不符');
   const { state, reads, searches } = await run([{ name: 'AI开发', count: 2 }, { name: '后端', count: 1 }],
-    { AI开发: Array.from({ length: 20 }, (_, i) => `a${i}`), 后端: ['b'] }, [...rounds, [select('b')]]);
-  assert.deepEqual(reads, [...Array.from({ length: 12 }, (_, i) => `a${i}`), 'b']);
+    { AI开发: Array.from({ length: 20 }, (_, i) => `a${i}`), 后端: ['b'] }, decide);
+  assert.deepEqual(reads, [...Array.from({ length: 6 }, (_, i) => `a${i}`), 'b', ...Array.from({ length: 11 }, (_, i) => `a${i + 6}`)]);
   assert.deepEqual(searches, ['AI开发', '后端']);
   assert.deepEqual(state.batch!.targets.map(t => t.jobId), ['b']);
-  assert.match(state.discovery.message!, /AI开发.*读取 12\/12.*入选 0\/2.*预算/);
+  assert.match(state.discovery.message!, /AI开发.*读取 17\/17.*入选 0\/2.*预算/);
   assert.match(state.discovery.message!, /后端.*读取 1\/6.*入选 1\/1.*配额/);
   for (const category of ['城市不符', '薪资不足', '外包/猎头/中介', '用户明确条件']) assert.ok(state.discovery.message!.includes(`${category} 2`), category);
-  assert.ok(state.discovery.message!.includes('岗位方向不符 4'));
+  assert.ok(state.discovery.message!.includes('岗位方向不符 9'));
   assert.ok(!JSON.stringify(state).includes('私有拒绝说明'), '持久状态只保存拒绝类别计数，不存reject理由全文');
 });
 
-test('前一方向未用完预算可顺延，但仍保留第三方向自己的读取份额', async () => {
-  const bad = Array.from({ length: 17 }, (_, i) => [reject(`b${i}`, '岗位方向不符')]);
+test('低产方向不能吃掉后续方向的探索份额，余量再回到仍有缺口的方向', async () => {
+  const decide = (jobId: string) => jobId.startsWith('b') ? reject(jobId, '岗位方向不符') : select(jobId);
   const { state, reads, searches } = await run([{ name: '第一', count: 2 }, { name: '第二', count: 1 }, { name: '第三', count: 1 }],
-    { 第一: ['a'], 第二: Array.from({ length: 30 }, (_, i) => `b${i}`), 第三: ['c'] }, [[select('a')], ...bad, [select('c')]]);
-  assert.deepEqual(reads, ['a', ...Array.from({ length: 17 }, (_, i) => `b${i}`), 'c']);
+    { 第一: ['a'], 第二: Array.from({ length: 30 }, (_, i) => `b${i}`), 第三: ['c'] }, decide);
+  assert.deepEqual(reads, ['a', ...Array.from({ length: 6 }, (_, i) => `b${i}`), 'c', ...Array.from({ length: 16 }, (_, i) => `b${i + 6}`)]);
   assert.deepEqual(searches, ['第一', '第一', '第二', '第三']);
   assert.deepEqual(state.batch!.targets.map(t => t.jobId), ['a', 'c']);
-  assert.match(state.discovery.message!, /第一.*读取 1\/12.*入选 1\/2.*范围/);
-  assert.match(state.discovery.message!, /第二.*读取 17\/17.*入选 0\/1.*预算/);
+  assert.match(state.discovery.message!, /第一.*读取 1\/6.*入选 1\/2.*范围/);
+  assert.match(state.discovery.message!, /第二.*读取 22\/22.*入选 0\/1.*预算/);
   assert.match(state.discovery.message!, /第三.*读取 1\/6.*入选 1\/1.*配额/);
-  assert.match(state.discovery.message!, /岗位方向不符 17/);
+  assert.match(state.discovery.message!, /岗位方向不符 22/);
 });
 
 test('reject缺少合法归类时须重试判定，不能静默丢弃原因', async () => {

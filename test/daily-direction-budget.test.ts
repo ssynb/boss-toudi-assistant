@@ -7,18 +7,12 @@ import { startServer } from '../src/server.ts';
 import type { Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
 import { countedSite, instantReadClock, tempDir, api } from './helpers.ts';
-import { startMockModel, mockProviderToml, type MockItem } from './mock-responses.ts';
+import { startMockModel, mockProviderToml, ruleModel } from './mock-responses.ts';
 
-test('日剩余额度不足时按方向配额缩小预算，不能让首方向吃掉全部余额', async () => {
+test('日剩余额度不足时各方向先小额探索，余量按缺口分配，不能让首方向吃掉全部余额', async () => {
   const message = '深圳AI开发100个、后端50个，薪资不限，只找不投';
-  const end: MockItem[] = [{ type: 'message', text: '完成' }];
-  const reject = (ids: string[]): MockItem[] => [{ type: 'function_call', name: 'submit_decisions', args: { decisions: ids.map(jobId => ({ jobId, decision: 'reject', reason: '主要职责是销售，不属于计划方向', rejectionCategory: '岗位方向不符' })) } }];
-  const mock = await startMockModel([
-    [{ type: 'function_call', name: 'start_delivery', args: { city: '深圳', salaryMinK: null, criteria: 'AI或后端开发', sendNow: false, quote: message, directions: [{ name: 'AI开发', keywords: ['AI'], count: 100 }, { name: '后端', keywords: ['后端'], count: 50 }] } }], end,
-    reject(Array.from({ length: 10 }, (_, i) => `AI${i}`)), end,
-    reject(Array.from({ length: 10 }, (_, i) => `AI${i + 10}`)), end,
-    reject(Array.from({ length: 10 }, (_, i) => `后端${i}`)), end,
-  ]);
+  const plan = { city: '深圳', salaryMinK: null, criteria: 'AI或后端开发', sendNow: false, quote: message, directions: [{ name: 'AI开发', keywords: ['AI'], count: 100 }, { name: '后端', keywords: ['后端'], count: 50 }] };
+  const mock = await startMockModel(ruleModel(plan, () => ({ decision: 'reject', reason: '主要职责是销售，不属于计划方向', rejectionCategory: '岗位方向不符' })));
   const dir = tempDir('boss-daily-direction-');
   fs.mkdirSync(path.join(dir, 'codex-home'));
   fs.writeFileSync(path.join(dir, 'codex-home', 'config.toml'), mockProviderToml(mock.baseUrl, 'gpt-mock'));
@@ -43,10 +37,11 @@ test('日剩余额度不足时按方向配额缩小预算，不能让首方向�
       const timer = setTimeout(() => { cleanup(); reject(new Error('任务未结束')); }, 10_000);
       server.app.on('changed', check); check();
     });
-    assert.deepEqual(reads, [...Array.from({ length: 20 }, (_, i) => `AI${i}`), ...Array.from({ length: 10 }, (_, i) => `后端${i}`)]);
+    const ids = (prefix: string, from: number, to: number) => Array.from({ length: to - from }, (_, i) => `${prefix}${from + i}`);
+    assert.deepEqual(reads, [...ids('AI', 0, 6), ...ids('后端', 0, 6), ...ids('AI', 6, 18), ...ids('后端', 6, 12)]);
     assert.equal(state.jobReadsToday, 300);
     assert.match(state.discovery.message!, /今日浏览上限已到，明天继续/);
-    assert.match(state.discovery.message!, /AI开发.*读取 20\/20/);
-    assert.match(state.discovery.message!, /后端.*读取 10\/10/);
+    assert.match(state.discovery.message!, /AI开发.*读取 18\/18/);
+    assert.match(state.discovery.message!, /后端.*读取 12\/12/);
   } finally { await server.close(); mock.close(); }
 });

@@ -12,7 +12,10 @@ export interface MockModel {
   close(): void;
 }
 
-export async function startMockModel(script: MockItem[][]): Promise<MockModel> {
+/** 静态脚本按请求序号回放；函数脚本按请求内容决定输出，用于批次划分由程序决定的场景。 */
+export type MockScript = MockItem[][] | ((request: MockModel['requests'][number], n: number) => MockItem[]);
+
+export async function startMockModel(script: MockScript): Promise<MockModel> {
   const requests: MockModel['requests'] = [];
   const server = http.createServer((req, res) => {
     let body = '';
@@ -24,7 +27,7 @@ export async function startMockModel(script: MockItem[][]): Promise<MockModel> {
       }
       requests.push(JSON.parse(body));
       const n = requests.length;
-      const items = script[n - 1] ?? [{ type: 'message', text: '完成' }];
+      const items = (typeof script === 'function' ? script(requests[n - 1]!, n) : script[n - 1]) ?? [{ type: 'message', text: '完成' }];
       const id = `resp_${n}`;
       const events: unknown[] = [{ type: 'response.created', response: { id } }];
       items.forEach((it, i) => events.push({ type: 'response.output_item.done', item: toItem(it, `${n}_${i}`) }));
@@ -60,4 +63,17 @@ export function mockProviderToml(baseUrl: string, model: string): string {
     'requires_openai_auth = false',
     '',
   ].join('\n');
+}
+
+/** 规则模型替身：首个非判定请求提交 plan；判定请求按 jobId 逐项给出 decide 的结论，不依赖程序如何分批。 */
+export function ruleModel(plan: object, decide: (jobId: string) => object): MockScript {
+  return request => {
+    const last = request.input.at(-1) as { type?: string };
+    if (last?.type === 'function_call_output') return [{ type: 'message', text: '完成' }];
+    const user = request.input.filter(item => (item as { role?: string }).role === 'user').at(-1) as { content: { text: string }[] } | undefined;
+    let jobs: { card: { jobId: string } }[] | undefined;
+    try { jobs = JSON.parse(user?.content[0]?.text ?? '').jobs; } catch { jobs = undefined; }
+    if (!jobs) return [{ type: 'function_call', name: 'start_delivery', args: plan }];
+    return [{ type: 'function_call', name: 'submit_decisions', args: { decisions: jobs.map(({ card: { jobId } }) => ({ jobId, ...decide(jobId) })) } }];
+  };
 }
