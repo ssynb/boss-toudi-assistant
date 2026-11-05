@@ -4,6 +4,9 @@ import { AppError } from './errors.ts';
 import { SUPPORTED_CITIES } from './boss.ts';
 
 export interface DeliveryDirection { name: string; keywords: string[]; count: number }
+/** 卡片学历标签的门槛：from 及以上的明确要求不投。 */
+export const DEGREE_LIMITS = ['硕士', '博士'] as const;
+export type DegreeLimit = { from: typeof DEGREE_LIMITS[number]; quote: string };
 export interface SearchPlan {
   city: string;
   /** 月薪区间上限须达到的阈值，单位K/月；null只表示用户明确不限。 */
@@ -12,6 +15,10 @@ export interface SearchPlan {
   sendNow: boolean;
   quote: string;
   directions: DeliveryDirection[];
+  /** 用户原文点名不投的公司；卡片公司名包含其一即不打开详情。旧计划没有该字段视为无。 */
+  excludedCompanies?: string[];
+  /** 用户原文的学历门槛；只按卡片独立学历标签判断，缺失或不可识别不排除。 */
+  degreeLimit?: DegreeLimit | null;
 }
 export const MAX_SEARCH_KEYWORDS = 20;
 const CRITERIA_MAX_CHARS = 10_000;
@@ -19,6 +26,11 @@ const SALARY_UNIT_EXPONENT: Readonly<Record<string, number>> = { k: 0, '千': 0,
 const SALARY_AMOUNT = String.raw`(\d+(?:\.\d+)?)([kK](?![a-zA-Z])|千|万|元)`;
 const MAX_DIRECTIONS = 20;
 const EXPLICIT_RESTRICTIONS = /^用户明确限制（优先于下文）：([^。]*)。/u;
+const MAX_EXCLUDED_COMPANIES = 20;
+const COMPANY_MAX_CHARS = 40;
+/** 学历依据须是排除语义；「不排除」不算。 */
+const DEGREE_EXCLUSION = /不要投|不投|不要|拒绝|不接受|不考虑|(?<!不)排除/u;
+const DEGREE_ORDER = ['学历不限', '初中及以下', '中专/中技', '高中', '大专', '本科', '硕士', '博士'];
 
 export function requireQuote(quote: unknown, latestMessage: string): void {
   if (typeof quote !== 'string' || !quote.trim() || !latestMessage.includes(quote)) throw new Error('操作须附用户最新消息中的逐字原文引用，不能引用旧对话或自行假设授权');
@@ -33,14 +45,33 @@ export const SEARCH_PLAN_SCHEMA = {
   type: 'object', properties: {
     city: { type: 'string', enum: SUPPORTED_CITIES }, salaryMinK: { type: ['number', 'null'], description: '月薪区间上限须达到的K/月阈值。例如上限到20K就行必须填20，不能只写criteria；null仅在用户明确薪资不限时使用。' },
     criteria: { type: 'string' }, sendNow: { type: 'boolean' }, quote: { type: 'string' },
+    excludedCompanies: { type: 'array', maxItems: MAX_EXCLUDED_COMPANIES, items: { type: 'string' }, description: '用户原文点名不投的公司或品牌名，逐字取自用户要求或消息；没有则为空数组。卡片公司名包含其一即跳过。' },
+    degreeLimit: { type: ['object', 'null'], properties: { from: { type: 'string', enum: DEGREE_LIMITS }, quote: { type: 'string' } }, required: ['from', 'quote'], additionalProperties: false,
+      description: '用户明确不投「from及以上学历要求」岗位时填写，quote逐字引用该用户原文；硕士优先等非硬要求或未提及时为null。' },
     directions: { type: 'array', minItems: 1, maxItems: MAX_DIRECTIONS, items: {
       type: 'object', properties: { name: { type: 'string' }, keywords: { type: 'array', minItems: 1, maxItems: MAX_SEARCH_KEYWORDS, items: { type: 'string' } }, count: { type: 'integer', minimum: 1, maximum: MAX_BATCH_TARGETS } },
       required: ['name', 'keywords', 'count'], additionalProperties: false,
     } },
-  }, required: ['city', 'salaryMinK', 'criteria', 'sendNow', 'quote', 'directions'], additionalProperties: false,
+  }, required: ['city', 'salaryMinK', 'criteria', 'sendNow', 'quote', 'directions', 'excludedCompanies', 'degreeLimit'], additionalProperties: false,
 };
 
-export function readSearchPlan(value: unknown, latestMessage: string, contactedToday: number, salaryEvidence: string[] = []): SearchPlan {
+/** 卡片规则只能来自用户原文（要求、消息或最近计划），模型不能新增公司或学历门槛。 */
+function readCardRules(plan: SearchPlan, sources: string): void {
+  const text = sources.toLowerCase();
+  const companies = plan.excludedCompanies ?? [];
+  if (!Array.isArray(companies) || companies.length > MAX_EXCLUDED_COMPANIES
+    || companies.some(name => typeof name !== 'string' || !name.trim() || name.length > COMPANY_MAX_CHARS || !text.includes(name.trim().toLowerCase()))) {
+    throw new Error('excludedCompanies只能逐字填写用户原文点名不投的公司，不能自行添加');
+  }
+  const degree = plan.degreeLimit ?? null;
+  if (degree === null) return;
+  if (!DEGREE_LIMITS.includes(degree.from) || typeof degree.quote !== 'string' || !degree.quote.trim() || !sources.includes(degree.quote)
+    || !degree.quote.includes(degree.from) || !DEGREE_EXCLUSION.test(degree.quote)) {
+    throw new Error('degreeLimit须逐字引用用户明确不投该学历要求的原文；硕士优先等非硬要求不能作为学历门槛');
+  }
+}
+
+export function readSearchPlan(value: unknown, latestMessage: string, contactedToday: number, salaryEvidence: string[] = [], ruleSources: string[] = []): SearchPlan {
   const plan = value as SearchPlan;
   requireQuote(plan?.quote, latestMessage);
   const text = (value: unknown, max: number): value is string => typeof value === 'string' && Boolean(value.trim()) && value.length <= max;
@@ -60,6 +91,7 @@ export function readSearchPlan(value: unknown, latestMessage: string, contactedT
   if (typeof criteriaSalary === 'number' && plan.salaryMinK !== criteriaSalary) throw new Error(`criteria的月薪阈值${criteriaSalary}K与salaryMinK不一致，请按用户要求更正`);
   if (criteriaSalary !== undefined && (plan.salaryMinK === null) !== (criteriaSalary === 'unlimited')) throw new Error('criteria与salaryMinK的薪资口径冲突，请同步更正，不保留旧薪资条件');
   if (new Set(plan.directions.map(d => d.name.trim())).size !== plan.directions.length) throw new Error('投递方向不能重复');
+  readCardRules(plan, [...ruleSources, latestMessage].join('\n'));
   // 只找不投不联系任何人，额度在发送草稿时再核对。
   const total = plan.directions.reduce((sum, direction) => sum + direction.count, 0);
   if (total > MAX_BATCH_TARGETS) throw new AppError('bad_request', `本批最多 ${MAX_BATCH_TARGETS} 个，请求 ${total} 个，未启动`);
@@ -105,6 +137,36 @@ export function excludeSalaryCard(salary: string, threshold: number | null): boo
   return salaryInK(match[3] ?? match[1]!, match[4]!) < threshold;
 }
 
+
+export type CardRejection = { category: '薪资不足' | '用户明确条件' | '外包/猎头/中介'; rule: '薪资' | '学历' | '公司黑名单' | '匿名雇主' | '卡片标识'; evidence: string };
+
+/** 计划规范前缀里明确排除的中间方。 */
+function excludedIntermediaries(criteria: string): Set<string> {
+  const explicit = EXPLICIT_RESTRICTIONS.exec(criteria)?.[1] ?? '';
+  return new Set([...explicit.matchAll(/(?<!不再)排除(猎头|中介|外包)/gu)].map(match => match[1]!));
+}
+
+const MARKER_KINDS: [RegExp, string][] = [[/猎头|代招/u, '猎头'], [/外包|派遣/u, '外包'], [/中介/u, '中介']];
+
+/**
+ * 推荐与搜索共用的确定性卡片预筛，只看卡片上的独立字段：薪资、公司名、学历标签、站点匿名标记与职位标识图标。
+ * 缺字段或无法识别时不排除，交给实际JD判定。
+ */
+export function rejectCard(card: { salary: string; company: string; degree?: string; anonymous?: boolean; markers?: string[] }, plan: SearchPlan): CardRejection | null {
+  if (excludeSalaryCard(card.salary, plan.salaryMinK)) return { category: '薪资不足', rule: '薪资', evidence: card.salary };
+  const company = card.company.toLowerCase();
+  const brand = (plan.excludedCompanies ?? []).find(name => company.includes(name.trim().toLowerCase()));
+  if (brand) return { category: '用户明确条件', rule: '公司黑名单', evidence: brand };
+  const limit = plan.degreeLimit;
+  if (limit && card.degree && DEGREE_ORDER.indexOf(card.degree) >= DEGREE_ORDER.indexOf(limit.from)) return { category: '用户明确条件', rule: '学历', evidence: card.degree };
+  const excluded = excludedIntermediaries(plan.criteria);
+  if (card.anonymous && excluded.has('猎头')) return { category: '外包/猎头/中介', rule: '匿名雇主', evidence: '站点标记为匿名公司' };
+  for (const marker of card.markers ?? []) {
+    const kind = MARKER_KINDS.find(([pattern]) => pattern.test(marker))?.[1];
+    if (kind && excluded.has(kind)) return { category: '外包/猎头/中介', rule: '卡片标识', evidence: marker };
+  }
+  return null;
+}
 
 /** 只提取用户明确的常见排除/解除排除；不从岗位页面或模型理由猜条件。 */
 export function preserveExclusions(plan: SearchPlan, userSources: string[]): SearchPlan {

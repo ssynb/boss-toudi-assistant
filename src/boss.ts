@@ -19,6 +19,12 @@ export interface JobCard {
   area: string;
   /** 岗位卡原文摘要（≤300 字），供模型判断。 */
   snippet: string;
+  /** 卡片标签中与站点学历选项完全一致的一项；没有这类标签时缺省，不从其他文字推断。 */
+  degree?: string;
+  /** 站点把雇主显示为匿名公司（.is-anonymous）。 */
+  anonymous?: boolean;
+  /** 职位标识图标的文字（如「猎头」）。 */
+  markers?: string[];
 }
 
 export interface SearchQuery {
@@ -132,8 +138,11 @@ const BLOCKED_PAGE = `(() => {
 })()`;
 
 // 岗位卡薪资用站点私有字体显示数字：U+E031–U+E03A 依次对应 0–9。
+// 学历、匿名和标识图标按 2026-11-05 真实职位页取证：.tag-list 独立学历标签、.is-anonymous、img.job-tag-icon[alt]。
+const DEGREE_TAGS = ['学历不限', '初中及以下', '中专/中技', '高中', '大专', '本科', '硕士', '博士'];
 const EXTRACT_CARDS = `(() => {
   const digits = (s) => s.replace(/[\\ue031-\\ue03a]/g, (c) => String(c.charCodeAt(0) - 0xe031));
+  const degrees = ${JSON.stringify(DEGREE_TAGS)};
   const seen = new Set(); const out = [];
   for (const a of document.querySelectorAll('a[href*="/job_detail/"]')) {
     const m = a.href.match(/\\/job_detail\\/([^/?#.]+)\\.html/);
@@ -147,6 +156,9 @@ const EXTRACT_CARDS = `(() => {
       company: q('[class*="company-name"], [class*="boss-name"]'),
       salary: digits(q('[class*="salary"]')), area: q('[class*="job-area"], [class*="location"]'),
       snippet: digits((card && card.innerText) || '').replace(/\\s+/g, ' ').slice(0, 300),
+      degree: [...(card?.querySelectorAll('.tag-list li') ?? [])].map(e => e.textContent.trim()).find(t => degrees.includes(t)),
+      anonymous: Boolean(card?.querySelector('.is-anonymous')),
+      markers: [...(card?.querySelectorAll('img.job-tag-icon') ?? [])].map(e => (e.getAttribute('alt') || '').trim()).filter(Boolean),
     });
   }
   return out;

@@ -5,7 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type { CodexClient, DynamicTool } from './codex.ts';
 import { SiteBlockedError, MAX_SEARCH_PAGE, type JobCard, type ReadSite, type SiteControl } from './boss.ts';
 import { JobReadLimitError, requireFixedGreeting, type State } from './state.ts';
-import { MAX_SEARCH_KEYWORDS, excludeSalaryCard, type DeliveryDirection, type SearchPlan } from './search-plan.ts';
+import { MAX_SEARCH_KEYWORDS, rejectCard, type CardRejection, type DeliveryDirection, type SearchPlan } from './search-plan.ts';
 
 const JUDGMENT_BATCH_SIZE = 10;
 const READ_PACING_MS = { min: 3000, max: 6000 } as const;
@@ -30,6 +30,11 @@ const detailBudget = (targets: number) => targets * 6;
 /** 推荐流可能一直有更多：最多滚动这么多批，且最多用本轮详情预算的一半，剩余留给方向搜索补充。 */
 const RECOMMEND_MAX_PAGES = 10;
 const recommendBudget = (budget: number) => Math.floor(budget / 2);
+/** 推荐连续这么多份JD没有入选即转搜索，避免低产推荐吃满上限。 */
+const RECOMMEND_DRY_READS = 10;
+/** 多方向时每方向先用这么多份详情探索，再按实际入选率分配余量。 */
+const SEARCH_PROBE_READS = 6;
+const PREFILTER_RULES: CardRejection['rule'][] = ['薪资', '学历', '公司黑名单', '匿名雇主', '卡片标识'];
 const JUDGMENT_ATTEMPTS = 2;
 const READ_ATTEMPTS = 2;
 const MAX_FAILED_PAGES = 3;
@@ -59,9 +64,11 @@ export interface DiscoveryOutcome {
 type Options = { readClock?: ReadClock; codex: CodexClient; site: ReadSite & Pick<SiteControl, 'status'>; state: State; signal: AbortSignal; plan: SearchPlan; log: (text: string) => void; node: (text: string) => void; accept: (draft: Draft) => Promise<string | null> };
 type Draft = Parameters<State['replaceBatch']>[0][number];
 type JobDetail = { card: JobCard; jd: string };
-type Judgment = { selected: { draft: Draft; direction: string }[]; rejected: Rejections };
-type DirectionReport = { name: string; count: number; selected: number; recommended: number; reads: number; reused: number; prefiltered: number; budget: number; rejected: Rejections; stopped: string };
-type RecommendReport = { pages: number; offCity: number; prefiltered: number; reads: number; budget: number; overflow: number; rejected: Rejections; stopped: string };
+type Judgment = { selected: { draft: Draft; direction: string }[]; rejected: Rejections; rejectedJobs: { card: JobCard; category: RejectionCategory; reason: string }[] };
+type Prefilter = { prefiltered: number; prefilterRules: Partial<Record<CardRejection['rule'], number>>; rejected: Rejections };
+type DirectionReport = Prefilter & { name: string; count: number; selected: number; recommended: number; reads: number; reused: number; budget: number; stopped: string };
+type RecommendReport = Prefilter & { pages: number; offCity: number; reads: number; budget: number; overflow: number; stopped: string };
+type Cursor = { pages: AsyncGenerator<JobCard[]>; pending: JobCard[]; done: boolean };
 type Run = {
   opts: Options; reader: ReturnType<typeof browserReads>; reports: DirectionReport[]; userConditions: string; resume: string;
   selected: Draft[]; selectedIds: Set<string>; details: Map<string, JobDetail>; failedJobs: Set<string>; reads: number;
@@ -81,16 +88,31 @@ function directionBudgets(directions: DeliveryDirection[], available: number): n
   return shares.map(share => share.count);
 }
 
+/** 按权重整数分配，最大余数补齐；权重全为0时按 fallback 分。 */
+function apportion(weights: number[], total: number): number[] {
+  const sum = weights.reduce((a, b) => a + b, 0);
+  if (!sum) return weights.map(() => 0);
+  const shares = weights.map((weight, index) => ({ index, count: Math.floor(total * weight / sum), fraction: total * weight / sum % 1 }));
+  const remainder = total - shares.reduce((a, share) => a + share.count, 0);
+  for (const share of [...shares].sort((a, b) => b.fraction - a.fraction || a.index - b.index).slice(0, remainder)) share.count++;
+  return shares.map(share => share.count);
+}
+
+const prefilterText = (report: Prefilter) => {
+  const rules = PREFILTER_RULES.filter(rule => report.prefilterRules[rule]).map(rule => `${rule} ${report.prefilterRules[rule]}`).join('、');
+  return `卡片预筛排除 ${report.prefiltered} 个${rules ? `（${rules}）` : ''}`;
+};
+
 const rejectionText = (rejected: Rejections) => REJECTION_CATEGORIES.filter(category => rejected[category]).map(category => `${category} ${rejected[category]}`).join('、') || '0个';
 
 function directionMessage(report: DirectionReport): string {
   const recommended = report.recommended ? `（推荐页 ${report.recommended} 个）` : '';
-  return `${report.name}：搜索尝试读取 ${report.reads}/${report.budget} 个，复用 ${report.reused} 个，入选 ${report.selected}/${report.count} 个${recommended}，卡片预筛排除 ${report.prefiltered} 个；${report.stopped}。拒绝（含卡片预筛）：${rejectionText(report.rejected)}。`;
+  return `${report.name}：搜索尝试读取 ${report.reads}/${report.budget} 个，复用 ${report.reused} 个，入选 ${report.selected}/${report.count} 个${recommended}，${prefilterText(report)}；${report.stopped}。拒绝（含卡片预筛）：${rejectionText(report.rejected)}。`;
 }
 
 function recommendMessage(report: RecommendReport, selected: number): string {
   const overflow = report.overflow ? `，方向配额已满未计入 ${report.overflow} 个` : '';
-  return `推荐页：加载 ${report.pages} 批，异地或未标城市排除 ${report.offCity} 个，卡片预筛排除 ${report.prefiltered} 个，尝试读取 ${report.reads}/${report.budget} 个，入选 ${selected} 个${overflow}；${report.stopped}。拒绝（含卡片预筛）：${rejectionText(report.rejected)}。`;
+  return `推荐页：加载 ${report.pages} 批，异地或未标城市排除 ${report.offCity} 个，${prefilterText(report)}，尝试读取 ${report.reads}/${report.budget} 个，入选 ${selected} 个${overflow}；${report.stopped}。拒绝（含卡片预筛）：${rejectionText(report.rejected)}。`;
 }
 
 /** 推荐页按计划城市打开，但城市是硬条件：只有卡片地区明确属于计划城市才读取。 */
@@ -157,6 +179,7 @@ function readDecisions(value: unknown, jobs: JobDetail[], greeting: string, user
   const remaining = new Map(jobs.map(({ card }) => [card.jobId, card]));
   const selected: Judgment['selected'] = [];
   const rejected: Rejections = {};
+  const rejectedJobs: Judgment['rejectedJobs'] = [];
   for (const item of decisions) {
     const card = remaining.get(item?.jobId);
     if (!card) throw new Error(`判定无效：岗位 ${String(item?.jobId)} 不在本批实际 JD 中或重复`);
@@ -171,9 +194,10 @@ function readDecisions(value: unknown, jobs: JobDetail[], greeting: string, user
       if (!REJECTION_CATEGORIES.includes(category)) throw new Error('reject必须提供合法拒绝类别');
       if (category === '用户明确条件' && (typeof item.requirementQuote !== 'string' || !item.requirementQuote.trim() || !userConditions.includes(item.requirementQuote))) throw new Error('额外拒绝条件必须引用用户原文，不能引用JD门槛');
       rejected[category] = (rejected[category] ?? 0) + 1;
+      rejectedJobs.push({ card, category, reason: item.reason.trim().slice(0, 120) });
     }
   }
-  return { selected, rejected };
+  return { selected, rejected, rejectedJobs };
 }
 
 async function judge(opts: Options, context: { userConditions: string; [key: string]: unknown }, jobs: JobDetail[], directions: string[]): Promise<Judgment> {
@@ -239,7 +263,23 @@ async function* searchPages(run: Run, direction: DeliveryDirection, skip: (jobId
   }
 }
 
-/** 一次遍历推荐流：全局去重，按计划城市与薪资过滤，收集到足够读取的卡片或推荐不再增加即停。 */
+/** 卡片预筛命中即记数并留可核验日志（卡片字段与依据），不打开详情、不占读数。 */
+function prefiltered(run: Run, card: JobCard, report: Prefilter): boolean {
+  const rejection = rejectCard(card, run.opts.plan);
+  if (!rejection) return false;
+  report.prefiltered++;
+  report.prefilterRules[rejection.rule] = (report.prefilterRules[rejection.rule] ?? 0) + 1;
+  report.rejected[rejection.category] = (report.rejected[rejection.category] ?? 0) + 1;
+  run.opts.log(`卡片预筛排除：${card.company} ${card.title}（${rejection.rule}：${rejection.evidence}）→ ${rejection.category}`);
+  return true;
+}
+
+function countJudgment(run: Run, report: Prefilter, result: Judgment): void {
+  for (const category of REJECTION_CATEGORIES) if (result.rejected[category]) report.rejected[category] = (report.rejected[category] ?? 0) + result.rejected[category]!;
+  for (const { card, category, reason } of result.rejectedJobs) run.opts.log(`JD判定拒绝：${card.company} ${card.title} → ${category}（${reason}）`);
+}
+
+/** 一次遍历推荐流：全局去重，按计划城市与卡片规则过滤，收集到足够读取的卡片或推荐不再增加即停。 */
 async function recommendCards(run: Run, report: RecommendReport): Promise<JobCard[]> {
   const { opts, reader } = run;
   const seen = new Set<string>();
@@ -256,11 +296,7 @@ async function recommendCards(run: Run, report: RecommendReport): Promise<JobCar
     const cards = fresh.filter(card => !opts.state.isContacted(card.jobId));
     const local = cards.filter(card => inCity(card.area, opts.plan.city));
     report.offCity += cards.length - local.length;
-    for (const card of local) {
-      if (!excludeSalaryCard(card.salary, opts.plan.salaryMinK)) { eligible.push(card); continue; }
-      report.prefiltered++;
-      report.rejected['薪资不足'] = (report.rejected['薪资不足'] ?? 0) + 1;
-    }
+    eligible.push(...local.filter(card => !prefiltered(run, card, report)));
     // 推荐受账号求职意向影响；整批都不在计划城市说明推荐流不对应本轮城市，不再继续滚动。
     if (cards.length && !local.length) { report.stopped = '推荐页本批没有计划城市的岗位'; return eligible; }
   }
@@ -301,29 +337,34 @@ async function readDetail(run: Run, card: JobCard, label: string): Promise<JobDe
   return detail;
 }
 
-/** 推荐JD只读一次，按仍有配额的全部方向一次判定；判定过的岗位不再进入搜索。 */
+/** 推荐JD只读一次，按仍有配额的全部方向一次判定；判定过的岗位不再进入搜索。连续低产即转搜索。 */
 async function discoverRecommended(run: Run, report: RecommendReport, judged: Set<string>): Promise<void> {
   const { opts } = run;
   if (!report.budget) { report.stopped = '本轮详情预算不足，未读推荐页'; return; }
   report.stopped = '进行中';
-  opts.node(`先从推荐页查找，推荐阶段详情预算 ${report.budget} 个。`);
+  opts.node(`先从推荐页查找，推荐阶段详情预算最多 ${report.budget} 个；连续 ${RECOMMEND_DRY_READS} 份未入选即转搜索。`);
   const cards = await recommendCards(run, report);
   const scanStopped = report.stopped;
+  let dry = 0;
+  let unjudged = 0;
   const assess = async (jobs: JobDetail[]) => {
-    if (!jobs.length) return;
+    const reads = unjudged;
+    unjudged = 0;
+    if (!jobs.length) { dry += reads; return; }
     const open = run.reports.filter(item => item.selected < item.count);
     const directions = open.map(item => ({ name: item.name, remaining: item.count - item.selected }));
     const result = await judge(opts, { ...judgeContext(run), directions }, jobs, open.map(item => item.name));
-    for (const category of REJECTION_CATEGORIES) if (result.rejected[category]) report.rejected[category] = (report.rejected[category] ?? 0) + result.rejected[category]!;
-    const overflow = await admit(run, result.selected, true);
-    report.overflow += overflow;
+    countJudgment(run, report, result);
+    dry = result.selected.length ? 0 : dry + reads;
+    report.overflow += await admit(run, result.selected, true);
     opts.log(`推荐页：入选 ${recommendedCount(run)} 个，已读 ${report.reads}/${report.budget} 个 JD`);
   };
   let jobs: JobDetail[] = [];
   for (const card of cards) {
-    if (!remainingTargets(run) || report.reads >= report.budget) break;
+    if (!remainingTargets(run) || report.reads >= report.budget || dry >= RECOMMEND_DRY_READS) break;
     opts.signal.throwIfAborted();
     report.reads++;
+    unjudged++;
     const detail = await readDetail(run, card, `推荐页 ${report.reads}/${report.budget}`);
     judged.add(card.jobId);
     if (detail?.jd.trim()) jobs.push(detail);
@@ -331,74 +372,106 @@ async function discoverRecommended(run: Run, report: RecommendReport, judged: Se
   }
   await assess(jobs);
   opts.state.assertJobReadAvailable();
-  report.stopped = !remainingTargets(run) ? '推荐页已满足全部方向配额' : report.reads >= report.budget ? '推荐阶段读取预算已用完，其余由搜索补充' : `${scanStopped}，其余由搜索补充`;
+  report.stopped = !remainingTargets(run) ? '推荐页已满足全部方向配额'
+    : dry >= RECOMMEND_DRY_READS ? `连续 ${RECOMMEND_DRY_READS} 份推荐JD未入选，转搜索补充`
+      : report.reads >= report.budget ? '推荐阶段读取预算已用完，其余由搜索补充' : `${scanStopped}，其余由搜索补充`;
   opts.node(recommendMessage(report, recommendedCount(run)));
 }
 
-async function discoverDirection(run: Run, index: number, skip: (jobId: string) => boolean): Promise<void> {
+/** 取方向的下一张候选卡片但不消耗；需要翻页时才读取下一页。 */
+async function peek(cursor: Cursor): Promise<JobCard | null> {
+  while (!cursor.pending.length) {
+    if (cursor.done) return null;
+    const next = await cursor.pages.next();
+    if (next.done) { cursor.done = true; return null; }
+    cursor.pending = next.value;
+  }
+  return cursor.pending[0]!;
+}
+
+/** 在本方向累计预算内继续读取，停在配额、预算或范围用尽处；剩余卡片留给下一轮分配。 */
+async function discoverDirection(run: Run, index: number, cursor: Cursor, skip: (jobId: string) => boolean): Promise<void> {
   const { opts, details, failedJobs } = run;
   const direction = opts.plan.directions[index]!;
   const report = run.reports[index]!;
   const assess = async (jobs: JobDetail[]) => {
-    if (!jobs.length) return;
-    const result = await judge(opts, { ...judgeContext(run), direction: direction.name }, jobs, [direction.name]);
-    for (const category of REJECTION_CATEGORIES) if (result.rejected[category]) report.rejected[category] = (report.rejected[category] ?? 0) + result.rejected[category]!;
-    await admit(run, result.selected, false);
-    opts.log(`${direction.name}：入选 ${report.selected}/${report.count}，本方向已读 ${report.reads}/${report.budget} 个 JD`);
-  };
-  for await (const cards of searchPages(run, direction, skip)) {
-    let jobs: JobDetail[] = [];
-    for (const card of cards) {
-      if (failedJobs.has(card.jobId)) continue;
-      if (report.selected >= direction.count) break;
-      opts.signal.throwIfAborted();
-      if (excludeSalaryCard(card.salary, opts.plan.salaryMinK)) {
-        report.prefiltered++;
-        report.rejected['薪资不足'] = (report.rejected['薪资不足'] ?? 0) + 1;
-        continue;
-      }
-      if (report.reads >= report.budget && !details.has(card.jobId)) break;
-      let detail = details.get(card.jobId) ?? null;
-      if (!detail) {
-        report.reads++;
-        detail = await readDetail(run, card, `${direction.name} ${report.reads}/${report.budget}`);
-        if (!detail) continue;
-      } else report.reused++;
-      if (detail.jd.trim()) jobs.push(detail);
-      if (jobs.length >= Math.min(opts.plan.sendNow ? 1 : JUDGMENT_BATCH_SIZE, direction.count - report.selected)) { await assess(jobs); jobs = []; }
+    if (jobs.length) {
+      const result = await judge(opts, { ...judgeContext(run), direction: direction.name }, jobs, [direction.name]);
+      countJudgment(run, report, result);
+      await admit(run, result.selected, false);
+      opts.log(`${direction.name}：入选 ${report.selected}/${report.count}，本方向已读 ${report.reads}/${report.budget} 个 JD`);
     }
-    await assess(jobs);
     opts.state.assertJobReadAvailable();
-    if (report.selected >= direction.count || report.reads >= report.budget) break;
+  };
+  let jobs: JobDetail[] = [];
+  while (report.selected < direction.count) {
+    opts.signal.throwIfAborted();
+    // 判定批次不跨搜索页：翻下一页前先判定本页已读的JD。
+    if (!cursor.pending.length && jobs.length) { await assess(jobs); jobs = []; continue; }
+    const card = await peek(cursor);
+    if (!card) break;
+    if (failedJobs.has(card.jobId) || skip(card.jobId) || prefiltered(run, card, report)) { cursor.pending.shift(); continue; }
+    let detail = details.get(card.jobId) ?? null;
+    if (!detail && report.reads >= report.budget) break;
+    cursor.pending.shift();
+    if (!detail) {
+      report.reads++;
+      detail = await readDetail(run, card, `${direction.name} ${report.reads}/${report.budget}`);
+      if (!detail) continue;
+    } else report.reused++;
+    if (detail.jd.trim()) jobs.push(detail);
+    if (jobs.length >= Math.min(opts.plan.sendNow ? 1 : JUDGMENT_BATCH_SIZE, direction.count - report.selected)) { await assess(jobs); jobs = []; }
   }
-  report.stopped = report.selected >= direction.count ? '已达到方向配额' : report.reads >= report.budget ? '本方向详情读取预算已用完' : '计划关键词范围已处理';
-  opts.node(directionMessage(report));
+  await assess(jobs);
 }
 
-/** 推荐不足的方向按剩余配额分配余下预算搜索；推荐已满足的方向不搜索。 */
+/**
+ * 推荐不足的方向搜索补充。多个方向时先各自小额探索，再把剩余预算按「剩余缺口×实际入选率」分配，
+ * 全部为零时按缺口分；一轮后仍有余量就继续分给仍有缺口且范围未用尽的方向。
+ */
 async function supplementBySearch(run: Run, available: number, skip: (jobId: string) => boolean): Promise<void> {
   const { opts, reports } = run;
-  const open = opts.plan.directions.map((direction, index) => ({ index, direction: { ...direction, count: direction.count - reports[index]!.selected } })).filter(item => item.direction.count > 0);
-  const allocated = open.length ? directionBudgets(open.map(item => item.direction), available) : [];
-  open.forEach((item, i) => { reports[item.index]!.budget = allocated[i]!; });
-  let carry = 0;
-  for (const [index, direction] of opts.plan.directions.entries()) {
-    const report = reports[index]!;
-    if (report.selected >= direction.count) { report.stopped = '推荐页已达到方向配额，未搜索'; continue; }
+  const open = opts.plan.directions.map((_, index) => index).filter(index => reports[index]!.selected < reports[index]!.count);
+  for (const [index, report] of reports.entries()) if (!open.includes(index)) report.stopped = '推荐页已达到方向配额，未搜索';
+  const cursors = new Map(open.map(index => [index, { pages: searchPages(run, opts.plan.directions[index]!, skip), pending: [], done: false } as Cursor]));
+  const searchReads = () => reports.reduce((sum, report) => sum + report.reads, 0);
+  const missing = (index: number) => reports[index]!.count - reports[index]!.selected;
+  const grant = async (index: number, reads: number) => {
     opts.state.assertJobReadAvailable();
-    report.budget = Math.min(report.budget + carry, opts.state.remainingJobReads());
+    const report = reports[index]!;
+    report.budget += Math.min(reads, opts.state.remainingJobReads());
     report.stopped = '进行中';
     opts.signal.throwIfAborted();
-    opts.node(`搜索补充${direction.name}，还差 ${direction.count - report.selected} 个，详情预算 ${report.budget} 个（含顺延 ${carry} 个）。`);
-    await discoverDirection(run, index, skip);
-    carry = report.budget - report.reads;
+    await discoverDirection(run, index, cursors.get(index)!, skip);
+  };
+  for (const index of open) reports[index]!.stopped = '进行中';
+  if (open.length > 1) {
+    const shares = directionBudgets(open.map(index => ({ ...opts.plan.directions[index]!, count: missing(index) })), available);
+    opts.node(`搜索补充：${open.length} 个方向各先探索至多 ${SEARCH_PROBE_READS} 份详情，再按实际入选率分配余下预算。`);
+    for (const [i, index] of open.entries()) await grant(index, Math.min(SEARCH_PROBE_READS, shares[i]!));
+  }
+  for (;;) {
+    const left = available - searchReads();
+    const candidates = open.filter(index => missing(index) > 0 && !cursors.get(index)!.done);
+    if (left <= 0 || !candidates.length) break;
+    const rate = (index: number) => reports[index]!.reads ? (reports[index]!.selected - reports[index]!.recommended) / reports[index]!.reads : 0;
+    const byYield = candidates.map(index => missing(index) * rate(index));
+    const allocation = apportion(byYield.some(weight => weight > 0) ? byYield : candidates.map(missing), left);
+    const before = searchReads();
+    for (const [i, index] of candidates.entries()) if (allocation[i]) await grant(index, allocation[i]!);
+    if (searchReads() === before) break;
+  }
+  for (const index of open) {
+    const report = reports[index]!;
+    report.stopped = report.selected >= report.count ? '已达到方向配额' : cursors.get(index)!.done ? '计划关键词范围已处理' : '本方向详情读取预算已用完';
+    opts.node(directionMessage(report));
   }
 }
 
 async function discoverPlan(opts: Options): Promise<DiscoveryOutcome> {
   const { plan } = opts;
   const { requirements, resume, chat } = opts.state.snapshot();
-  const reports: DirectionReport[] = plan.directions.map(({ name, count }) => ({ name, count, selected: 0, recommended: 0, reads: 0, reused: 0, prefiltered: 0, budget: 0, rejected: {}, stopped: '未开始' }));
+  const reports: DirectionReport[] = plan.directions.map(({ name, count }) => ({ name, count, selected: 0, recommended: 0, reads: 0, reused: 0, prefiltered: 0, prefilterRules: {}, budget: 0, rejected: {}, stopped: '未开始' }));
   const run: Run = {
     opts, reader: browserReads(opts), reports, resume: resume.text, reads: 0,
     userConditions: [requirements, ...chat.messages.filter(message => message.role === 'user').map(message => message.text)].join('\n'),
@@ -406,7 +479,7 @@ async function discoverPlan(opts: Options): Promise<DiscoveryOutcome> {
   };
   const total = plan.directions.reduce((sum, direction) => sum + direction.count, 0);
   const budget = Math.min(detailBudget(total), opts.state.remainingJobReads());
-  const recommend: RecommendReport = { pages: 0, offCity: 0, prefiltered: 0, reads: 0, budget: recommendBudget(budget), overflow: 0, rejected: {}, stopped: '未开始' };
+  const recommend: RecommendReport = { pages: 0, offCity: 0, prefiltered: 0, prefilterRules: {}, reads: 0, budget: recommendBudget(budget), overflow: 0, rejected: {}, stopped: '未开始' };
   const judged = new Set<string>();
   const skip = (jobId: string) => run.selectedIds.has(jobId) || judged.has(jobId);
   const warnings = plan.directions.map(keywordWarning).filter(Boolean);

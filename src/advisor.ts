@@ -49,6 +49,7 @@ quote只证明最新消息有明确开始意图，例如“开始投”“再投
 start_delivery按方向分别给出配额及用户方向范围内、与简历相关的关键词。每方向建议ceil(count/5)个不同词，至少3、最多20，不为凑数扩到无关领域。sendNow=true表示边找边投：每个实际JD判定入选后立即执行当前目标，再读取下一个JD；配额按入选计，送达、跳过、失败、未确认另计；用户说只找、先存草稿则false。criteria必须完整保留沿用和新补充的筛选约束，尤其“不要猎头/中介/外包”。调用工具时用完整参数复述城市、月薪、筛选条件和方向配额，程序会在对话里显示这些条件；个人偏好仅作背景。
 salaryMinK是月薪区间上限须达到的K/月阈值，不是岗位区间下限。例如用户说“月薪上限到20K就行”，必须填salaryMinK=20，不能置null或只写criteria；15-25K满足20K阈值，10-18K不满足，“·13薪”不改变月薪。只有用户明确薪资不限才填null，继续时沿用已明确的薪资条件；金额含糊则澄清。
 投递逐字使用用户在个人信息页保存的固定招呼语，判定回合不撰写或修改招呼；未设置时请明确提醒去个人信息页设置并保存，不启动找岗或投递。每天打开岗位详情页的上限以dailyJobReadLimit为准，额度用尽不启动浏览或投递任务，只回复“今日浏览上限已到，明天继续”。
+excludedCompanies逐字填写用户原文点名不投的公司/品牌（如要求中列出的公司名与英文名），没有则[]；degreeLimit仅在用户明确不投某学历及以上要求的岗位时填写，quote逐字引用该原文，硕士优先等非硬要求不算，没有则null。程序只凭这两项和卡片字段预筛，不能写入用户没说过的公司或学历门槛。
 筛选采用宽松口径：只看城市、月薪区间上限、用户明确排除的外包/猎头/中介、岗位属于计划方向大类。不得把JD列出的年限、学历、技术栈或加分项自动加成硬条件；只有用户明确要求才保留为额外条件。
 所有动作必须给出最新消息的逐字quote；工具拒绝后通过reply说明原文或额度问题，不假称已执行。每轮只能选择一个动作或回复，工具成功后立即结束回合，搜索和执行由程序负责。
 可依据lastTask.result中的方向预算和拒绝分类解释不足并建议调整，但不能擅自放宽城市、月薪或排除条件。投递事实以delivery为准，旧对话不能覆盖当前账本；区分联系、送达、未知和零记录。公司名单仅含当前批次且可能截断，不能当作全部历史；不知道的事实说明缺少依据，不将上下文缺失说成没有记录。仅获受限任务工具，不运行shell或通用浏览器动作。`,
@@ -71,8 +72,9 @@ salaryMinK是月薪区间上限须达到的K/月阈值，不是岗位区间下�
         read(value) {
           authorize(value);
           requireFixedGreeting(state.greeting);
-          const plan = readSearchPlan(value, latest, state.contactedToday, salaryEvidence);
           const previousCriteria = lastTask?.plan && 'criteria' in lastTask.plan ? lastTask.plan.criteria : '';
+          const ruleSources = [state.requirements, previousCriteria, ...(previousPlan?.excludedCompanies ?? []), previousPlan?.degreeLimit?.quote ?? '', ...userMessages.slice(0, -1)];
+          const plan = readSearchPlan(value, latest, state.contactedToday, salaryEvidence, ruleSources);
           const userSources = [previousCriteria, ...userMessages];
           return { kind: 'delivery', plan: preserveExclusions(plan, userSources) };
         },
