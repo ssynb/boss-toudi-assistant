@@ -95,8 +95,9 @@ test('方向预算先小额探索，再按实际入选效果把剩余额度给�
   assert.equal(details.length, 30);
   assert.ok(details.slice(0, 6).every(id => id.startsWith('a')), '低产方向先获得小额探索');
   assert.deepEqual(state.discovery.directions.map(d => [d.name, d.selected]), [['低产', 0], ['高产', 10]], '剩余额度按实际入选效果给高产方向');
-  const lastHigh = details.findLastIndex(id => id.startsWith('b'));
-  assert.ok(details.slice(6, lastHigh).filter(id => id.startsWith('a')).length <= 0, '探索后余量先给高产方向，满额后才回到低产方向');
+  // 探索：低产a0-a5、高产b0-b5（入选3，率50%）；余18全给高产，补满7个需b6-b18共13份；剩5份回到低产a6-a10。
+  const ids = (prefix: string, from: number, to: number) => Array.from({ length: to - from }, (_, i) => `${prefix}${from + i}`);
+  assert.deepEqual(details, [...ids('a', 0, 6), ...ids('b', 0, 19), ...ids('a', 6, 11)], '探索后余量先给高产方向，满额后才回到低产方向');
 });
 
 test('卡片规则只接受用户原文中的公司与学历限制', () => {
