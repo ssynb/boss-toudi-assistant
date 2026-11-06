@@ -16,12 +16,14 @@ async function fixture(mode: 'normal' | 'verify') {
   const browser = localBrowser(`recommend-${mode}`);
   const requests: string[] = [];
   const html = `<!doctype html><meta charset="utf-8"><title>推荐</title><div class="nav-figure">账号</div>
+<div class="c-expect-select"><a class="synthesis active">推荐</a><a class="expect-item">Python(深圳)</a><a class="expect-item">Python(上海)</a></div>
 <div class="page-jobs-main"><ul class="rec-job-list"></ul></div>
 <script>
 const batches=${JSON.stringify(BATCHES)};
 const root=document.querySelector('.page-jobs-main'),state=root.__vue__={isSearch:false,pageVo:{page:0},hasMore:true,loading:true,moreLoading:false};
 const card=id=>'<div class="card-area"><div class="job-card-wrap"><li class="job-card-box" style="height:900px"><div class="job-info"><div class="job-title clearfix"><a href="/job_detail/'+id+'.html" class="job-name">岗位'+id+'</a><span class="job-salary">20-30K</span></div></div><div class="job-card-footer"><a class="boss-info"><span class="boss-name">公司'+id+'</span></a><span class="company-location"> 深圳·南山区 </span></div></li></div></div>';
-const append=()=>{root.querySelector('ul').insertAdjacentHTML('beforeend',batches[state.pageVo.page].map(card).join(''));state.pageVo.page++;state.hasMore=state.pageVo.page<batches.length;};
+const append=()=>{root.querySelector('ul').insertAdjacentHTML('beforeend',batches[state.pageVo.page].map(id=>card(state.selected?'py-'+id:id)).join(''));state.pageVo.page++;state.hasMore=state.pageVo.page<batches.length;};
+for(const tab of document.querySelectorAll('.expect-item'))tab.onclick=()=>{document.querySelector('.c-expect-select .active')?.classList.remove('active');tab.classList.add('active');root.querySelector('ul').innerHTML='';state.pageVo.page=0;state.hasMore=true;state.selected=tab.innerText;setTimeout(append,100);};
 setTimeout(()=>{append();state.loading=false;},300);
 addEventListener('scroll',()=>{
   if(state.moreLoading||!state.hasMore||scrollY+innerHeight<document.scrollingElement.scrollHeight-50)return;
@@ -58,5 +60,15 @@ test('推荐卡片提取地区与公司，滚动中出现安全验证即抛出�
     assert.deepEqual((await f.site.recommend({ city: '深圳', page: 1 })).map(card => [card.jobId, card.company, card.area]), BATCHES[0]!.map(id => [id, `公司${id}`, '深圳·南山区']));
     assert.deepEqual((await f.site.recommend({ city: '深圳', page: 2 })).map(card => card.jobId), BATCHES[1]);
     await assert.rejects(f.site.recommend({ city: '深圳', page: 3 }), error => error instanceof SiteBlockedError && error.state.page === 'verify');
+  } finally { await f.close(); }
+});
+
+test('真实标签导航只选Python深圳，同页续读仍核对标签，标签不存在时拒绝', { timeout: 90_000 }, async () => {
+  const f = await fixture('normal');
+  try {
+    assert.deepEqual((await f.site.recommend({ city: '深圳', page: 1, tab: 'Python(深圳)' })).map(card => card.jobId), BATCHES[0]!.map(id => `py-${id}`));
+    assert.deepEqual((await f.site.recommend({ city: '深圳', page: 2, tab: 'Python(深圳)' })).map(card => card.jobId), BATCHES[1]!.map(id => `py-${id}`));
+    await assert.rejects(f.site.recommend({ city: '深圳', page: 3, tab: 'Python(上海)' }), /标签|方向/);
+    await assert.rejects(f.site.recommend({ city: '深圳', page: 1, tab: '不存在(深圳)' }), /标签|方向/);
   } finally { await f.close(); }
 });
