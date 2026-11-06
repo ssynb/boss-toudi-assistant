@@ -144,7 +144,11 @@ export function cardPolicy(sources: string[]): CardPolicy {
     if (found === null) continue;
     // 名单指令认得出但名称识别不出时，不能当作没有限制；已有名单时视为对前文名单的指代（「这是具体公司黑名单」）。
     if (!found.length && !groups.length) throw new Error(`无法识别「${clause}」中要排除的公司名；请向用户澄清具体公司名称后再开始`);
-    for (const group of found) groups = [...groups.filter(existing => existing.name.toLowerCase() !== group.name.toLowerCase()), group];
+    for (const group of found) {
+      const previous = groups.find(existing => existing.name.toLowerCase() === group.name.toLowerCase());
+      const aliases = [...new Map([...(previous?.aliases ?? []), ...group.aliases].map(alias => [alias.toLowerCase(), alias])).values()];
+      groups = [...groups.filter(existing => existing !== previous), { name: group.name, aliases }];
+    }
   }
   return { companies: [...new Map(groups.flatMap(groupNames).map(alias => [alias.toLowerCase(), alias])).values()], groups, degree };
 }
