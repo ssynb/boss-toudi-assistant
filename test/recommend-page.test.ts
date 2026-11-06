@@ -12,7 +12,7 @@ const BATCHES = [['a1', 'a2', 'a3'], ['b1', 'b2'], ['c1']];
  * 按 2026-11-01 只读取证的真实推荐页形态：职位页「推荐」标签（无搜索词、带城市参数），
  * 页面 Vue 状态带 pageVo/hasMore/moreLoading，加载后异步渲染，滚到文档底部才追加下一批，最后一批 hasMore=false。
  */
-async function fixture(mode: 'normal' | 'verify') {
+async function fixture(mode: 'normal' | 'verify' | 'loading-empty') {
   const browser = localBrowser(`recommend-${mode}`);
   const requests: string[] = [];
   const html = `<!doctype html><meta charset="utf-8"><title>推荐</title><div class="nav-figure">账号</div>
@@ -20,10 +20,10 @@ async function fixture(mode: 'normal' | 'verify') {
 <div class="page-jobs-main"><ul class="rec-job-list"></ul></div>
 <script>
 const batches=${JSON.stringify(BATCHES)};
-const root=document.querySelector('.page-jobs-main'),state=root.__vue__={isSearch:false,pageVo:{page:0},hasMore:true,loading:true,moreLoading:false};
+const root=document.querySelector('.page-jobs-main'),state=root.__vue__={isSearch:false,pageVo:{page:0},hasMore:true,loading:true,moreLoading:false,jobList:[]};
 const card=id=>'<div class="card-area"><div class="job-card-wrap"><li class="job-card-box" style="height:900px"><div class="job-info"><div class="job-title clearfix"><a href="/job_detail/'+id+'.html" class="job-name">岗位'+id+'</a><span class="job-salary">20-30K</span></div></div><div class="job-card-footer"><a class="boss-info"><span class="boss-name">公司'+id+'</span></a><span class="company-location"> 深圳·南山区 </span></div></li></div></div>';
-const append=()=>{root.querySelector('ul').insertAdjacentHTML('beforeend',batches[state.pageVo.page].map(id=>card(state.selected?'py-'+id:id)).join(''));state.pageVo.page++;state.hasMore=state.pageVo.page<batches.length;};
-for(const tab of document.querySelectorAll('.expect-item'))tab.onclick=()=>{document.querySelector('.c-expect-select .active')?.classList.remove('active');tab.classList.add('active');root.querySelector('ul').innerHTML='';state.pageVo.page=0;state.hasMore=true;state.selected=tab.innerText;setTimeout(append,100);};
+const append=()=>{const ids=batches[state.pageVo.page].map(id=>state.selected?'py-'+id:id);state.jobList.push(...ids);root.querySelector('ul').insertAdjacentHTML('beforeend',ids.map(card).join(''));state.pageVo.page++;state.hasMore=state.pageVo.page<batches.length;state.loading=false;root.querySelector('.job-empty-box')?.remove();};
+for(const tab of document.querySelectorAll('.expect-item'))tab.onclick=()=>{document.querySelector('.c-expect-select .active')?.classList.remove('active');tab.classList.add('active');root.querySelector('ul').innerHTML='';state.jobList=[];state.pageVo.page=0;state.hasMore=true;state.loading=true;state.selected=tab.innerText;if(${JSON.stringify(mode)}==='loading-empty')root.insertAdjacentHTML('beforeend','<div class="job-empty-box">加载中</div>');setTimeout(append,100);};
 setTimeout(()=>{append();state.loading=false;},300);
 addEventListener('scroll',()=>{
   if(state.moreLoading||!state.hasMore||scrollY+innerHeight<document.scrollingElement.scrollHeight-50)return;
@@ -70,5 +70,13 @@ test('真实标签导航只选Python深圳，同页续读仍核对标签，标�
     assert.deepEqual((await f.site.recommend({ city: '深圳', page: 2, tab: 'Python(深圳)' })).map(card => card.jobId), BATCHES[1]!.map(id => `py-${id}`));
     await assert.rejects(f.site.recommend({ city: '深圳', page: 3, tab: 'Python(上海)' }), /标签|方向/);
     await assert.rejects(f.site.recommend({ city: '深圳', page: 1, tab: '不存在(深圳)' }), /标签|方向/);
+  } finally { await f.close(); }
+});
+
+test('切换求职方向时旧空占位不代表新标签为空，等待新列表加载完成', { timeout: 90_000 }, async () => {
+  const f = await fixture('loading-empty');
+  try {
+    const cards = await f.site.recommend({ city: '深圳', page: 1, tab: 'Python(深圳)' });
+    assert.deepEqual(cards.map(card => card.jobId), ['py-a1', 'py-a2', 'py-a3']);
   } finally { await f.close(); }
 });
