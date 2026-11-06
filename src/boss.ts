@@ -33,7 +33,7 @@ export interface SearchQuery {
   page: number;
 }
 
-export type RecommendQuery = Omit<SearchQuery, 'keyword'>;
+export type RecommendQuery = Omit<SearchQuery, 'keyword'> & { tab?: string };
 
 export interface ReadSite {
   /**
@@ -256,6 +256,7 @@ export function createBossSite(browser: Browser, beforeJobOpen?: () => void): Si
   /** 当前推荐页已返回的岗位，按岗位 ID 区分新增。 */
   let recommended = new Set<string>();
   let recommendPages = 0;
+  let recommendTab: string | undefined;
 
   async function currentJobReady(t: Target): Promise<boolean> {
     if (!browser.isOpen) return false;
@@ -409,14 +410,26 @@ export function createBossSite(browser: Browser, beforeJobOpen?: () => void): Si
   }
 
   async function recommendPage(q: RecommendQuery): Promise<JobCard[]> {
+    const selected = `([...document.querySelectorAll('.c-expect-select .expect-item.active')].map(e => e.innerText.trim()).includes(${JSON.stringify(q.tab ?? '')}))`;
+    const wrongTab = () => new SiteBlockedError({ page: 'unknown', url: null, message: `无法确认推荐标签「${q.tab}」，停止读取，不转搜索` });
     if (q.page === 1) {
       recommended = new Set();
       recommendPages = 0;
+      recommendTab = q.tab;
       await goto(`${ORIGIN}${JOBS_PATH}?${new URLSearchParams({ city: CITY_CODES[q.city]! })}`);
       await waitPage(RESULTS_RENDERED, '推荐结果渲染');
+      if (q.tab) {
+        const { refs } = await browser.snapshot();
+        const matches = Object.entries(refs).filter(([, ref]) => ref.role === 'link' && ref.name === q.tab);
+        if (matches.length !== 1) throw wrongTab();
+        await browser.click(matches[0]![0]);
+        await waitPage(`(${selected}) && (${RESULTS_RENDERED})`, '求职方向推荐加载');
+        if (!(await browser.eval<boolean>(selected))) throw wrongTab();
+      }
     } else {
       // 重新打开会得到另一轮推荐，只能在原页面续读；某批失败时 recommendPages 不前进，可重试同一批。
       const at = await browser.eval<{ path: string; query: string | null }>(`({ path: location.pathname, query: new URLSearchParams(location.search).get('query') })`);
+      if (q.tab !== recommendTab || q.tab && !(await browser.eval<boolean>(selected))) throw wrongTab();
       if (q.page !== recommendPages + 1 || at.path !== JOBS_PATH || at.query) throw new Error('推荐页已离开或批次不连续，不能续读推荐');
       if (!(await hasMorePages())) return [];
       await loadNextPage(q.page);

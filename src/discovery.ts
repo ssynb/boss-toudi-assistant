@@ -29,6 +29,8 @@ type Rejections = Partial<Record<RejectionCategory, number>>;
 const detailBudget = (targets: number) => targets * 6;
 /** 推荐流可能一直有更多：最多滚动这么多批，且最多用本轮详情预算的一半，剩余留给方向搜索补充。 */
 const RECOMMEND_MAX_PAGES = 10;
+/** 唯一推荐来源需要更多卡片来覆盖预筛，仍受详情日额度限制。 */
+const PINNED_RECOMMEND_MAX_PAGES = 40;
 const recommendBudget = (budget: number) => Math.floor(budget / 2);
 /** 推荐连续这么多份JD没有入选即转搜索，避免低产推荐吃满上限。 */
 const RECOMMEND_DRY_READS = 10;
@@ -284,11 +286,12 @@ async function recommendCards(run: Run, report: RecommendReport): Promise<JobCar
   const { opts, reader } = run;
   const seen = new Set<string>();
   const eligible: JobCard[] = [];
-  for (let page = 1; page <= RECOMMEND_MAX_PAGES && eligible.length < report.budget; page++) {
+  const maxPages = opts.plan.recommendationTab ? PINNED_RECOMMEND_MAX_PAGES : RECOMMEND_MAX_PAGES;
+  for (let page = 1; page <= maxPages && eligible.length < report.budget; page++) {
     opts.signal.throwIfAborted();
-    opts.log(`读取推荐页第 ${page}/${RECOMMEND_MAX_PAGES} 批`);
-    const result = await reader.read('recommend', `推荐页第 ${page} 批`, () => siteRead(opts, () => opts.site.recommend({ city: opts.plan.city, page })));
-    if (!result.ok) { report.stopped = '推荐页加载失败，转搜索补充'; return eligible; }
+    opts.log(`读取推荐页第 ${page}/${maxPages} 批`);
+    const result = await reader.read('recommend', `推荐页第 ${page} 批`, () => siteRead(opts, () => opts.site.recommend({ city: opts.plan.city, page, ...(opts.plan.recommendationTab ? { tab: opts.plan.recommendationTab } : {}) })));
+    if (!result.ok) { report.stopped = opts.plan.recommendationTab ? '指定推荐标签加载失败，未搜索补充' : '推荐页加载失败，转搜索补充'; return eligible; }
     report.pages = page;
     const fresh = result.value.filter(card => !seen.has(card.jobId));
     if (!fresh.length) { report.stopped = '推荐页没有更多新岗位'; return eligible; }
@@ -300,7 +303,7 @@ async function recommendCards(run: Run, report: RecommendReport): Promise<JobCar
     // 推荐受账号求职意向影响；整批都不在计划城市说明推荐流不对应本轮城市，不再继续滚动。
     if (cards.length && !local.length) { report.stopped = '推荐页本批没有计划城市的岗位'; return eligible; }
   }
-  report.stopped = eligible.length >= report.budget ? '推荐卡片已够本阶段读取' : `推荐页已读满 ${RECOMMEND_MAX_PAGES} 批`;
+  report.stopped = eligible.length >= report.budget ? '推荐卡片已够本阶段读取' : `推荐页已读满 ${maxPages} 批`;
   return eligible;
 }
 
@@ -342,7 +345,9 @@ async function discoverRecommended(run: Run, report: RecommendReport, judged: Se
   const { opts } = run;
   if (!report.budget) { report.stopped = '本轮详情预算不足，未读推荐页'; return; }
   report.stopped = '进行中';
-  opts.node(`先从推荐页查找，推荐阶段详情预算最多 ${report.budget} 个；连续 ${RECOMMEND_DRY_READS} 份未入选即转搜索。`);
+  opts.node(opts.plan.recommendationTab
+    ? `只从推荐标签「${opts.plan.recommendationTab}」查找，详情预算最多 ${report.budget} 个，不搜索补充。`
+    : `先从推荐页查找，推荐阶段详情预算最多 ${report.budget} 个；连续 ${RECOMMEND_DRY_READS} 份未入选即转搜索。`);
   const cards = await recommendCards(run, report);
   const scanStopped = report.stopped;
   let dry = 0;
@@ -361,7 +366,7 @@ async function discoverRecommended(run: Run, report: RecommendReport, judged: Se
   };
   let jobs: JobDetail[] = [];
   for (const card of cards) {
-    if (!remainingTargets(run) || report.reads >= report.budget || dry >= RECOMMEND_DRY_READS) break;
+    if (!remainingTargets(run) || report.reads >= report.budget || !opts.plan.recommendationTab && dry >= RECOMMEND_DRY_READS) break;
     opts.signal.throwIfAborted();
     report.reads++;
     unjudged++;
@@ -373,8 +378,8 @@ async function discoverRecommended(run: Run, report: RecommendReport, judged: Se
   await assess(jobs);
   opts.state.assertJobReadAvailable();
   report.stopped = !remainingTargets(run) ? '推荐页已满足全部方向配额'
-    : dry >= RECOMMEND_DRY_READS ? `连续 ${RECOMMEND_DRY_READS} 份推荐JD未入选，转搜索补充`
-      : report.reads >= report.budget ? '推荐阶段读取预算已用完，其余由搜索补充' : `${scanStopped}，其余由搜索补充`;
+    : !opts.plan.recommendationTab && dry >= RECOMMEND_DRY_READS ? `连续 ${RECOMMEND_DRY_READS} 份推荐JD未入选，转搜索补充`
+      : report.reads >= report.budget ? `推荐阶段读取预算已用完${opts.plan.recommendationTab ? '，未搜索补充' : '，其余由搜索补充'}` : `${scanStopped}${opts.plan.recommendationTab ? '，未搜索补充' : '，其余由搜索补充'}`;
   opts.node(recommendMessage(report, recommendedCount(run)));
 }
 
@@ -479,7 +484,7 @@ async function discoverPlan(opts: Options): Promise<DiscoveryOutcome> {
   };
   const total = plan.directions.reduce((sum, direction) => sum + direction.count, 0);
   const budget = Math.min(detailBudget(total), opts.state.remainingJobReads());
-  const recommend: RecommendReport = { pages: 0, offCity: 0, prefiltered: 0, prefilterRules: {}, reads: 0, budget: recommendBudget(budget), overflow: 0, rejected: {}, stopped: '未开始' };
+  const recommend: RecommendReport = { pages: 0, offCity: 0, prefiltered: 0, prefilterRules: {}, reads: 0, budget: plan.recommendationTab ? budget : recommendBudget(budget), overflow: 0, rejected: {}, stopped: '未开始' };
   const judged = new Set<string>();
   const skip = (jobId: string) => run.selectedIds.has(jobId) || judged.has(jobId);
   const warnings = plan.directions.map(keywordWarning).filter(Boolean);
@@ -491,8 +496,8 @@ async function discoverPlan(opts: Options): Promise<DiscoveryOutcome> {
   try {
     opts.state.assertJobReadAvailable();
     await discoverRecommended(run, recommend, judged);
-    if (remainingTargets(run)) await supplementBySearch(run, budget - recommend.reads, skip);
-    else for (const report of reports) report.stopped = '推荐页已达到方向配额，未搜索';
+    if (remainingTargets(run) && !plan.recommendationTab) await supplementBySearch(run, budget - recommend.reads, skip);
+    else for (const report of reports) report.stopped = report.selected >= report.count ? '推荐页已达到方向配额，未搜索' : '指定推荐标签内未达到配额，未搜索补充';
     opts.signal.throwIfAborted();
   } catch (error) {
     readLimitReached = error instanceof JobReadLimitError;
@@ -506,10 +511,12 @@ async function discoverPlan(opts: Options): Promise<DiscoveryOutcome> {
   const liveBatch = plan.sendNow && opts.state.recentTask()?.batchId === opts.state.snapshot().batch?.id ? opts.state.snapshot().batch : null;
   const proposed = plan.sendNow ? liveBatch?.targets.length ?? 0 : keepDraft && run.selected.length ? opts.state.replaceBatch(run.selected).targets.length : 0;
   const stopped = readLimitReached ? failure : status === 'partial' ? `因站点异常提前结束：${failure}` : status === 'stopped' ? `提前结束：${failure}` : status === 'failed' ? `发现失败：${failure}`
-    : proposed >= total ? '已达到目标' : reports.some(report => report.selected < report.count && report.reads >= report.budget) ? '部分方向详情读取预算已用完' : '计划范围已搜完';
+    : proposed >= total ? '已达到目标' : plan.recommendationTab ? recommend.stopped : reports.some(report => report.selected < report.count && report.reads >= report.budget) ? '部分方向详情读取预算已用完' : '计划范围已搜完';
   const saved = proposed ? plan.sendNow ? '已入选及执行结果保留，已执行内容不可撤回。' : '草案已保存，可在对话中说“投吧”。' : '原批次未替换。';
   const safety = status !== 'completed' ? plan.sendNow && proposed ? '边找边投已暂停，不再开始新动作。' : '未自动发送。' : '';
-  const scope = `推荐页最多 ${RECOMMEND_MAX_PAGES} 批，搜索仅计划关键词每词最多 ${MAX_SEARCH_PAGE} 页，不代表全站无岗位`;
+  const scope = plan.recommendationTab
+    ? `仅推荐标签「${plan.recommendationTab}」，最多 ${PINNED_RECOMMEND_MAX_PAGES} 批，不搜索补充`
+    : `推荐页最多 ${RECOMMEND_MAX_PAGES} 批，搜索仅计划关键词每词最多 ${MAX_SEARCH_PAGE} 页，不代表全站无岗位`;
   const message = [`目标 ${total} 个，实际 ${proposed} 个。程序停止依据：${stopped}（${scope}）。推荐页加载失败 ${run.reader.failures.recommend} 批，搜索失败 ${run.reader.failures.search} 页，详情失败 ${run.reader.failures.detail} 个。${saved}${safety}`, READ_PACING_MESSAGE, recommendMessage(recommend, recommendedCount(run)), ...reports.map(directionMessage), ...warnings].join('\n');
   return { status, proposed, message };
 }

@@ -15,6 +15,8 @@ export interface SearchPlan {
   sendNow: boolean;
   quote: string;
   directions: DeliveryDirection[];
+  /** 当前保存要求指定的求职方向标签；有值时只读该推荐流，不搜索补充。 */
+  recommendationTab?: string;
   /** 用户原文点名不投的公司；卡片公司名包含其一即不打开详情。旧计划没有该字段视为无。 */
   excludedCompanies?: string[];
   /** 用户原文的学历门槛；只按卡片独立学历标签判断，缺失或不可识别不排除。 */
@@ -196,7 +198,10 @@ export function readSearchPlan(value: unknown, latestMessage: string, contactedT
   if (typeof criteriaSalary === 'number' && plan.salaryMinK !== criteriaSalary) throw new Error(`criteria的月薪阈值${criteriaSalary}K与salaryMinK不一致，请按用户要求更正`);
   if (criteriaSalary !== undefined && (plan.salaryMinK === null) !== (criteriaSalary === 'unlimited')) throw new Error('criteria与salaryMinK的薪资口径冲突，请同步更正，不保留旧薪资条件');
   if (new Set(plan.directions.map(d => d.name.trim())).size !== plan.directions.length) throw new Error('投递方向不能重复');
-  readCardRules(plan, [...ruleSources, latestMessage]);
+  const sources = [...ruleSources, latestMessage];
+  readCardRules(plan, sources);
+  const recommendation = sources.flatMap(source => [...source.matchAll(/推荐来源[：:]\s*([^\n。；]+)/gu)]).at(-1)?.[1]?.trim();
+  plan.recommendationTab = recommendation;
   // 只找不投不联系任何人，额度在发送草稿时再核对。
   const total = plan.directions.reduce((sum, direction) => sum + direction.count, 0);
   if (total > MAX_BATCH_TARGETS) throw new AppError('bad_request', `本批最多 ${MAX_BATCH_TARGETS} 个，请求 ${total} 个，未启动`);
