@@ -238,7 +238,7 @@ export class App extends EventEmitter {
       await this.#refreshAccount();
       abort.signal.throwIfAborted();
       if (!this.#codexState.signedIn) throw new AppError('codex_signed_out', '请先登录 Codex（ChatGPT 账号）');
-      const action = await askAdvisor(this.#codex, abort.signal, this.#state.snapshot(), this.#state.recentTask());
+      const action = await askAdvisor(this.#codex, abort.signal, this.#state.snapshot(), this.#state.recentTask(), this.#state.requirementsSavedAt());
       abort.signal.throwIfAborted();
       if (action.kind === 'reply') { this.#state.finishChat(action.text); this.#assistantAbort = null; return; }
       const recap = action.kind === 'research' ? `开始只读调研，城市：${action.city}。` : action.kind === 'delivery'

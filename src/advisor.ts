@@ -32,11 +32,26 @@ function deliveryOverview(state: StateSnapshot) {
   };
 }
 
-export function askAdvisor(codex: CodexClient, signal: AbortSignal, state: StateSnapshot, lastTask: RecentTask | null = null): Promise<AdvisorAction> {
+/**
+ * 条件来源按实际先后排序：保存的要求按保存时间、最近计划按形成时间、用户消息按发送时间，后出现者覆盖先出现者。
+ * 旧库缺少时间时排在最前，保持原有「要求、最近计划、对话」的顺序。返回不含最新消息。
+ */
+function conditionSources(state: StateSnapshot, requirementsSavedAt: string | null, lastTask: RecentTask | null, planTexts: string[]): string[] {
+  const userMessages = state.chat.messages.filter(message => message.role === 'user');
+  const dated = [
+    { at: requirementsSavedAt ?? '', order: 0, texts: [state.requirements] },
+    { at: lastTask?.planAt ?? '', order: 1, texts: planTexts },
+    ...userMessages.slice(0, -1).map((message, index) => ({ at: message.at, order: 2 + index, texts: [message.text] })),
+  ];
+  return dated.sort((a, b) => a.at.localeCompare(b.at) || a.order - b.order).flatMap(item => item.texts);
+}
+
+export function askAdvisor(codex: CodexClient, signal: AbortSignal, state: StateSnapshot, lastTask: RecentTask | null = null, requirementsSavedAt: string | null = null): Promise<AdvisorAction> {
   const userMessages = state.chat.messages.filter(message => message.role === 'user').map(message => message.text);
   const latest = userMessages.at(-1) ?? '';
   const previousPlan = lastTask?.plan && 'salaryMinK' in lastTask.plan ? lastTask.plan : null;
-  const salaryEvidence = [state.requirements, ...(previousPlan ? [previousPlan.salaryMinK === null ? '薪资不限' : `月薪阈值${previousPlan.salaryMinK}K`, previousPlan.criteria] : []), ...userMessages.slice(0, -1)];
+  const previousCriteria = previousPlan?.criteria ?? '';
+  const salaryEvidence = conditionSources(state, requirementsSavedAt, lastTask, previousPlan ? [previousPlan.salaryMinK === null ? '薪资不限' : `月薪阈值${previousPlan.salaryMinK}K`, previousPlan.criteria] : []);
   const authorize = (value: unknown) => {
     requireQuote((value as { quote?: unknown })?.quote, latest);
     requireJobReadBudget(state);
@@ -72,12 +87,10 @@ excludedCompanies填写用户要求与消息中明确不投的全部公司名及
         read(value) {
           authorize(value);
           requireFixedGreeting(state.greeting);
-          const previousCriteria = lastTask?.plan && 'criteria' in lastTask.plan ? lastTask.plan.criteria : '';
-          // 卡片策略只以当前保存的要求和用户消息为准，旧计划的字段不能替代当前要求或推翻之后的解除。
-          const ruleSources = [state.requirements, ...userMessages.slice(0, -1)];
+          // 卡片策略只以保存的要求和用户消息为准（旧计划字段不作依据），按先后覆盖。
+          const ruleSources = conditionSources(state, requirementsSavedAt, null, []);
           const plan = readSearchPlan(value, latest, state.contactedToday, salaryEvidence, ruleSources);
-          // 保存的要求是条件的基线，最近计划的规范限制与之后的消息按先后覆盖。
-          const userSources = [state.requirements, previousCriteria, ...userMessages];
+          const userSources = [...conditionSources(state, requirementsSavedAt, lastTask, [previousCriteria]), latest];
           return { kind: 'delivery', plan: preserveExclusions(plan, userSources) };
         },
       },

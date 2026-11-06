@@ -56,36 +56,39 @@ export const SEARCH_PLAN_SCHEMA = {
 /** 用户要求与消息里的卡片策略：点名不投的公司（含括号别名）与学历门槛。按来源先后处理，后出现的解除优先。 */
 export type CardPolicy = { companies: string[]; degree: { from: DegreeLimit['from']; clause: string } | null };
 
-const COMPANY_BLOCK = /一律不投|不要投|不投|屏蔽|黑名单/u;
-/** 单独的「不投」须有公司语境（「只找不投」不是名单）；一律不投、不要投、屏蔽、黑名单本身即名单指令。 */
-const COMPANY_CONTEXT = /一律不投|不要投|屏蔽|黑名单|公司|品牌|招聘主体/u;
+/** 「不投递」「只找不投」不是名单：「不投」后须紧跟名称或前面列出名称。 */
+const COMPANY_BLOCK = /一律不投|不要投|不投(?!递)|屏蔽|黑名单/u;
 const COMPANY_LIFT = /允许|可以投|可投|也投|不再屏蔽|不再排除|解除|恢复投/u;
 /** 这些子句属于学历或中间方规则，由各自规则处理，不解析成公司名。 */
 const NOT_COMPANY_CLAUSE = /学历|硕士|博士|本科|大专|猎头|外包|中介|代招/u;
-const NOT_COMPANY_NAME = /公司$|^(?:这是|具体|用户|明确)|招聘主体|名称|屏蔽|黑名单/u;
-const DEGREE_BLOCK = /不要投|不投|拒绝|不接受|不考虑|(?<![不此])排除|不要(?!求)/u;
+const NOT_COMPANY_NAME = /^(?:这是|这类|这些|上述|以下|该|此|具体|用户|明确|只找|先|公司)|招聘主体|名称|屏蔽|黑名单|^.?$/u;
+/** 名称尾部的「公司/的岗位」等不是名称本身。 */
+const NAME_SUFFIX = /(?:的)?(?:岗位|职位|招聘|公司)$/u;
+const DEGREE_BLOCK = /不要投|不投|拒绝|不接受|不考虑|跳过|(?<![不此])排除|不要(?!求)/u;
 const DEGREE_LIFT = /可以投|也投|允许|不再排除|不限学历/u;
 
 const subClauses = (text: string) => text.split(/[。；;\n]/u).flatMap(sentence => sentence.split(/[，,](?![^（(]*[）)])/u)).map(part => part.trim()).filter(Boolean);
 
-/** 「标签：A（含a1、a2及…）、B（…）一律不投」或「不投A、B」：每个顶层项是一组，括号内为别名。 */
+/** 「标签：A（含a1、a2及…）、B（…）一律不投」「黑名单：A、B」或「不投A和B」：每个顶层项是一组，括号内为别名。 */
 function blockedGroups(clause: string): string[][] {
-  // 以最后一个屏蔽动词为界：「公司屏蔽：A、B一律不投」里前面的「屏蔽」只是标签。
+  // 以最后一个屏蔽动词为界；动词后紧跟冒号（「公司黑名单：A」）或前面没有名称时，名单在动词之后。
   const verb = [...clause.matchAll(new RegExp(COMPANY_BLOCK.source, 'gu'))].at(-1)!;
+  const after = clause.slice(verb.index! + verb[0].length);
   const before = clause.slice(0, verb.index).split(/[：:]/u).at(-1)!.trim();
-  const list = before || clause.slice(verb.index! + verb[0].length).replace(/^[：:\s]+/u, '').trim();
+  const list = /^\s*[：:]/u.test(after) || !before ? after.replace(/^[：:\s]+/u, '') : before;
   const items: string[] = [];
   let depth = 0, current = '';
   for (const char of list) {
     if ('（('.includes(char)) depth++;
     if ('）)'.includes(char)) depth--;
-    if (char === '、' && depth === 0) { items.push(current); current = ''; } else current += char;
+    if (/[、和与及/]/u.test(char) && depth === 0) { items.push(current); current = ''; } else current += char;
   }
   items.push(current);
+  const clean = (name: string) => { let text = name.trim(); while (NAME_SUFFIX.test(text)) text = text.replace(NAME_SUFFIX, '').trim(); return text; };
   return items.map(item => {
-    const name = item.replace(/[（(][^）)]*[）)]/gu, '').trim();
-    const aliases = [...item.matchAll(/[（(]([^）)]*)[）)]/gu)].flatMap(match => match[1]!.split(/[、，,]|及|以及|和|与|或|含/u)).map(alias => alias.trim());
-    return [name, ...aliases].filter(alias => alias.length >= 2 && alias.length <= COMPANY_MAX_CHARS && !NOT_COMPANY_NAME.test(alias));
+    const name = clean(item.replace(/[（(][^）)]*[）)]/gu, ''));
+    const aliases = [...item.matchAll(/[（(]([^）)]*)[）)]/gu)].flatMap(match => match[1]!.split(/[、，,]|及|以及|和|与|或|含/u)).map(clean);
+    return [name, ...aliases].filter(alias => alias.length <= COMPANY_MAX_CHARS && !NOT_COMPANY_NAME.test(alias));
   }).filter(group => group.length);
 }
 
@@ -100,8 +103,11 @@ export function cardPolicy(sources: string[]): CardPolicy {
     }
     const lower = clause.toLowerCase();
     if (COMPANY_LIFT.test(clause)) { groups = groups.filter(group => !group.some(alias => lower.includes(alias.toLowerCase()))); continue; }
-    if (NOT_COMPANY_CLAUSE.test(clause) || !COMPANY_BLOCK.test(clause) || !COMPANY_CONTEXT.test(clause)) continue;
-    for (const group of blockedGroups(clause)) {
+    if (NOT_COMPANY_CLAUSE.test(clause) || !COMPANY_BLOCK.test(clause)) continue;
+    const found = blockedGroups(clause);
+    // 名单指令认得出但名称识别不出时，不能当作没有限制；已有名单时视为对前文名单的指代（「这是具体公司黑名单」）。
+    if (!found.length && !groups.length && /一律不投|不要投|屏蔽|黑名单|公司|品牌/u.test(clause)) throw new Error(`无法识别「${clause}」中要排除的公司名；请向用户澄清具体公司名称后再开始`);
+    for (const group of found) {
       const key = group[0]!.toLowerCase();
       groups = [...groups.filter(existing => existing[0]!.toLowerCase() !== key), group];
     }

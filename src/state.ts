@@ -54,6 +54,8 @@ export interface RecentTask {
   selected: number;
   delivered: number;
   batchId: string | null;
+  /** 计划形成的时间；与要求保存时间、对话时间一起决定条件先后。旧记录缺失。 */
+  planAt?: string;
 }
 
 export interface StateSnapshot {
@@ -205,6 +207,7 @@ export class State {
       else if (input.data !== undefined) this.#db.prepare('INSERT INTO resume_file (id, data) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data').run(input.data);
       this.#setKv('greeting', input.greeting);
       this.#db.prepare("UPDATE targets SET greeting = ?, updated_at = ? WHERE greeting_state = 'todo' AND greeting != ? AND EXISTS (SELECT 1 FROM batch WHERE status != 'done')").run(input.greeting, now(), input.greeting);
+      if (input.requirements !== this.#kv('requirements', '')) this.#setKv('requirements_saved_at', now());
       this.#setKv('requirements', input.requirements);
       this.#setKv('resume', input.resume);
       this.#setKv('discovery', { ...this.#kv('discovery', DEFAULT_DISCOVERY), message: null });
@@ -220,7 +223,7 @@ export class State {
       }
       requireFixedGreeting(this.#kv('greeting', ''));
       this.assertJobReadAvailable();
-      this.#setKv('recent_task', { kind: 'delivery', plan, status: 'running', result: null, selected: 0, delivered: 0, batchId: null } satisfies RecentTask);
+      this.#setKv('recent_task', { kind: 'delivery', plan, status: 'running', result: null, selected: 0, delivered: 0, batchId: null, planAt: now() } satisfies RecentTask);
       this.#setKv('discovery', { status: 'running', message: '正在发现岗位…', directions, startedAt: now(), finishedAt: null, autoSend });
     });
   }
@@ -258,7 +261,13 @@ export class State {
   beginSavedTask(): void {
     const batch = this.#requireBatch();
     const previous = this.recentTask();
-    this.#setKv('recent_task', { kind: 'saved', plan: previous?.batchId === batch.id ? previous.plan : null, status: 'running', result: null, selected: batch.targets.length, delivered: batch.targets.filter(t => t.steps.greeting === 'done').length, batchId: batch.id } satisfies RecentTask);
+    const kept = previous?.batchId === batch.id;
+    this.#setKv('recent_task', { kind: 'saved', plan: kept ? previous.plan : null, status: 'running', result: null, selected: batch.targets.length, delivered: batch.targets.filter(t => t.steps.greeting === 'done').length, batchId: batch.id, ...(kept && previous.planAt ? { planAt: previous.planAt } : {}) } satisfies RecentTask);
+  }
+
+  /** 具体要求最近一次改变的时间；旧库没有记录时为 null。 */
+  requirementsSavedAt(): string | null {
+    return this.#kv<string | null>('requirements_saved_at', null);
   }
 
   finishRecentTask(result: string, status: RecentTask['status'], selected?: number, batchId?: string | null): void {
@@ -274,7 +283,7 @@ export class State {
       this.#assertIdle();
       if (!this.#kv('resume', DEFAULT_RESUME).text.trim()) throw new AppError('inputs_incomplete', '请先保存有效简历正文');
       this.assertJobReadAvailable();
-      this.#setKv('recent_task', { kind: 'research', plan: { city }, status: 'running', result: null, selected: 0, delivered: 0, batchId: null } satisfies RecentTask);
+      this.#setKv('recent_task', { kind: 'research', plan: { city }, status: 'running', result: null, selected: 0, delivered: 0, batchId: null, planAt: now() } satisfies RecentTask);
       this.#setKv('research', { ...DEFAULT_RESEARCH, city, status: 'running', startedAt: now(), message: '正在提出候选方向…' });
     });
   }
