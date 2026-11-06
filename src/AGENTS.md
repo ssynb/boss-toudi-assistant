@@ -14,7 +14,7 @@
 - 改发现来源：先推荐后搜索。推荐流是职位页「推荐」标签（`/web/geek/jobs?city=`无搜索词，不是`/web/geek/recommend`沟通过列表），由`boss.ts`的`recommend({city,page})`在同一页面按分页状态连续滚动读取，城市参数之外仍逐卡核对地区；`discovery.ts`一次遍历推荐流、限半数预算、多方向一次判定，判定过的岗位不进搜索。验证/登录/限制不转搜索。
 - 改方向预算或筛选报告：推荐阶段连续低产即转搜索；搜索先每方向小额探索，再按缺口×实际入选率分配余量（方向游标续读不重搜）；配额按入选计，执行结果另计。拒绝只持久化类别计数，不保存理由全文。
 
-- 改薪资或卡片筛选：`search-plan.ts`统一校验salaryMinK上限口径、excludedCompanies/degreeLimit须源自用户原文，`rejectCard`是推荐与搜索唯一的卡片预筛；只按卡片独立字段明确不满足才跳过JD，未知继续读取。预筛按规则计数并写日志，不消耗详情预算。
+- 改薪资或卡片筛选：`search-plan.ts`统一校验salaryMinK上限口径，`cardPolicy`从当前要求与消息推导卡片策略，计划的excludedCompanies/degreeLimit必须与之一致否则在规划边界拒绝，`rejectCard`是推荐与搜索唯一的卡片预筛；只按卡片独立字段明确不满足才跳过JD，未知继续读取。预筛按规则计数并写日志，不消耗详情预算。
 
 - 改发现读取节奏：范围以`discovery.ts`的READ_PACING_MS为准，等待支持取消；验收经AppOptions注入ReadClock，不通过环境变量跳过生产等待。
 

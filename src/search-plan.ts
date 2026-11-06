@@ -28,8 +28,6 @@ const MAX_DIRECTIONS = 20;
 const EXPLICIT_RESTRICTIONS = /^用户明确限制（优先于下文）：([^。]*)。/u;
 const MAX_EXCLUDED_COMPANIES = 20;
 const COMPANY_MAX_CHARS = 40;
-/** 学历依据须是排除语义；「不排除」不算。 */
-const DEGREE_EXCLUSION = /不要投|不投|不要|拒绝|不接受|不考虑|(?<!不)排除/u;
 const DEGREE_ORDER = ['学历不限', '初中及以下', '中专/中技', '高中', '大专', '本科', '硕士', '博士'];
 
 export function requireQuote(quote: unknown, latestMessage: string): void {
@@ -55,19 +53,81 @@ export const SEARCH_PLAN_SCHEMA = {
   }, required: ['city', 'salaryMinK', 'criteria', 'sendNow', 'quote', 'directions', 'excludedCompanies', 'degreeLimit'], additionalProperties: false,
 };
 
-/** 卡片规则只能来自用户原文（要求、消息或最近计划），模型不能新增公司或学历门槛。 */
-function readCardRules(plan: SearchPlan, sources: string): void {
-  const text = sources.toLowerCase();
+/** 用户要求与消息里的卡片策略：点名不投的公司（含括号别名）与学历门槛。按来源先后处理，后出现的解除优先。 */
+export type CardPolicy = { companies: string[]; degree: { from: DegreeLimit['from']; clause: string } | null };
+
+const COMPANY_BLOCK = /一律不投|不要投|不投|屏蔽|黑名单/u;
+/** 单独的「不投」须有公司语境（「只找不投」不是名单）；一律不投、不要投、屏蔽、黑名单本身即名单指令。 */
+const COMPANY_CONTEXT = /一律不投|不要投|屏蔽|黑名单|公司|品牌|招聘主体/u;
+const COMPANY_LIFT = /允许|可以投|可投|也投|不再屏蔽|不再排除|解除|恢复投/u;
+/** 这些子句属于学历或中间方规则，由各自规则处理，不解析成公司名。 */
+const NOT_COMPANY_CLAUSE = /学历|硕士|博士|本科|大专|猎头|外包|中介|代招/u;
+const NOT_COMPANY_NAME = /公司$|^(?:这是|具体|用户|明确)|招聘主体|名称|屏蔽|黑名单/u;
+const DEGREE_BLOCK = /不要投|不投|拒绝|不接受|不考虑|(?<![不此])排除|不要(?!求)/u;
+const DEGREE_LIFT = /可以投|也投|允许|不再排除|不限学历/u;
+
+const subClauses = (text: string) => text.split(/[。；;\n]/u).flatMap(sentence => sentence.split(/[，,](?![^（(]*[）)])/u)).map(part => part.trim()).filter(Boolean);
+
+/** 「标签：A（含a1、a2及…）、B（…）一律不投」或「不投A、B」：每个顶层项是一组，括号内为别名。 */
+function blockedGroups(clause: string): string[][] {
+  // 以最后一个屏蔽动词为界：「公司屏蔽：A、B一律不投」里前面的「屏蔽」只是标签。
+  const verb = [...clause.matchAll(new RegExp(COMPANY_BLOCK.source, 'gu'))].at(-1)!;
+  const before = clause.slice(0, verb.index).split(/[：:]/u).at(-1)!.trim();
+  const list = before || clause.slice(verb.index! + verb[0].length).replace(/^[：:\s]+/u, '').trim();
+  const items: string[] = [];
+  let depth = 0, current = '';
+  for (const char of list) {
+    if ('（('.includes(char)) depth++;
+    if ('）)'.includes(char)) depth--;
+    if (char === '、' && depth === 0) { items.push(current); current = ''; } else current += char;
+  }
+  items.push(current);
+  return items.map(item => {
+    const name = item.replace(/[（(][^）)]*[）)]/gu, '').trim();
+    const aliases = [...item.matchAll(/[（(]([^）)]*)[）)]/gu)].flatMap(match => match[1]!.split(/[、，,]|及|以及|和|与|或|含/u)).map(alias => alias.trim());
+    return [name, ...aliases].filter(alias => alias.length >= 2 && alias.length <= COMPANY_MAX_CHARS && !NOT_COMPANY_NAME.test(alias));
+  }).filter(group => group.length);
+}
+
+export function cardPolicy(sources: string[]): CardPolicy {
+  let groups: string[][] = [];
+  let degree: CardPolicy['degree'] = null;
+  for (const clause of sources.flatMap(subClauses)) {
+    if (/硕士|博士/u.test(clause) && !/优先/u.test(clause)) {
+      if (DEGREE_LIFT.test(clause)) degree = null;
+      else if (DEGREE_BLOCK.test(clause)) degree = { from: clause.includes('硕士') ? '硕士' : '博士', clause };
+      continue;
+    }
+    const lower = clause.toLowerCase();
+    if (COMPANY_LIFT.test(clause)) { groups = groups.filter(group => !group.some(alias => lower.includes(alias.toLowerCase()))); continue; }
+    if (NOT_COMPANY_CLAUSE.test(clause) || !COMPANY_BLOCK.test(clause) || !COMPANY_CONTEXT.test(clause)) continue;
+    for (const group of blockedGroups(clause)) {
+      const key = group[0]!.toLowerCase();
+      groups = [...groups.filter(existing => existing[0]!.toLowerCase() !== key), group];
+    }
+  }
+  return { companies: [...new Map(groups.flat().map(alias => [alias.toLowerCase(), alias])).values()], degree };
+}
+
+/** 计划的卡片字段必须与当前要求推导的策略完全一致：缺漏、只填部分别名、多填或沿用已解除的限制都拒绝，让模型按提示纠正。 */
+function readCardRules(plan: SearchPlan, sources: string[]): void {
+  const policy = cardPolicy(sources);
   const companies = plan.excludedCompanies ?? [];
-  if (!Array.isArray(companies) || companies.length > MAX_EXCLUDED_COMPANIES
-    || companies.some(name => typeof name !== 'string' || !name.trim() || name.length > COMPANY_MAX_CHARS || !text.includes(name.trim().toLowerCase()))) {
-    throw new Error('excludedCompanies只能逐字填写用户原文点名不投的公司，不能自行添加');
+  const expected = new Set(policy.companies.map(name => name.toLowerCase()));
+  const given = Array.isArray(companies) && companies.every(name => typeof name === 'string') ? new Set(companies.map(name => name.trim().toLowerCase())) : null;
+  if (!given || given.size !== expected.size || [...expected].some(name => !given.has(name))) {
+    throw new Error(`excludedCompanies须与当前要求中明确不投的公司及全部别名一致，应为${JSON.stringify(policy.companies)}`);
   }
   const degree = plan.degreeLimit ?? null;
-  if (degree === null) return;
-  if (!DEGREE_LIMITS.includes(degree.from) || typeof degree.quote !== 'string' || !degree.quote.trim() || !sources.includes(degree.quote)
-    || !degree.quote.includes(degree.from) || !DEGREE_EXCLUSION.test(degree.quote)) {
-    throw new Error('degreeLimit须逐字引用用户明确不投该学历要求的原文；硕士优先等非硬要求不能作为学历门槛');
+  const expectedDegree = policy.degree ? JSON.stringify({ from: policy.degree.from, quote: policy.degree.clause }) : 'null';
+  if (!policy.degree) {
+    if (degree !== null) throw new Error('degreeLimit须为null：当前要求没有明确不投某学历要求，或已解除');
+    return;
+  }
+  const sourceText = sources.join('\n');
+  if (!degree || degree.from !== policy.degree.from || typeof degree.quote !== 'string' || !degree.quote.trim() || !sourceText.includes(degree.quote)
+    || !degree.quote.includes(degree.from) || !DEGREE_BLOCK.test(degree.quote)) {
+    throw new Error(`degreeLimit须逐字引用当前要求中不投该学历的原文，应为${expectedDegree}`);
   }
 }
 
@@ -91,7 +151,7 @@ export function readSearchPlan(value: unknown, latestMessage: string, contactedT
   if (typeof criteriaSalary === 'number' && plan.salaryMinK !== criteriaSalary) throw new Error(`criteria的月薪阈值${criteriaSalary}K与salaryMinK不一致，请按用户要求更正`);
   if (criteriaSalary !== undefined && (plan.salaryMinK === null) !== (criteriaSalary === 'unlimited')) throw new Error('criteria与salaryMinK的薪资口径冲突，请同步更正，不保留旧薪资条件');
   if (new Set(plan.directions.map(d => d.name.trim())).size !== plan.directions.length) throw new Error('投递方向不能重复');
-  readCardRules(plan, [...ruleSources, latestMessage].join('\n'));
+  readCardRules(plan, [...ruleSources, latestMessage]);
   // 只找不投不联系任何人，额度在发送草稿时再核对。
   const total = plan.directions.reduce((sum, direction) => sum + direction.count, 0);
   if (total > MAX_BATCH_TARGETS) throw new AppError('bad_request', `本批最多 ${MAX_BATCH_TARGETS} 个，请求 ${total} 个，未启动`);
