@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { startServer } from '../src/server.ts';
 import { openState } from '../src/state.ts';
-import { readSearchPlan } from '../src/search-plan.ts';
+import { readSearchPlan, rejectCard } from '../src/search-plan.ts';
 import type { JobCard, Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
 import { countedSite, instantReadClock, tempDir, api } from './helpers.ts';
@@ -28,6 +28,17 @@ test('计划的卡片策略必须与当前要求推导的完整策略一致：�
     { excludedCompanies: [...ALL_BRANDS, '招聘主体'], degreeLimit: DEGREE },
     { excludedCompanies: ALL_BRANDS, degreeLimit: { from: '博士', quote: DEGREE.quote } },
   ]) assert.throws(() => read(patch), /excludedCompanies|degreeLimit/, JSON.stringify(patch));
+});
+
+test('重申品牌黑名单保留已有别名，只有明确解除才移除整组', () => {
+  const sources = [REQUIREMENTS, '软通动力、外企德科黑名单照旧'];
+  const plan = read({ excludedCompanies: ALL_BRANDS, degreeLimit: DEGREE }, sources);
+  for (const company of ['isoftstone深圳', 'FESCO Adecco深圳', '外企德科数字']) {
+    assert.equal(rejectCard({ company, salary: '20-30K' }, plan)?.rule, '公司黑名单');
+  }
+  assert.equal(rejectCard({ company: '软通智慧', salary: '20-30K' }, plan), null);
+  assert.throws(() => read({ excludedCompanies: ['软通动力', '外企德科'], degreeLimit: DEGREE }, sources), /excludedCompanies/);
+  assert.doesNotThrow(() => read({ excludedCompanies: ['软通动力', 'isoftstone'], degreeLimit: DEGREE }, [...sources, '允许外企德科']));
 });
 
 test('提到公司或学历但不是排除指令时不得形成卡片策略', () => {
