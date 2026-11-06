@@ -6,10 +6,12 @@ const base = { city: '深圳', salaryMinK: null, criteria: '后端', sendNow: fa
 const accepts = (text: string, excludedCompanies: string[]) => readSearchPlan({ ...base, excludedCompanies }, '深圳后端1个，薪资不限，开始', 0, ['薪资不限'], [text]);
 const rejected = (plan: ReturnType<typeof accepts>, company: string) => rejectCard({ company, salary: '20-30K' }, plan)?.rule ?? null;
 
-// 第4轮审查：任务意图按「不投」前的动作识别，时间限定词不吞掉其后的品牌，品牌内部的字（先声药业）不当作任务词。
+// 公司名不剥离时间前缀；无分隔的时间限定表达须澄清。
 for (const [text, companies, blocked, allowed] of [
-  ['今天软通动力不投', ['软通动力'], '软通动力信息', '软通智慧'],
-  ['这次外企德科不投', ['外企德科'], '外企德科数字', '德科智能'],
+  ['今日头条不投', ['今日头条'], '今日头条', '趣头条'],
+  ['不投今日头条', ['今日头条'], '今日头条', '趣头条'],
+  ['每日优鲜不投', ['每日优鲜'], '每日优鲜', '优鲜科技'],
+  ['屏蔽公司：今天国际', ['今天国际'], '今天国际', '国际科技'],
   ['先声药业不投', ['先声药业'], '先声药业集团', '先导智能'],
   ['软通动力不投', ['软通动力'], '软通动力信息', '软通智慧'],
   ['今天只找不投', [], null, '今天科技'],
@@ -23,6 +25,6 @@ for (const [text, companies, blocked, allowed] of [
   if (companies.length) assert.throws(() => accepts(text, []), /excludedCompanies/, '明确名单不能以空策略通过');
 });
 
-test('去掉时间限定后只剩通用词时要求澄清，不生成过宽的限制', () => {
-  for (const text of ['今天国际不投', '软件不投']) assert.throws(() => cardPolicy([text]), /澄清/, text);
+test('无分隔时间限定与通用词要求澄清，不生成碎片限制', () => {
+  for (const text of ['今天国际不投', '今天软通动力不投', '这次外企德科不投', '软件不投']) assert.throws(() => cardPolicy([text]), /澄清/, text);
 });
