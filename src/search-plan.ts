@@ -69,9 +69,14 @@ const COMPANY_BLOCK = /一律不投|不要投|不投(?!递)|屏蔽|黑名单/u;
 const COMPANY_LIFT = /允许|可以投|可投|也投|不再屏蔽|不再排除|解除|恢复投/u;
 /** 这些子句属于学历或中间方规则，由各自规则处理，不解析成公司名。 */
 const NOT_COMPANY_CLAUSE = /学历|硕士|博士|本科|大专|猎头|外包|中介|代招/u;
-const NOT_COMPANY_NAME = /^(?:这是|这类|这些|上述|以下|该|此|具体|用户|明确|只找|先|公司)|招聘主体|名称|屏蔽|黑名单|^.?$/u;
-/** 「今天只找不投」「先存草稿不投」是任务意图，不是名单。 */
-const TASK_INTENT = /只找|先找|只看|草稿|暂时|暂不|今天|这次|本轮|先/u;
+/** 只按整词排除指代与标签（「这是具体公司黑名单」），不按首字排除，避免误伤「先声药业」「此芯科技」等品牌。 */
+const NOT_COMPANY_NAME = /^(?:(?:这是|这类|这些|上述|以下|该|此|这)+(?:具体)?|具体|用户明确|公司)$|招聘主体|名称|屏蔽|黑名单|^.?$/u;
+/** 「不投」紧跟在找/存/看等动作之后（今天只找不投、先存草稿不投）是任务意图，不是名单。 */
+const TASK_ACTION = /(?:只找|先找|找完|只看|先看|只搜|存草稿|草稿|先存|只存)\s*$/u;
+/** 句首的时间限定不是公司名的一部分（今天软通动力不投）。 */
+const TIME_QUALIFIER = /^(?:今天|今日|这次|本次|此次|本轮|这轮|暂时|目前|这周|本周)/u;
+/** 只剩这些通用词时不能当作公司名，否则会误拦大量无关公司。 */
+const GENERIC_NAME = /^(?:国际|科技|集团|软件|网络|信息|技术|数字|智能|控股|实业|股份|有限|中国|北京|上海|深圳|广州|杭州)+$/u;
 /** 「和/与/及」可能是名单连接词，也可能是品牌的一部分（中和软件、北京和利时）；无法区分，要求澄清。 */
 const NAME_CONNECTOR = /和|与|及/u;
 /** 括号里「及带X名称的招聘主体」是对包含匹配的说明，不是别名。 */
@@ -95,8 +100,9 @@ function blockedGroups(clause: string): CompanyGroup[] | null {
   const after = clause.slice(verb.index! + verb[0].length);
   const before = clause.slice(0, verb.index).split(/[：:]/u).at(-1)!.trim();
   const listAfter = /^\s*[：:]/u.test(after) || !before;
-  if (!listAfter && verb[0] === '不投' && TASK_INTENT.test(before)) return null;
-  const list = listAfter ? after.replace(/^[：:\s]+/u, '') : before;
+  if (!listAfter && verb[0] === '不投' && TASK_ACTION.test(before)) return null;
+  const list = (listAfter ? after.replace(/^[：:\s]+/u, '') : before).replace(TIME_QUALIFIER, '');
+  if (!list.trim()) return null;
   const items: string[] = [];
   let depth = 0, current = '';
   for (const char of list) {
@@ -109,6 +115,8 @@ function blockedGroups(clause: string): CompanyGroup[] | null {
     const name = cleanName(item.replace(/[（(][^）)]*[）)]/gu, ''));
     const aliases = [...item.matchAll(/[（(]([^）)]*)[）)]/gu)]
       .flatMap(match => match[1]!.replace(ALIAS_NOTE, '').replace(/^\s*(?:含|包括)/u, '').split(/[、，,]/u)).map(cleanName).filter(validName);
+    const generic = [name, ...aliases].find(alias => GENERIC_NAME.test(alias));
+    if (generic) throw new Error(`「${generic}」是通用词，不能作为公司名排除；请向用户澄清具体公司名称后再开始`);
     const ambiguous = [name, ...aliases].find(alias => NAME_CONNECTOR.test(alias));
     if (ambiguous) throw new Error(`公司名「${ambiguous}」里的「和/与/及」无法判断是两家公司还是品牌的一部分；请向用户澄清（多家请用顿号分隔）后再开始`);
     return { name, aliases };
