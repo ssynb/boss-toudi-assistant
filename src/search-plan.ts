@@ -53,12 +53,12 @@ export const SEARCH_PLAN_SCHEMA = {
   }, required: ['city', 'salaryMinK', 'criteria', 'sendNow', 'quote', 'directions', 'excludedCompanies', 'degreeLimit'], additionalProperties: false,
 };
 
-/** 点名不投的一家公司：name 为主名，parts 为把主名按连接词拆开后的各家（仅当每段都像名称时），aliases 为括号内别名。 */
-type CompanyGroup = { name: string; parts: string[] | null; aliases: string[] };
+/** 点名不投的一家公司：name 为主名，aliases 为括号内别名。 */
+type CompanyGroup = { name: string; aliases: string[] };
 
 /** 用户要求与消息里的卡片策略：点名不投的公司（含括号别名）与学历门槛。按来源先后处理，后出现的解除优先。 */
 export type CardPolicy = {
-  /** 默认解读下应填的全部名称：可拆分的主名取各段，否则取整名，再加别名。 */
+  /** 应填的全部名称：主名与别名。 */
   companies: string[];
   groups: CompanyGroup[];
   degree: { from: DegreeLimit['from']; clause: string } | null;
@@ -70,10 +70,12 @@ const COMPANY_LIFT = /允许|可以投|可投|也投|不再屏蔽|不再排除|�
 /** 这些子句属于学历或中间方规则，由各自规则处理，不解析成公司名。 */
 const NOT_COMPANY_CLAUSE = /学历|硕士|博士|本科|大专|猎头|外包|中介|代招/u;
 const NOT_COMPANY_NAME = /^(?:这是|这类|这些|上述|以下|该|此|具体|用户|明确|只找|先|公司)|招聘主体|名称|屏蔽|黑名单|^.?$/u;
-/** 「X不投」只有在提到公司时才是名单；「今天只找不投」是任务意图。 */
-const COMPANY_WORDS = /公司|品牌|集团|招聘主体/u;
-/** 「和/与/及」可能是名单连接词，也可能是品牌的一部分（中和软件、万和）。 */
+/** 「今天只找不投」「先存草稿不投」是任务意图，不是名单。 */
+const TASK_INTENT = /只找|先找|只看|草稿|暂时|暂不|今天|这次|本轮|先/u;
+/** 「和/与/及」可能是名单连接词，也可能是品牌的一部分（中和软件、北京和利时）；无法区分，要求澄清。 */
 const NAME_CONNECTOR = /和|与|及/u;
+/** 括号里「及带X名称的招聘主体」是对包含匹配的说明，不是别名。 */
+const ALIAS_NOTE = /(?:及|以及|和)?带[^、，,）)]*名称的招聘主体/gu;
 /** 名称尾部的「公司/的岗位」等不是名称本身。 */
 const NAME_SUFFIX = /(?:的)?(?:岗位|职位|招聘|公司)$/u;
 const DEGREE_BLOCK = /不要投|不投|拒绝|不接受|不考虑|跳过|(?<![不此])排除|不要(?!求)/u;
@@ -93,7 +95,7 @@ function blockedGroups(clause: string): CompanyGroup[] | null {
   const after = clause.slice(verb.index! + verb[0].length);
   const before = clause.slice(0, verb.index).split(/[：:]/u).at(-1)!.trim();
   const listAfter = /^\s*[：:]/u.test(after) || !before;
-  if (!listAfter && verb[0] === '不投' && !COMPANY_WORDS.test(clause)) return null;
+  if (!listAfter && verb[0] === '不投' && TASK_INTENT.test(before)) return null;
   const list = listAfter ? after.replace(/^[：:\s]+/u, '') : before;
   const items: string[] = [];
   let depth = 0, current = '';
@@ -105,13 +107,15 @@ function blockedGroups(clause: string): CompanyGroup[] | null {
   items.push(current);
   return items.map(item => {
     const name = cleanName(item.replace(/[（(][^）)]*[）)]/gu, ''));
-    const split = name.split(NAME_CONNECTOR).map(cleanName);
-    const aliases = [...item.matchAll(/[（(]([^）)]*)[）)]/gu)].flatMap(match => match[1]!.split(/[、，,]|及|以及|和|与|或|含/u)).map(cleanName).filter(validName);
-    return { name, parts: split.length > 1 && split.every(validName) ? split : null, aliases };
+    const aliases = [...item.matchAll(/[（(]([^）)]*)[）)]/gu)]
+      .flatMap(match => match[1]!.replace(ALIAS_NOTE, '').replace(/^\s*(?:含|包括)/u, '').split(/[、，,]/u)).map(cleanName).filter(validName);
+    const ambiguous = [name, ...aliases].find(alias => NAME_CONNECTOR.test(alias));
+    if (ambiguous) throw new Error(`公司名「${ambiguous}」里的「和/与/及」无法判断是两家公司还是品牌的一部分；请向用户澄清（多家请用顿号分隔）后再开始`);
+    return { name, aliases };
   }).filter(group => validName(group.name));
 }
 
-const groupNames = (group: CompanyGroup) => [...(group.parts ?? [group.name]), ...group.aliases];
+const groupNames = (group: CompanyGroup) => [group.name, ...group.aliases];
 
 export function cardPolicy(sources: string[]): CardPolicy {
   let groups: CompanyGroup[] = [];
@@ -123,7 +127,7 @@ export function cardPolicy(sources: string[]): CardPolicy {
       continue;
     }
     const lower = clause.toLowerCase();
-    if (COMPANY_LIFT.test(clause)) { groups = groups.filter(group => ![group.name, ...groupNames(group)].some(alias => lower.includes(alias.toLowerCase()))); continue; }
+    if (COMPANY_LIFT.test(clause)) { groups = groups.filter(group => !groupNames(group).some(alias => lower.includes(alias.toLowerCase()))); continue; }
     if (NOT_COMPANY_CLAUSE.test(clause) || !COMPANY_BLOCK.test(clause)) continue;
     const found = blockedGroups(clause);
     if (found === null) continue;
@@ -139,18 +143,9 @@ function readCardRules(plan: SearchPlan, sources: string[]): void {
   const policy = cardPolicy(sources);
   const companies = plan.excludedCompanies ?? [];
   const given = Array.isArray(companies) && companies.every(name => typeof name === 'string') ? new Set(companies.map(name => name.trim().toLowerCase())) : null;
-  // 每家须填全部别名；主名含连接词且可拆时，填整名或完整拆分均可（无法判断连接词是否属于品牌），碎片与多填都拒绝。
-  const covered = new Set<string>();
-  const complete = given !== null && policy.groups.every(group => {
-    const lower = (names: string[]) => names.map(name => name.toLowerCase());
-    const whole = given.has(group.name.toLowerCase()) ? [group.name] : null;
-    const split = group.parts && lower(group.parts).every(part => given.has(part)) ? group.parts : null;
-    const chosen = whole ?? split;
-    if (!chosen || !lower(group.aliases).every(alias => given.has(alias))) return false;
-    for (const name of lower([...chosen, ...group.aliases])) covered.add(name);
-    return true;
-  });
-  if (!given || !complete || [...given].some(name => !covered.has(name))) {
+  const expected = new Set(policy.companies.map(name => name.toLowerCase()));
+  const complete = given !== null && given.size === expected.size && [...expected].every(name => given.has(name));
+  if (!complete) {
     throw new Error(`excludedCompanies须与当前要求中明确不投的公司及全部别名一致，应为${JSON.stringify(policy.companies)}`);
   }
   const degree = plan.degreeLimit ?? null;
