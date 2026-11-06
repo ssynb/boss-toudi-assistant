@@ -71,10 +71,10 @@ const COMPANY_LIFT = /允许|可以投|可投|也投|不再屏蔽|不再排除|�
 const NOT_COMPANY_CLAUSE = /学历|硕士|博士|本科|大专|猎头|外包|中介|代招/u;
 /** 只按整词排除指代与标签（「这是具体公司黑名单」），不按首字排除，避免误伤「先声药业」「此芯科技」等品牌。 */
 const NOT_COMPANY_NAME = /^(?:(?:这是|这类|这些|上述|以下|该|此|这)+(?:具体)?|具体|用户明确|公司)$|招聘主体|名称|屏蔽|黑名单|^.?$/u;
-/** 「不投」紧跟在找/存/看等动作之后（今天只找不投、先存草稿不投）是任务意图，不是名单。 */
-const TASK_ACTION = /(?:只找|先找|找完|只看|先看|只搜|存草稿|草稿|先存|只存)\s*$/u;
-/** 句首的时间限定不是公司名的一部分（今天软通动力不投）。 */
-const TIME_QUALIFIER = /^(?:今天|今日|这次|本次|此次|本轮|这轮|暂时|目前|这周|本周)/u;
+/** 只识别完整的只找不投动作，不用任务词裁剪公司名。 */
+const READ_ONLY_INTENT = /^(?:(?:今天|今日|这次|本次|本轮|这轮)\s*)?(?:只找|先找|只看|先看|只搜|先存草稿|存草稿|暂时)不投$/u;
+/** 无分隔的时间限定无法可靠划定品牌边界，要求改用显式名单标签，绝不删除前缀。 */
+const AMBIGUOUS_PREFIX = /^(?:今天|这次|本次|此次|本轮|这轮|目前|这周|本周)/u;
 /** 只剩这些通用词时不能当作公司名，否则会误拦大量无关公司。 */
 const GENERIC_NAME = /^(?:国际|科技|集团|软件|网络|信息|技术|数字|智能|控股|实业|股份|有限|中国|北京|上海|深圳|广州|杭州)+$/u;
 /** 「和/与/及」可能是名单连接词，也可能是品牌的一部分（中和软件、北京和利时）；无法区分，要求澄清。 */
@@ -99,9 +99,12 @@ function blockedGroups(clause: string): CompanyGroup[] | null {
   const verb = [...clause.matchAll(new RegExp(COMPANY_BLOCK.source, 'gu'))].at(-1)!;
   const after = clause.slice(verb.index! + verb[0].length);
   const before = clause.slice(0, verb.index).split(/[：:]/u).at(-1)!.trim();
-  const listAfter = /^\s*[：:]/u.test(after) || !before;
-  if (!listAfter && verb[0] === '不投' && TASK_ACTION.test(before)) return null;
-  const list = (listAfter ? after.replace(/^[：:\s]+/u, '') : before).replace(TIME_QUALIFIER, '');
+  const listAfter = /^\s*(?:公司)?[：:]/u.test(after) || !before;
+  if (READ_ONLY_INTENT.test(clause)) return null;
+  const list = listAfter ? after.replace(/^\s*(?:公司[：:]|[：:])?\s*/u, '') : before;
+  if (!listAfter && !/[：:]/u.test(clause) && AMBIGUOUS_PREFIX.test(list)) {
+    throw new Error('公司名与时间限定缺少明确边界，请澄清为「屏蔽公司：完整公司名」，不会自动删除名称前缀');
+  }
   if (!list.trim()) return null;
   const items: string[] = [];
   let depth = 0, current = '';
