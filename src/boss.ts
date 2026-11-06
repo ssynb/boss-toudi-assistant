@@ -423,7 +423,14 @@ export function createBossSite(browser: Browser, beforeJobOpen?: () => void): Si
         const matches = Object.entries(refs).filter(([, ref]) => ref.role === 'link' && ref.name === q.tab);
         if (matches.length !== 1) throw wrongTab();
         await browser.click(matches[0]![0]);
-        await waitPage(`(${selected}) && (${RESULTS_RENDERED})`, '求职方向推荐加载');
+        const ready = `(() => {
+          const state = document.querySelector('.page-jobs-main')?.__vue__;
+          if (!state || state.loading !== false || state.moreLoading === true || !Array.isArray(state.jobList) || state.pageVo?.page < 1) return false;
+          return state.jobList.length > 0
+            ? document.querySelectorAll('.job-card-box').length >= state.jobList.length
+            : state.hasMore === false && Boolean(document.querySelector('.job-empty-box'));
+        })()`;
+        await waitPage(`(${selected}) && (${ready})`, '求职方向推荐数据加载');
         if (!(await browser.eval<boolean>(selected))) throw wrongTab();
       }
     } else {
