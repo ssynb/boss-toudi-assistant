@@ -44,9 +44,8 @@ async function sampleDirection(opts: Options, direction: Direction): Promise<Sam
       const browser = await opts.site.status();
       opts.signal.throwIfAborted();
       if (browser.page !== 'ready' && browser.page !== 'closed') throw new SiteBlockedError(browser);
-      const cards = await opts.site.search({ keyword, city: opts.city, page });
+      const { cards, exhausted } = await opts.site.search({ keyword, city: opts.city, page });
       opts.signal.throwIfAborted();
-      if (!cards.length) break;
       for (const card of cards) {
         if (seen.has(card.jobId) || opts.state.isContacted(card.jobId)) continue;
         seen.add(card.jobId);
@@ -58,6 +57,7 @@ async function sampleDirection(opts: Options, direction: Direction): Promise<Sam
         if (jd.trim()) samples.push({ card, jd });
         if (reads >= RESEARCH_SAMPLE_PER_DIRECTION || opts.state.remainingJobReads() === 0) return samples;
       }
+      if (exhausted) break;
     }
   }
   return samples;

@@ -17,6 +17,8 @@ export interface SearchPlan {
   directions: DeliveryDirection[];
   /** 当前保存要求指定的求职方向标签；有值时只读该推荐流，不搜索补充。 */
   recommendationTab?: string;
+  /** 指定推荐标签时，站点明确本轮推荐用尽后是否按关键词搜索补充；只由用户要求中的「推荐耗尽后搜索补充：允许」决定。 */
+  searchAfterExhausted?: boolean;
   /** 用户原文点名不投的公司；卡片公司名包含其一即不打开详情。旧计划没有该字段视为无。 */
   excludedCompanies?: string[];
   /** 用户原文的学历门槛；只按卡片独立学历标签判断，缺失或不可识别不排除。 */
@@ -202,6 +204,8 @@ export function readSearchPlan(value: unknown, latestMessage: string, contactedT
   readCardRules(plan, sources);
   const recommendation = sources.flatMap(source => [...source.matchAll(/推荐来源[：:]\s*([^\n。；]+)/gu)]).at(-1)?.[1]?.trim();
   plan.recommendationTab = recommendation;
+  // 是否在推荐用尽后搜索只由用户要求或消息决定，覆盖模型给出的任何值；最后出现的一行为准。
+  plan.searchAfterExhausted = sources.flatMap(source => [...source.matchAll(/推荐耗尽后搜索补充[：:]\s*([^\n。；]+)/gu)]).at(-1)?.[1]?.trim() === '允许';
   // 只找不投不联系任何人，额度在发送草稿时再核对。
   const total = plan.directions.reduce((sum, direction) => sum + direction.count, 0);
   if (total > MAX_BATCH_TARGETS) throw new AppError('bad_request', `本批最多 ${MAX_BATCH_TARGETS} 个，请求 ${total} 个，未启动`);
@@ -262,7 +266,10 @@ const MARKER_KINDS: [RegExp, string][] = [[/猎头|代招/u, '猎头'], [/外包
  * 推荐与搜索共用的确定性卡片预筛，只看卡片上的独立字段：薪资、公司名、学历标签、站点匿名标记与职位标识图标。
  * 缺字段或无法识别时不排除，交给实际JD判定。
  */
-export function rejectCard(card: { salary: string; company: string; degree?: string; anonymous?: boolean; markers?: string[] }, plan: SearchPlan): CardRejection | null {
+/** 标题明确写「外包岗/外包岗位」视同外包标识；前面带非/不是/无/没的否定不算。不做关键词推测。 */
+const titleSaysOutsourced = (title: string) => [...title.matchAll(/外包岗/gu)].some(match => !/[非不无没]是?$/u.test(title.slice(Math.max(0, match.index! - 2), match.index)));
+
+export function rejectCard(card: { salary: string; company: string; title?: string; degree?: string; anonymous?: boolean; markers?: string[] }, plan: SearchPlan): CardRejection | null {
   if (excludeSalaryCard(card.salary, plan.salaryMinK)) return { category: '薪资不足', rule: '薪资', evidence: card.salary };
   const company = card.company.toLowerCase();
   const brand = (plan.excludedCompanies ?? []).find(name => company.includes(name.trim().toLowerCase()));
@@ -275,6 +282,7 @@ export function rejectCard(card: { salary: string; company: string; degree?: str
     const kind = MARKER_KINDS.find(([pattern]) => pattern.test(marker))?.[1];
     if (kind && excluded.has(kind)) return { category: '外包/猎头/中介', rule: '卡片标识', evidence: marker };
   }
+  if (excluded.has('外包') && card.title && titleSaysOutsourced(card.title)) return { category: '外包/猎头/中介', rule: '卡片标识', evidence: card.title };
   return null;
 }
 

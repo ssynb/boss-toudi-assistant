@@ -7,6 +7,7 @@
  */
 import type { BrowserState, Target, ContactIdentity } from './contracts.ts';
 import { BrowserHiddenError, BrowserWaitTimeoutError, type Browser } from './browser.ts';
+import type { ResponseWatch } from './browser-responses.ts';
 import type { GreetingResult, OpenJobResult, Verified, WriteSite } from './executor.ts';
 import { createChatSession, domQuiet, HistoryError, OtherJobConversationError, ORIGIN, type ChatIdentity } from './boss-chat.ts';
 
@@ -35,13 +36,19 @@ export interface SearchQuery {
 
 export type RecommendQuery = Omit<SearchQuery, 'keyword'> & { tab?: string };
 
+/**
+ * 职位列表一批：cards 为本批新增岗位（可能因重复而为空）；exhausted 仅在本批加载完成后站点明确 hasMore=false 时为 true。
+ * 加载失败直接抛错，不以空列表或 exhausted 表示未知。
+ */
+export type ListPage = { cards: JobCard[]; exhausted: boolean };
+
 export interface ReadSite {
   /**
-   * 职位页「推荐」标签在 city 下的第 page 批新增岗位卡：1 打开页面，之后在同一页面滚动加载；空数组表示推荐用尽。
+   * 职位页「推荐」标签在 city 下的第 page 批：1 打开页面（指定 tab 时切到该求职方向），之后在同一页面滚动加载。
    * 推荐随刷新变化，必须从 1 起连续调用，中途不能离开页面。城市参数不代替调用方逐卡核对 area。
    */
-  recommend(q: RecommendQuery): Promise<JobCard[]>;
-  search(q: SearchQuery): Promise<JobCard[]>;
+  recommend(q: RecommendQuery): Promise<ListPage>;
+  search(q: SearchQuery): Promise<ListPage>;
   jobDetail(card: Pick<JobCard, 'jobId' | 'url'>): Promise<string>;
 }
 
@@ -88,6 +95,14 @@ export const MAX_SEARCH_PAGE = 10;
 const PAGE_SCROLL_ATTEMPTS = 3;
 const PAGE_SCROLL_WAIT_MS = 6_000;
 const HAS_MORE = `document.querySelector('.page-jobs-main')?.__vue__?.hasMore ?? null`;
+/** 推荐标签的列表接口；切换求职方向时站点经防抖后才请求，只认点击之后发起的这次响应。 */
+const RECOMMEND_LIST = `${ORIGIN}/wapi/zpgeek/pc/recommend/job/list.json`;
+/** 列表数据已渲染：加载结束且卡片数不少于数据条数（Vue 渲染晚于数据更新）。 */
+const LIST_RENDERED = `(() => {
+  const state = document.querySelector('.page-jobs-main')?.__vue__;
+  return Boolean(state) && state.loading === false && state.moreLoading === false && Array.isArray(state.jobList)
+    && document.querySelectorAll('.job-card-box').length >= state.jobList.length;
+})()`;
 
 function validateRecommendQuery(q: RecommendQuery): void {
   if (!SUPPORTED_CITIES.includes(q.city) || !Number.isInteger(q.page) || q.page < 1) throw new Error('推荐参数无效：需要支持的城市和批次');
@@ -393,7 +408,7 @@ export function createBossSite(browser: Browser, beforeJobOpen?: () => void): Si
       const state = document.querySelector('.page-jobs-main')?.__vue__;
       return state && (state.pageVo?.page >= ${page} || state.hasMore === false)
         && state.loading === false && state.moreLoading === false;
-    })()`;
+    })() && (${LIST_RENDERED})`;
     // 图片和详情渲染可能在首次滚动后增高页面。只读分页允许重新测量底部，最多等待 18 秒。
     for (let attempt = 1; attempt <= PAGE_SCROLL_ATTEMPTS; attempt++) {
       // 无法恢复可见时整轮停止，不当作单页失败重试或转去搜索。
@@ -409,9 +424,25 @@ export function createBossSite(browser: Browser, beforeJobOpen?: () => void): Si
     }
   }
 
-  async function recommendPage(q: RecommendQuery): Promise<JobCard[]> {
+  /** 点击之后的第一页列表响应：须完整成功，给出岗位 ID 与是否还有更多。 */
+  async function firstPageResponse(watch: ResponseWatch): Promise<{ ids: string[]; hasMore: boolean }> {
+    for (;;) {
+      const event = await watch.next();
+      if (new URL(event.url).searchParams.get('page') !== '1') continue;
+      const data = event.kind === 'response' && event.status === 200 ? (event.body as { code?: unknown; zpData?: { jobList?: unknown; hasMore?: unknown } } | null) : null;
+      const jobs = data?.zpData?.jobList;
+      if (data?.code !== 0 || !Array.isArray(jobs) || typeof data.zpData?.hasMore !== 'boolean' || jobs.some(job => typeof job?.encryptJobId !== 'string')) {
+        throw new Error('求职方向推荐列表响应不完整，不能判断内容与是否还有更多');
+      }
+      return { ids: jobs.map(job => job.encryptJobId as string), hasMore: data.zpData.hasMore };
+    }
+  }
+
+  async function recommendPage(q: RecommendQuery): Promise<ListPage> {
     const selected = `([...document.querySelectorAll('.c-expect-select .expect-item.active')].map(e => e.innerText.trim()).includes(${JSON.stringify(q.tab ?? '')}))`;
     const wrongTab = () => new SiteBlockedError({ page: 'unknown', url: null, message: `无法确认推荐标签「${q.tab}」，停止读取，不转搜索` });
+    let exhausted: boolean;
+    let only: Set<string> | null = null;
     if (q.page === 1) {
       recommended = new Set();
       recommendPages = 0;
@@ -422,29 +453,34 @@ export function createBossSite(browser: Browser, beforeJobOpen?: () => void): Si
         const { refs } = await browser.snapshot();
         const matches = Object.entries(refs).filter(([, ref]) => ref.role === 'link' && ref.name === q.tab);
         if (matches.length !== 1) throw wrongTab();
-        await browser.click(matches[0]![0]);
-        const ready = `(() => {
-          const state = document.querySelector('.page-jobs-main')?.__vue__;
-          if (!state || state.loading !== false || state.moreLoading === true || !Array.isArray(state.jobList) || state.pageVo?.page < 1) return false;
-          return state.jobList.length > 0
-            ? document.querySelectorAll('.job-card-box').length >= state.jobList.length
-            : state.hasMore === false && Boolean(document.querySelector('.job-empty-box'));
-        })()`;
-        await waitPage(`(${selected}) && (${ready})`, '求职方向推荐数据加载');
+        // 点击后标签立即显示选中，旧列表仍是加载完成状态；只认点击之后发起的列表请求及其渲染结果。
+        const watch = await browser.watchResponses(RECOMMEND_LIST);
+        try {
+          await browser.click(matches[0]![0]);
+          const list = await firstPageResponse(watch);
+          const rendered = `${JSON.stringify(list.ids)}.every(id => document.querySelector('.job-card-box a[href*="/job_detail/' + id + '.html"]'))`;
+          await waitPage(`(${selected}) && (${LIST_RENDERED}) && (${rendered})`, '求职方向推荐数据加载');
+          only = new Set(list.ids);
+          exhausted = !list.hasMore;
+        } finally { await watch.close(); }
         if (!(await browser.eval<boolean>(selected))) throw wrongTab();
+      } else {
+        // 首屏只有确认是空结果才算用尽；其余情况由后续批次的分页状态判断。
+        exhausted = await browser.eval<boolean>(`(${LIST_RENDERED}) && document.querySelector('.page-jobs-main').__vue__.hasMore === false && !document.querySelector('.job-card-box')`);
       }
     } else {
       // 重新打开会得到另一轮推荐，只能在原页面续读；某批失败时 recommendPages 不前进，可重试同一批。
       const at = await browser.eval<{ path: string; query: string | null }>(`({ path: location.pathname, query: new URLSearchParams(location.search).get('query') })`);
       if (q.tab !== recommendTab || q.tab && !(await browser.eval<boolean>(selected))) throw wrongTab();
       if (q.page !== recommendPages + 1 || at.path !== JOBS_PATH || at.query) throw new Error('推荐页已离开或批次不连续，不能续读推荐');
-      if (!(await hasMorePages())) return [];
+      if (!(await hasMorePages())) { recommendPages = q.page; return { cards: [], exhausted: true }; }
       await loadNextPage(q.page);
+      exhausted = !(await hasMorePages());
     }
-    const cards = (await browser.eval<JobCard[]>(EXTRACT_CARDS)).filter(card => !recommended.has(card.jobId));
+    const cards = (await browser.eval<JobCard[]>(EXTRACT_CARDS)).filter(card => !recommended.has(card.jobId) && (!only || only.has(card.jobId)));
     for (const card of cards) recommended.add(card.jobId);
     recommendPages = q.page;
-    return cards;
+    return { cards, exhausted };
   }
 
   /** 是否还有下一批；无法读取分页状态时停止，不把未知当作用尽。 */
@@ -454,22 +490,23 @@ export function createBossSite(browser: Browser, beforeJobOpen?: () => void): Si
     return more;
   }
 
-  async function searchPage(q: SearchQuery): Promise<JobCard[]> {
+  async function searchPage(q: SearchQuery): Promise<ListPage> {
     const params = new URLSearchParams({ query: q.keyword, city: CITY_CODES[q.city]! });
     await goto(`${ORIGIN}${JOBS_PATH}?${params}`);
     await waitPage(RESULTS_RENDERED, '搜索结果渲染');
     let cards = await browser.eval<JobCard[]>(EXTRACT_CARDS);
+    // 首屏确认是空结果才算用尽；否则看本批加载完成后的分页状态。
+    if (!cards.length) return { cards: [], exhausted: true };
     let result = cards;
     // 站点忽略 URL 的 page 参数；每次滚到底部才请求下一批，页面保留已加载岗位。
     for (let page = 2; page <= q.page; page++) {
-      if (!cards.length) return [];
-      if (!(await hasMorePages())) return [];
+      if (!(await hasMorePages())) return { cards: [], exhausted: true };
       const previous = new Set(cards.map(card => card.jobId));
       await loadNextPage(page);
       cards = await browser.eval<JobCard[]>(EXTRACT_CARDS);
       result = cards.filter(card => !previous.has(card.jobId));
     }
-    return result;
+    return { cards: result, exhausted: !(await hasMorePages()) };
   }
 
   return {
