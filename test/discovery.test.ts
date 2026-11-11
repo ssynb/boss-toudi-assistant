@@ -5,7 +5,7 @@ import path from 'node:path';
 import { startServer } from '../src/server.ts';
 import { MAX_SEARCH_PAGE, SiteBlockedError, type Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
-import { countedSite, instantReadClock, api, LOCAL, tempDir } from './helpers.ts';
+import { countedSite, instantReadClock, api, LOCAL, tempDir , type FakeSite } from './helpers.ts';
 import { mockProviderToml, startMockModel, type MockItem } from './mock-responses.ts';
 
 const requestText = '北京前端，月薪至少20K，只找不投';
@@ -21,7 +21,7 @@ function fakeSite() {
     writes.push(name);
     throw new Error(`发现阶段不允许调用 ${name}`);
   };
-  const site: Site = {
+  const site: FakeSite = {
     open: async () => ({ page: 'ready', url: 'https://www.zhipin.com/' }),
     status: async () => ({ page: 'ready', url: 'https://www.zhipin.com/' }),
     close: async () => {},

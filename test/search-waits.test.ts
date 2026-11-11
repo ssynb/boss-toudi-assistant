@@ -38,7 +38,7 @@ addEventListener('scroll',()=>{if(requested&&${JSON.stringify(mode)}!=='growing-
 
 for (const [mode,page,expected] of [['growing-layout',2,['b']],['end-without-page',2,[]],['final-page',2,['b']],['final-page',3,[]],['empty',1,[]]] as const) {
   test(`搜索终态无需页码继续推进：${mode}/${page}`,async()=>{
-    const f=await fixture(mode);try{assert.deepEqual((await f.site.search({keyword:'AI Agent 开发',city:'深圳',page})).map(x=>x.jobId),expected);}finally{await f.close();}
+    const f=await fixture(mode);try{assert.deepEqual((await f.site.search({keyword:'AI Agent 开发',city:'深圳',page})).cards.map(x=>x.jobId),expected);}finally{await f.close();}
   });
 }
 for (const mode of ['verify','login'] as const) {

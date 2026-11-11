@@ -7,7 +7,7 @@ import { openState } from '../src/state.ts';
 import { readSearchPlan } from '../src/search-plan.ts';
 import type { JobCard, Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
-import { countedSite, instantReadClock, tempDir, api } from './helpers.ts';
+import { countedSite, instantReadClock, tempDir, api , type FakeSite } from './helpers.ts';
 import { mockProviderToml, ruleModel, startMockModel } from './mock-responses.ts';
 
 const REQUIREMENTS = '只找深圳。不要猎头。软通动力、isoftstone一律不投。岗位卡片明确要求硕士及以上的不要投，硕士优先不排除。';
@@ -33,7 +33,7 @@ async function run(directions: Direction[], feed: Feed, selects: (jobId: string)
   const events: string[] = [];
   const logs: string[] = [];
   const forbidden = async (): Promise<never> => { throw new Error('只找不投不能联系'); };
-  const site: Site = {
+  const site: FakeSite = {
     open: async () => ({ page: 'ready', url: null }), status: async () => ({ page: 'ready', url: null }), close: async () => {},
     recommend: async q => { events.push(`recommend:${q.page}`); return feed.recommend?.(q.page) ?? []; },
     search: async q => { events.push(`search:${q.keyword}:${q.page}`); return feed.search?.(q.keyword, q.page) ?? []; },

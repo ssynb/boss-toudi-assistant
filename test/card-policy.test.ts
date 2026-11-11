@@ -7,7 +7,7 @@ import { openState } from '../src/state.ts';
 import { readSearchPlan, rejectCard } from '../src/search-plan.ts';
 import type { JobCard, Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
-import { countedSite, instantReadClock, tempDir, api } from './helpers.ts';
+import { countedSite, instantReadClock, tempDir, api , type FakeSite } from './helpers.ts';
 import { mockProviderToml, startMockModel, type MockItem, type MockModel } from './mock-responses.ts';
 
 // 与用户当前保存要求同一写法：品牌后括号列出别名，学历门槛与「硕士优先不排除」并存。
@@ -82,7 +82,7 @@ test('规划工具在接收边界拒绝漏填卡片策略，模型按提示纠�
   const reads: string[] = [];
   const card = (jobId: string, patch: Partial<JobCard> = {}): JobCard => ({ jobId, title: '后端', company: `${jobId}科技`, salary: '20-30K', area: '深圳', snippet: '', url: `https://www.zhipin.com/job_detail/${jobId}.html`, degree: '本科', ...patch });
   const forbidden = async (): Promise<never> => { throw new Error('只找不投不能联系'); };
-  const site: Site = {
+  const site: FakeSite = {
     open: async () => ({ page: 'ready', url: null }), status: async () => ({ page: 'ready', url: null }), close: async () => {},
     recommend: async () => [],
     search: async q => q.page === 1 ? [card('fesco', { company: 'FESCO Adecco深圳' }), card('master', { degree: '硕士' }), card('near', { company: '软通智慧' }), card('ok')] : [],

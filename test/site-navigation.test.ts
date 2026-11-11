@@ -98,7 +98,7 @@ append();addEventListener('scroll',()=>{if(scrollY+innerHeight<document.scrollin
   try {
     const site = localSite(browser, dir);
     for (let page = 1; page <= 4; page++) {
-      assert.deepEqual((await site.search({ keyword: '前端', city: '深圳', page })).map(card => card.jobId), page <= 3 ? [`p${page}`] : []);
+      assert.deepEqual((await site.search({ keyword: '前端', city: '深圳', page })).cards.map(card => card.jobId), page <= 3 ? [`p${page}`] : []);
     }
   } finally { await browser.close(); }
 });

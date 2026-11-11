@@ -5,7 +5,7 @@ import { openState } from '../src/state.ts';
 import { startServer } from '../src/server.ts';
 import type { Site } from '../src/boss.ts';
 import type { AppState, ApiError } from '../src/contracts.ts';
-import { countedSite, api, tempDir } from './helpers.ts';
+import { countedSite, api, tempDir , type FakeSite } from './helpers.ts';
 
 for (const previousUnknown of [false, true]) {
   test(`一次确认即投递且拒绝旧版本；保留未知联系=${previousUnknown}`, async () => {
@@ -17,7 +17,7 @@ for (const previousUnknown of [false, true]) {
     if (previousUnknown) state.setStep(batch.targets[0]!, 'contact', 'unknown', '此前点击结果未确认');
     state.close();
     const contacts: string[] = [];
-    const site: Site = {
+    const site: FakeSite = {
       open: async () => ({ page: 'ready', url: null }), status: async () => ({ page: 'ready', url: null }), close: async () => {},
       recommend: async () => [], search: async () => [], jobDetail: async () => '',
       openJob: async () => ({ kind: 'canContact', evidence: '' }),

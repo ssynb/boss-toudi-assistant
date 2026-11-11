@@ -8,7 +8,7 @@ import { Executor, type WriteSite } from '../src/executor.ts';
 import { requireQuota } from '../src/search-plan.ts';
 import type { Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
-import { countedSite, instantReadClock, api, tempDir } from './helpers.ts';
+import { countedSite, instantReadClock, api, tempDir , type FakeSite } from './helpers.ts';
 import { mockProviderToml, startMockModel, type MockItem } from './mock-responses.ts';
 
 const end: MockItem[] = [{ type: 'message', text: '完成' }];
@@ -33,7 +33,7 @@ async function setup(script: MockItem[][], contacted = 0) {
   db.close();
   const searches: string[] = [];
   const writes: string[] = [];
-  const site: Site = {
+  const site: FakeSite = {
     open: async () => ({ page: 'ready', url: null }), close: async () => {}, status: async () => ({ page: 'ready', url: null }),
     recommend: async () => [], search: async q => { searches.push(`${q.keyword}:${q.page}`); return q.page !== 1 ? [] : q.keyword === 'Agent' ? [job('a1'), job('a2'), job('a3')] : [job('a1'), job('b1')]; },
     jobDetail: async c => `实际JD-${c.jobId}需要Python`, openJob: async () => ({ kind: 'canContact', evidence: '' }),

@@ -6,7 +6,7 @@ import { openState } from '../src/state.ts';
 import { startServer, type RunningServer } from '../src/server.ts';
 import type { Site } from '../src/boss.ts';
 import type { AppState, ApiError } from '../src/contracts.ts';
-import { countedSite, instantReadClock, api, tempDir } from './helpers.ts';
+import { countedSite, instantReadClock, api, tempDir , type FakeSite } from './helpers.ts';
 import { mockProviderToml, startMockModel } from './mock-responses.ts';
 
 const inputs = { greeting: '您好，我有五年 React 经验', requirements: '北京前端，薪资不限', resume: { text: '前端简历' } };
@@ -97,7 +97,7 @@ test('真实 Codex 工具在途时停止：先 stopping、禁保存，工具结�
   let release!: () => void;
   const gate = new Promise<void>(r => { release = r; });
   const forbidden = async (): Promise<never> => { throw new Error('不能联系'); };
-  const site: Site = {
+  const site: FakeSite = {
     open: async () => ({ page: 'ready', url: null }), status: async () => ({ page: 'ready', url: null }), close: async () => {},
     recommend: async () => [], search: async () => { entered(); await gate; return []; }, jobDetail: async () => '',
     openJob: forbidden, contact: forbidden, readChat: forbidden, sendGreeting: forbidden,

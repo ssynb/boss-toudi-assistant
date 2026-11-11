@@ -6,7 +6,7 @@ import { openState } from '../src/state.ts';
 import { startServer } from '../src/server.ts';
 import type { Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
-import { countedSite, instantReadClock, tempDir, api } from './helpers.ts';
+import { countedSite, instantReadClock, tempDir, api , type FakeSite } from './helpers.ts';
 import { startMockModel, mockProviderToml, ruleModel } from './mock-responses.ts';
 
 test('日剩余额度不足时各方向先小额探索，余量按缺口分配，不能让首方向吃掉全部余额', async () => {
@@ -22,7 +22,7 @@ test('日剩余额度不足时各方向先小额探索，余量按缺口分配�
   db.close();
   const reads: string[] = [];
   const forbidden = async (): Promise<never> => { throw new Error('只找不投'); };
-  const site: Site = {
+  const site: FakeSite = {
     open: async () => ({ page: 'ready', url: null }), status: async () => ({ page: 'ready', url: null }), close: async () => {},
     recommend: async () => [], search: async q => Array.from({ length: 40 }, (_, i) => ({ jobId: `${q.keyword}${i}`, url: `https://www.zhipin.com/job_detail/${q.keyword}${i}.html`, company: '测试', title: '销售', salary: '20-40K', area: '深圳', snippet: '' })),
     jobDetail: async c => { reads.push(c.jobId); return '主要职责是销售'; },

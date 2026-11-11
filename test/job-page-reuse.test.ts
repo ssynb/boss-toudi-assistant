@@ -27,7 +27,7 @@ for (const nextPage of ['jobDetail', 'search'] as const) test(`连续读JD后不
     assert.equal((await site.readChat(saved)).ourMessages, 0);
     assert.equal(watches.length, 1);
     if (nextPage === 'jobDetail') assert.match(await site.jobDetail({jobId:'next',url:'https://www.zhipin.com/job_detail/next.html'}), /岗位职责/);
-    else assert.deepEqual(await site.search({keyword:'前端',city:'深圳',page:1}), []);
+    else assert.deepEqual((await site.search({keyword:'前端',city:'深圳',page:1})).cards, []);
     assert.throws(() => watches[0]!.revision, /关闭/);
     f.scenario.history = () => ({status:500,body:{}});
     await assert.rejects(site.readChat(saved), /历史/);

@@ -35,7 +35,7 @@ document.querySelector('.page-jobs-main').__vue__={pageVo:{page:1},hasMore:true,
 test('浏览器窗口不可见时翻页立即作为站点阻塞停止并提示恢复窗口，不等待超时', { timeout: 60_000 }, async () => {
   const f = await fixture();
   try {
-    assert.deepEqual((await f.site.recommend({ city: '深圳', page: 1 })).map(card => card.jobId), ['a1']);
+    assert.deepEqual((await f.site.recommend({ city: '深圳', page: 1 })).cards.map(card => card.jobId), ['a1']);
     const started = Date.now();
     await assert.rejects(f.site.recommend({ city: '深圳', page: 2 }), error => error instanceof SiteBlockedError && /窗口/.test(error.message));
     assert.ok(Date.now() - started < 6_000, '不能等满滚动超时再报告');

@@ -47,11 +47,21 @@ export const instantReadClock = {
 };
 
 /** 站点替身模拟导航事件：读JD会开页，紧接着执行同一岗位可复用；切到搜索或会话即离开详情页。 */
-export function countedSite(site: import('../src/boss.ts').Site) {
+type ListPage = import('../src/boss.ts').ListPage;
+type JobCard = import('../src/boss.ts').JobCard;
+/** 站点替身：列表接口可直接返回岗位数组（旧写法，空数组即站点明确没有更多），或返回带 exhausted 的 ListPage。 */
+export type FakeSite = Omit<import('../src/boss.ts').Site, 'search' | 'recommend'> & {
+  search(q: import('../src/boss.ts').SearchQuery): Promise<JobCard[] | ListPage>;
+  recommend(q: import('../src/boss.ts').RecommendQuery): Promise<JobCard[] | ListPage>;
+};
+const toPage = (value: JobCard[] | ListPage): ListPage => Array.isArray(value) ? { cards: value, exhausted: value.length === 0 } : value;
+
+export function countedSite(site: FakeSite) {
   return (beforeJobOpen: () => void): import('../src/boss.ts').Site => {
     let currentJob: string | null = null;
-    return new Proxy(site, {
+    return new Proxy(site as unknown as import('../src/boss.ts').Site, {
       get(target, key) {
+        if (key === 'search' || key === 'recommend') return async (q: never) => { currentJob = null; return toPage(await (site[key] as (q: never) => Promise<JobCard[] | ListPage>)(q)); };
         if (key === 'jobDetail') return async (card: import('../src/boss.ts').JobCard) => {
           currentJob = null;
           beforeJobOpen();

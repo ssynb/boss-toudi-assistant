@@ -55,7 +55,7 @@ addEventListener('scroll',()=>{if(state.moreLoading||!state.hasMore||scrollY+inn
     const v = Reflect.get(o, k, o); return typeof v === 'function' ? v.bind(o) : v;
   } });
   const site = createBossSite(mapped);
-  assert.deepEqual((await site.recommend({ city: '深圳', page: 1 })).map(card => card.jobId), BATCHES[0]);
+  assert.deepEqual((await site.recommend({ city: '深圳', page: 1 })).cards.map(card => card.jobId), BATCHES[0]);
   const cdp = await devtools(profileDir);
   const pages = async () => (await cdp.send('Target.getTargets')).targetInfos.filter((t: { type: string }) => t.type === 'page') as { targetId: string; url: string }[];
   const [own] = (await pages()).filter(t => t.url.startsWith(origin));
@@ -68,8 +68,8 @@ test('其他标签切到前台使本应用页面不可见时，切回同一标�
   const f = await fixture('restore-tab', false);
   try {
     const other = await f.cdp.send('Target.createTarget', { url: 'chrome://newtab/' });
-    assert.deepEqual((await f.site.recommend({ city: '深圳', page: 2 })).map(card => card.jobId), BATCHES[1]);
-    assert.deepEqual((await f.site.recommend({ city: '深圳', page: 3 })).map(card => card.jobId), BATCHES[2]);
+    assert.deepEqual((await f.site.recommend({ city: '深圳', page: 2 })).cards.map(card => card.jobId), BATCHES[1]);
+    assert.deepEqual((await f.site.recommend({ city: '深圳', page: 3 })).cards.map(card => card.jobId), BATCHES[2]);
     const ids = (await f.pages()).map(t => t.targetId);
     assert.ok(ids.includes(f.own.targetId) && ids.includes(other.targetId), '恢复的是原标签页，其他标签保留');
   } finally { await f.close(); }
@@ -80,7 +80,7 @@ test('窗口被最小化时恢复本应用窗口后继续滚动加载', { timeou
   try {
     const { windowId } = await f.cdp.send('Browser.getWindowForTarget', { targetId: f.own.targetId });
     await f.cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'minimized' } });
-    assert.deepEqual((await f.site.recommend({ city: '深圳', page: 2 })).map(card => card.jobId), BATCHES[1]);
+    assert.deepEqual((await f.site.recommend({ city: '深圳', page: 2 })).cards.map(card => card.jobId), BATCHES[1]);
     assert.equal((await f.cdp.send('Browser.getWindowForTarget', { targetId: f.own.targetId })).bounds.windowState, 'normal');
   } finally { await f.close(); }
 });

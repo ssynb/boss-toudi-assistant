@@ -5,7 +5,7 @@ import path from 'node:path';
 import { startServer } from '../src/server.ts';
 import type { Site } from '../src/boss.ts';
 import { CHAT_MESSAGE_MAX_CHARS, type AppState } from '../src/contracts.ts';
-import { countedSite, instantReadClock, tempDir, api } from './helpers.ts';
+import { countedSite, instantReadClock, tempDir, api , type FakeSite } from './helpers.ts';
 import { startMockModel, mockProviderToml } from './mock-responses.ts';
 
 test('多方向结果超过单条消息上限时分条写回，不截断后续方向统计', async () => {
@@ -19,7 +19,7 @@ test('多方向结果超过单条消息上限时分条写回，不截断后续�
   fs.mkdirSync(path.join(dir, 'codex-home'));
   fs.writeFileSync(path.join(dir, 'codex-home', 'config.toml'), mockProviderToml(mock.baseUrl, 'gpt-mock'));
   const forbidden = async (): Promise<never> => { throw new Error('无候选时不应有详情或联系动作'); };
-  const site: Site = {
+  const site: FakeSite = {
     open: async () => ({ page: 'ready', url: null }), status: async () => ({ page: 'ready', url: null }), close: async () => {}, recommend: async () => [], search: async () => [],
     jobDetail: forbidden, openJob: forbidden, contact: forbidden, readChat: forbidden, sendGreeting: forbidden,
   };

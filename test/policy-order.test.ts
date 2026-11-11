@@ -6,7 +6,7 @@ import { startServer } from '../src/server.ts';
 import { cardPolicy } from '../src/search-plan.ts';
 import type { JobCard, Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
-import { countedSite, instantReadClock, tempDir, api } from './helpers.ts';
+import { countedSite, instantReadClock, tempDir, api , type FakeSite } from './helpers.ts';
 import { mockProviderToml, startMockModel, type MockItem, type MockModel } from './mock-responses.ts';
 
 test('常见公司屏蔽写法都形成名单；只找不投等不是名单', () => {
@@ -52,7 +52,7 @@ async function scenario(requirementsLater: string, earlierMessage: string, stage
   fs.writeFileSync(path.join(dir, 'codex-home', 'config.toml'), mockProviderToml(mock.baseUrl, 'gpt-mock'));
   const reads: string[] = [];
   const forbidden = async (): Promise<never> => { throw new Error('只找不投不能联系'); };
-  const site: Site = {
+  const site: FakeSite = {
     open: async () => ({ page: 'ready', url: null }), status: async () => ({ page: 'ready', url: null }), close: async () => {},
     recommend: async () => [], search: async q => q.page === 1 ? cards : [],
     jobDetail: async c => { reads.push(c.jobId); return `实际JD-${c.jobId}`; },

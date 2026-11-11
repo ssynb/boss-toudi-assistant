@@ -5,7 +5,7 @@ import path from 'node:path';
 import { startServer } from '../src/server.ts';
 import type { Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
-import { countedSite, instantReadClock, api, tempDir } from './helpers.ts';
+import { countedSite, instantReadClock, api, tempDir , type FakeSite } from './helpers.ts';
 import { startMockModel, mockProviderToml, type MockItem } from './mock-responses.ts';
 
 async function discover(salaries: [string, string][], selected: string[], salaryMinK: number | null, initialSalary?: number | null) {
@@ -22,7 +22,7 @@ async function discover(salaries: [string, string][], selected: string[], salary
   fs.writeFileSync(path.join(dir, 'codex-home', 'config.toml'), mockProviderToml(mock.baseUrl, 'gpt-mock'));
   const reads: string[] = [];
   const forbidden = async (): Promise<never> => { throw new Error('只找不投不能联系'); };
-  const site: Site = {
+  const site: FakeSite = {
     open: async () => ({ page: 'ready', url: null }), close: async () => {}, status: async () => ({ page: 'ready', url: null }),
     recommend: async () => [], search: async q => q.page === 1 ? salaries.map(([jobId, salary]) => ({ jobId, salary, title: 'Python开发', company: '测试公司', area: '深圳', snippet: '', url: `https://www.zhipin.com/job_detail/${jobId}.html` })) : [],
     jobDetail: async card => { reads.push(card.jobId); return `实际JD-${card.jobId}：Python开发，明确月薪区间20-25K`; },

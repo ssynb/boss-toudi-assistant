@@ -6,7 +6,7 @@ import { startServer, type RunningServer } from '../src/server.ts';
 import { openState } from '../src/state.ts';
 import { SiteBlockedError, type Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
-import { countedSite, instantReadClock, api, tempDir } from './helpers.ts';
+import { countedSite, instantReadClock, api, tempDir , type FakeSite } from './helpers.ts';
 import { startMockModel, mockProviderToml, type MockItem } from './mock-responses.ts';
 
 const end: MockItem[] = [{ type: 'message', text: '完成' }];
@@ -28,7 +28,7 @@ async function setup(script: MockItem[][]) {
   const original = db.replaceBatch([{ ...card('old'), reason: '原批次', greeting: '您好' }]);
   db.close();
   const writes: string[] = [];
-  const site: Site = {
+  const site: FakeSite = {
     open: async () => ({ page: 'ready', url: null }), close: async () => {}, status: async () => ({ page: 'ready', url: null }),
     recommend: async () => [], search: async () => [], jobDetail: async c => `实际JD-${c.jobId} Python开发`,
     openJob: async () => ({ kind: 'canContact', evidence: '' }),

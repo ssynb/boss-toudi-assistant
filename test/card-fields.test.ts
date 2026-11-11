@@ -29,7 +29,7 @@ ${cardHtml('none', ['3-5年'], '丙科技')}
     const v = Reflect.get(o, k, o); return typeof v === 'function' ? v.bind(o) : v;
   } });
   try {
-    const cards = await createBossSite(mapped).search({ keyword: '后端', city: '深圳', page: 1 });
+    const { cards } = await createBossSite(mapped).search({ keyword: '后端', city: '深圳', page: 1 });
     assert.deepEqual(cards.map(c => [c.jobId, c.company, c.degree ?? null, Boolean(c.anonymous), c.markers ?? []]), [
       ['master', '深圳甲科技', '硕士', false, []],
       ['hunter', '某大型互联网公司', '本科', true, ['猎头']],

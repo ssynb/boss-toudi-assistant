@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { App } from '../src/app.ts';
 import type { Site } from '../src/boss.ts';
-import { countedSite, tempDir } from './helpers.ts';
+import { countedSite, tempDir , type FakeSite } from './helpers.ts';
 import { startMockModel, mockProviderToml } from './mock-responses.ts';
 
 test('调研认证预检查期间已互斥，停止正常返回且不启动任何浏览器读取', async () => {
@@ -14,7 +14,7 @@ test('调研认证预检查期间已互斥，停止正常返回且不启动任�
   fs.writeFileSync(path.join(dir, 'codex-home', 'config.toml'), mockProviderToml(mock.baseUrl, 'gpt-mock'));
   const calls: string[] = [];
   const forbidden = async (): Promise<never> => { calls.push('action'); throw new Error('预检查停止后不应操作站点'); };
-  const site: Site = {
+  const site: FakeSite = {
     open: forbidden, close: async () => {}, status: async () => ({ page: 'ready', url: null }),
     recommend: forbidden, search: forbidden, jobDetail: forbidden, openJob: forbidden, contact: forbidden, readChat: forbidden, sendGreeting: forbidden,
   };

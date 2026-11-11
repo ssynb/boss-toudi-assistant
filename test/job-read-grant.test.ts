@@ -6,7 +6,7 @@ import { startServer } from '../src/server.ts';
 import { openState } from '../src/state.ts';
 import type { AppState } from '../src/contracts.ts';
 import type { Site } from '../src/boss.ts';
-import { api, countedSite, instantReadClock, tempDir } from './helpers.ts';
+import { api, countedSite, instantReadClock, tempDir , type FakeSite } from './helpers.ts';
 import { startMockModel, mockProviderToml, type MockItem } from './mock-responses.ts';
 
 const greeting = '您好，希望了解这个岗位。';
@@ -32,7 +32,7 @@ async function setup(script: MockItem[][], used: number, limit: number) {
   finally { state.close(); }
   const calls: string[] = [];
   const texts: string[] = [];
-  const site: Site = {
+  const site: FakeSite = {
     open: async () => ({ page: 'ready', url: null }), status: async () => ({ page: 'ready', url: null }), close: async () => {},
     recommend: async () => [], search: async q => q.page === 1 ? [job('a'), job('b')] : [],
     jobDetail: async c => { calls.push(`detail:${c.jobId}`); return '主要职责：AI应用开发'; },

@@ -54,7 +54,7 @@ test('岗位卡薪资的站点混淆数字被还原', async () => {
     } } as unknown as Browser);
   try {
     await browser.open('about:blank');
-    assert.equal((await site.search({ keyword: 'Agent', city: '北京', page: 1 }))[0]?.salary, '40-60K·13薪');
+    assert.equal((await site.search({ keyword: 'Agent', city: '北京', page: 1 })).cards[0]?.salary, '40-60K·13薪');
   } finally { await browser.close(); }
 });
 
@@ -88,6 +88,6 @@ test('搜索等岗位列表异步渲染后再提取，不把加载中当作没�
     } } as unknown as Browser);
   try {
     await browser.open('about:blank');
-    assert.deepEqual((await site.search({ keyword: 'Agent', city: '深圳', page: 1 })).map((c) => c.jobId), ['j1']);
+    assert.deepEqual((await site.search({ keyword: 'Agent', city: '深圳', page: 1 })).cards.map((c) => c.jobId), ['j1']);
   } finally { await browser.close(); }
 });

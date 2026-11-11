@@ -5,7 +5,7 @@ import path from 'node:path';
 import { startServer } from '../src/server.ts';
 import type { Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
-import { countedSite, instantReadClock, tempDir, api } from './helpers.ts';
+import { countedSite, instantReadClock, tempDir, api , type FakeSite } from './helpers.ts';
 import { mockProviderToml, ruleModel, startMockModel, type MockItem } from './mock-responses.ts';
 
 const end: MockItem[] = [{ type: 'message', text: '完成' }];
@@ -27,7 +27,7 @@ async function run(directions: { name: string; count: number }[], cards: Record<
   const searches: string[] = [];
   const reads: string[] = [];
   const forbidden = async (): Promise<never> => { throw new Error('只找不投不能联系'); };
-  const site: Site = {
+  const site: FakeSite = {
     open: async () => ({ page: 'ready', url: null }), status: async () => ({ page: 'ready', url: null }), close: async () => {},
     recommend: async () => [], search: async q => { searches.push(q.keyword); return (q.page === 1 ? cards[q.keyword] ?? [] : []).map(jobId => ({ jobId, title: '工程师', company: '测试公司', salary: '20-40K', area: '深圳', snippet: '', url: `https://www.zhipin.com/job_detail/${jobId}.html` })); },
     jobDetail: async c => { reads.push(c.jobId); return `实际JD-${c.jobId}：主要职责Python开发，了解前端工具加分`; },

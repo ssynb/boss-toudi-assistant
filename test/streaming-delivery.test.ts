@@ -7,7 +7,7 @@ import { openState } from '../src/state.ts';
 import { Executor, type WriteSite } from '../src/executor.ts';
 import { SiteBlockedError, type Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
-import { countedSite, instantReadClock, tempDir, api } from './helpers.ts';
+import { countedSite, instantReadClock, tempDir, api , type FakeSite } from './helpers.ts';
 import { startMockModel, mockProviderToml, type MockItem } from './mock-responses.ts';
 
 const message = '深圳AI开发，薪资不限，找到就投';
@@ -39,7 +39,7 @@ async function setup(count: number, ids: string[], tail: MockItem[][] = []) {
   state.replaceBatch([draft('old')]);
   state.close();
   const events: string[] = [];
-  const site: Site = {
+  const site: FakeSite = {
     open: async () => ({ page: 'ready', url: null }), status: async () => ({ page: 'ready', url: null }), close: async () => {},
     recommend: async () => [], search: async q => q.page === 1 ? ids.map(card) : [],
     jobDetail: async c => { events.push(`detail:${c.jobId}`); return `实际JD-${c.jobId} Python开发`; },

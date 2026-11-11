@@ -5,7 +5,7 @@ import path from 'node:path';
 import { startServer } from '../src/server.ts';
 import { SiteBlockedError, type JobCard, type Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
-import { countedSite, instantReadClock, tempDir, api } from './helpers.ts';
+import { countedSite, instantReadClock, tempDir, api , type FakeSite } from './helpers.ts';
 import { mockProviderToml, startMockModel, type MockItem } from './mock-responses.ts';
 
 const end: MockItem[] = [{ type: 'message', text: '完成' }];
@@ -28,7 +28,7 @@ async function run(directions: { name: string; count: number }[], feed: Feed, de
   const events: string[] = [];
   const cities = new Set<string>();
   const forbidden = async (): Promise<never> => { throw new Error('只找不投不能联系'); };
-  const site: Site = {
+  const site: FakeSite = {
     open: async () => ({ page: 'ready', url: null }), status: async () => ({ page: 'ready', url: null }), close: async () => {},
     recommend: async q => { events.push(`recommend:${q.page}`); if (q.tab) events.push(`tab:${q.tab}`); cities.add(q.city); return feed.recommend(q.page); },
     search: async q => { events.push(`search:${q.keyword}:${q.page}`); return feed.search?.(q.page) ?? []; },

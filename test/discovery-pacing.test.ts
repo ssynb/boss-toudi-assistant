@@ -6,7 +6,7 @@ import { startServer, type RunningServer } from '../src/server.ts';
 import { openState } from '../src/state.ts';
 import { SiteBlockedError, type Site } from '../src/boss.ts';
 import type { AppState } from '../src/contracts.ts';
-import { countedSite, api, instantReadClock, tempDir } from './helpers.ts';
+import { countedSite, api, instantReadClock, tempDir , type FakeSite } from './helpers.ts';
 import { mockProviderToml, startMockModel, type MockItem } from './mock-responses.ts';
 
 const message = '深圳Python，薪资不限，只找不投';
@@ -25,7 +25,7 @@ async function fixture(script: MockItem[][], clock = instantReadClock) {
   const events: string[] = [];
   const writes: string[] = [];
   const forbidden = (name: string) => async (): Promise<never> => { writes.push(name); throw new Error('只找不投不能联系'); };
-  const site: Site = {
+  const site: FakeSite = {
     open: async () => ({ page: 'ready', url: null }), status: async () => ({ page: 'ready', url: null }), close: async () => {},
     recommend: async () => [], search: async q => { events.push(`search:${q.page}`); return q.page === 1 ? [job('a')] : []; },
     jobDetail: async c => { events.push(`detail:${c.jobId}`); return '实际JD Python开发'; },

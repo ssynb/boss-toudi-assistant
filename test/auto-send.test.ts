@@ -6,7 +6,7 @@ import path from 'node:path';
 import { startServer } from '../src/server.ts';
 import type { Site } from '../src/boss.ts';
 import type { AppState, BrowserPage } from '../src/contracts.ts';
-import { countedSite, instantReadClock, api, LOCAL, tempDir } from './helpers.ts';
+import { countedSite, instantReadClock, api, LOCAL, tempDir , type FakeSite } from './helpers.ts';
 import { mockProviderToml, startMockModel, type MockItem } from './mock-responses.ts';
 
 const requestText = '北京前端，薪资不限，找150个';
@@ -28,7 +28,7 @@ async function run(body: unknown, page: BrowserPage = 'ready') {
   fs.mkdirSync(path.join(dataDir, 'codex-home'), { recursive: true });
   fs.writeFileSync(path.join(dataDir, 'codex-home', 'config.toml'), mockProviderToml(mock.baseUrl, 'gpt-mock'));
   const calls: string[] = [];
-  const site: Site = {
+  const site: FakeSite = {
     open: async () => ({ page: 'ready', url: 'https://www.zhipin.com/' }),
     status: async () => ({ page, url: null }),
     close: async () => {},
@@ -106,7 +106,7 @@ for (const terminal of ['failed', 'cancelled'] as const) {
     fs.writeFileSync(path.join(dir, 'codex-home', 'config.toml'), mockProviderToml(`http://127.0.0.1:${(provider.address() as { port: number }).port}/v1`, 'gpt-mock'));
     const writes: string[] = [];
     const forbidden = (name: string) => async (): Promise<never> => { writes.push(name); throw new Error('不能联系'); };
-    const site: Site = {
+    const site: FakeSite = {
       open: async () => ({ page: 'ready', url: null }), status: async () => ({ page: 'ready', url: null }), close: async () => {},
       recommend: async () => [], search: async q => q.page === 1 ? [card] : [], jobDetail: async () => '岗位职责：React前端开发',
       openJob: forbidden('openJob'), contact: forbidden('contact'), readChat: forbidden('readChat'), sendGreeting: forbidden('sendGreeting'),
