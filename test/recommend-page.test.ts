@@ -12,7 +12,7 @@ const BATCHES = [['a1', 'a2', 'a3'], ['b1', 'b2'], ['c1']];
  * 按 2026-11-01 只读取证的真实推荐页形态：职位页「推荐」标签（无搜索词、带城市参数），
  * 页面 Vue 状态带 pageVo/hasMore/moreLoading，加载后异步渲染，滚到文档底部才追加下一批，最后一批 hasMore=false。
  */
-async function fixture(mode: 'normal' | 'verify' | 'loading-empty' | 'other-first') {
+async function fixture(mode: 'normal' | 'verify' | 'loading-empty' | 'other-first' | 'empty-city') {
   const browser = localBrowser(`recommend-${mode}`);
   const requests: string[] = [];
   const html = `<!doctype html><meta charset="utf-8"><title>推荐</title><div class="nav-figure">账号</div>
@@ -25,8 +25,11 @@ const card=id=>'<div class="card-area"><div class="job-card-wrap"><li class="job
 const append=()=>{const ids=batches[state.pageVo.page].map(id=>state.selected?'py-'+id:id);state.jobList.push(...ids);root.querySelector('ul').insertAdjacentHTML('beforeend',ids.map(card).join(''));state.pageVo.page++;state.hasMore=state.pageVo.page<batches.length;state.loading=false;root.querySelector('.job-empty-box')?.remove();};
 // 2026-11-10 真实取证：点击后标签先变为选中，旧列表仍是 loading=false；站点经 100ms 防抖才清空列表、置 loading 并请求新标签的列表接口。
 for(const tab of document.querySelectorAll('.expect-item'))tab.onclick=()=>{document.querySelector('.c-expect-select .active')?.classList.remove('active');tab.classList.add('active');
-  const expectId=tab.innerText==='Python(深圳)'?'py-expect':'other-expect';state.catchExpectId=expectId;state.formData={city:tab.innerText.includes('深圳')?'101280600':'101020100'};
-  if(${JSON.stringify(mode)}==='other-first')fetch('/wapi/zpgeek/pc/recommend/job/list.json?page=1&encryptExpectId=other-expect&city=101020100');
+  const expectId=tab.innerText==='Python(深圳)'?'py-expect':'other-expect';state.catchExpectId=expectId;
+  // 2026-11-10 真实取证：指定求职方向的请求 city 为显式空串，深圳意向由 expectId 携带。
+  state.formData={city:${JSON.stringify(mode)}==='empty-city'&&expectId==='py-expect'?'':tab.innerText.includes('深圳')?'101280600':'101020100'};
+  if(['other-first','empty-city'].includes(${JSON.stringify(mode)}))fetch('/wapi/zpgeek/pc/recommend/job/list.json?page=1&encryptExpectId=other-expect&city=101020100');
+  if(${JSON.stringify(mode)}==='empty-city')fetch('/wapi/zpgeek/pc/recommend/job/list.json?page=1&encryptExpectId=py-expect');
   setTimeout(async()=>{root.querySelector('ul').innerHTML='';state.jobList=[];state.pageVo.page=0;state.hasMore=true;state.loading=true;state.selected=tab.innerText;
     if(${JSON.stringify(mode)}==='loading-empty')root.insertAdjacentHTML('beforeend','<div class="job-empty-box">加载中</div>');
     const data=(await (await fetch('/wapi/zpgeek/pc/recommend/job/list.json?page=1&encryptExpectId='+expectId+'&city='+state.formData.city)).json()).zpData;
@@ -41,7 +44,7 @@ addEventListener('scroll',()=>{
   const server = http.createServer((req, res) => {
     requests.push(req.url!);
     if (req.url!.startsWith('/wapi/zpgeek/pc/recommend/job/list.json')) {
-      if (req.url!.includes('other-expect')) return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ code: 0, zpData: { hasMore: false, jobList: [] } }));
+      if (req.url!.includes('other-expect') || !new URL(req.url!, 'http://local').searchParams.has('city')) return void res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ code: 0, zpData: { hasMore: false, jobList: [] } }));
       const body = JSON.stringify({ code: 0, zpData: { hasMore: BATCHES.length > 1, jobList: BATCHES[0]!.map(id => ({ encryptJobId: `py-${id}` })) } });
       setTimeout(() => res.writeHead(200, { 'content-type': 'application/json' }).end(body), mode === 'loading-empty' ? 2000 : 100);
       return;
@@ -106,6 +109,14 @@ test('切换求职方向时旧空占位不代表新标签为空，等待新列�
 
 test('切换方向时其他方向或城市的列表响应不算目标方向的结果，更不能当作推荐用尽', { timeout: 90_000 }, async () => {
   const f = await fixture('other-first');
+  try {
+    const result = await f.site.recommend({ city: '深圳', page: 1, tab: 'Python(深圳)' });
+    assert.deepEqual([result.cards.map(card => card.jobId), result.exhausted], [BATCHES[0]!.map(id => `py-${id}`), false]);
+  } finally { await f.close(); }
+});
+
+test('指定方向的请求城市为显式空串时按空串精确绑定；缺少城市参数或其他方向的响应仍忽略', { timeout: 90_000 }, async () => {
+  const f = await fixture('empty-city');
   try {
     const result = await f.site.recommend({ city: '深圳', page: 1, tab: 'Python(深圳)' });
     assert.deepEqual([result.cards.map(card => card.jobId), result.exhausted], [BATCHES[0]!.map(id => `py-${id}`), false]);
