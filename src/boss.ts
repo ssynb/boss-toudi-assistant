@@ -463,7 +463,8 @@ export function createBossSite(browser: Browser, beforeJobOpen?: () => void): Si
         try {
           await browser.click(matches[0]![0]);
           const target = await browser.eval<{ expectId: unknown; city: unknown }>(`(() => { const state = document.querySelector('.page-jobs-main')?.__vue__; return { expectId: state?.catchExpectId, city: state?.formData?.city }; })()`);
-          if (typeof target.expectId !== 'string' || !target.expectId || typeof target.city !== 'string' || !target.city) throw wrongTab();
+          // 指定求职方向的请求 city 是显式空串（深圳意向由 expectId 携带，页面默认城市可能是别处），所以空串合法、按原值精确比对；缺失（非字符串）才拒绝。
+          if (typeof target.expectId !== 'string' || !target.expectId || typeof target.city !== 'string') throw wrongTab();
           const list = await firstPageResponse(watch, { expectId: target.expectId, city: target.city });
           const rendered = `${JSON.stringify(list.ids)}.every(id => document.querySelector('.job-card-box a[href*="/job_detail/' + id + '.html"]'))`;
           await waitPage(`(${selected}) && (${LIST_RENDERED}) && (${rendered})`, '求职方向推荐数据加载');
