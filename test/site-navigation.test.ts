@@ -90,7 +90,7 @@ test('分页通过真实滚动加载后续岗位；结果耗尽不重复第一�
   const dir = tempDir('boss-search-navigation-');
   fs.writeFileSync(path.join(dir, 'page.html'), `<!doctype html><meta charset="utf-8"><div class="nav-figure">账号</div><div class="page-jobs-main"><ul></ul></div><script>
 const root=document.querySelector('.page-jobs-main');
-const state=root.__vue__={pageVo:{page:1},loading:false,moreLoading:false,hasMore:true};
+const state=root.__vue__={pageVo:{page:1},loading:false,moreLoading:false,hasMore:true,get jobList(){return [...document.querySelectorAll('.job-card-box')];}};
 function append(){root.querySelector('ul').insertAdjacentHTML('beforeend','<li class="job-card-box" style="height:1200px"><a href="https://www.zhipin.com/job_detail/p'+state.pageVo.page+'.html"><span class="job-name">岗位</span></a></li>');}
 append();addEventListener('scroll',()=>{if(scrollY+innerHeight<document.scrollingElement.scrollHeight-100||state.moreLoading||!state.hasMore)return;state.moreLoading=true;setTimeout(()=>{state.pageVo.page++;append();state.hasMore=state.pageVo.page<3;state.moreLoading=false;},50);});
 </script>`);

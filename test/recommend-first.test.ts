@@ -53,7 +53,7 @@ test('先遍历推荐页再读JD；推荐满足各方向配额时不搜索，异
   const pages = [[card('r1'), card('far', '北京·朝阳区'), card('low', '深圳', '10-15K'), card('r2', '深圳')], [card('r1')]];
   const { state, events, cities } = await run([{ name: 'AI开发', count: 1 }, { name: '后端', count: 1 }],
     { recommend: async page => pages[page - 1] ?? [] }, judged(select('r1', 'AI开发'), select('r2', '后端')));
-  assert.deepEqual(events, ['recommend:1', 'recommend:2', 'detail:r1', 'detail:r2'], '推荐流只遍历一次且去重，读完卡片后才打开详情');
+  assert.deepEqual(events, ['recommend:1', 'recommend:2', 'recommend:3', 'detail:r1', 'detail:r2'], '推荐流只遍历一次且去重，仅有重复岗位的批不算结束，读完卡片后才打开详情');
   assert.deepEqual(state.batch!.targets.map(t => t.jobId), ['r1', 'r2']);
   assert.deepEqual([...cities], ['深圳'], '推荐页按计划城市打开，仍逐卡核对地区');
   assert.deepEqual(state.discovery.directions.map(d => [d.name, d.selected]), [['AI开发', 1], ['后端', 1]]);

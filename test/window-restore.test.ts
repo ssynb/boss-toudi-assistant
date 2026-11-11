@@ -39,7 +39,7 @@ async function fixture(name: string, headed: boolean) {
 <div class="page-jobs-main"><ul></ul></div>
 <script>
 const batches=${JSON.stringify(BATCHES)};
-const root=document.querySelector('.page-jobs-main'),state=root.__vue__={pageVo:{page:0},hasMore:true,loading:false,moreLoading:false};
+const root=document.querySelector('.page-jobs-main'),state=root.__vue__={pageVo:{page:0},hasMore:true,loading:false,moreLoading:false,get jobList(){return [...document.querySelectorAll('.job-card-box')];}};
 const append=()=>{root.querySelector('ul').insertAdjacentHTML('beforeend',batches[state.pageVo.page].map(id=>'<li class="job-card-box" style="height:900px"><a href="/job_detail/'+id+'.html" class="job-name">岗位</a><span class="company-location">深圳</span></li>').join(''));state.pageVo.page++;state.hasMore=state.pageVo.page<batches.length;};
 append();
 addEventListener('scroll',()=>{if(state.moreLoading||!state.hasMore||scrollY+innerHeight<document.scrollingElement.scrollHeight-50)return;state.moreLoading=true;setTimeout(()=>{append();state.moreLoading=false;},200);});

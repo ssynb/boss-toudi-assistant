@@ -17,7 +17,7 @@ async function fixture() {
 <div class="page-jobs-main"><ul><li class="job-card-box" style="height:2000px"><a href="/job_detail/a1.html" class="job-name">岗位</a><span class="company-location">深圳</span></li></ul></div>
 <script>
 Object.defineProperty(document,'visibilityState',{get:()=>'hidden'});Object.defineProperty(document,'hidden',{get:()=>true});
-document.querySelector('.page-jobs-main').__vue__={pageVo:{page:1},hasMore:true,loading:false,moreLoading:false};
+document.querySelector('.page-jobs-main').__vue__={pageVo:{page:1},hasMore:true,loading:false,moreLoading:false,get jobList(){return [...document.querySelectorAll('.job-card-box')];}};
 </script>`;
   const server = http.createServer((_req, res) => res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(html));
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));

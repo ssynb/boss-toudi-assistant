@@ -11,7 +11,7 @@ async function fixture(mode:'path'|'text'|'paging'|'no-time') {
   const opens:string[]=[];let scrolls=0;
   const blocked=`<!doctype html><title>站点提示</title><div class="nav-figure">账号</div><a href="/web/user/">登录</a><main>${mode==='no-time'?'':warning}</main>`;
   const initial=`<!doctype html><div class="nav-figure">账号</div><div class="page-jobs-main"><ul><li class="job-card-box" style="height:1600px"><a href="/job_detail/a.html">岗位</a></li></ul></div><script>
-  document.querySelector('.page-jobs-main').__vue__={pageVo:{page:1},loading:false,moreLoading:false,hasMore:true};
+  document.querySelector('.page-jobs-main').__vue__={pageVo:{page:1},loading:false,moreLoading:false,hasMore:true,get jobList(){return [...document.querySelectorAll('.job-card-box')];}};
   addEventListener('scroll',()=>{document.body.innerText=${JSON.stringify(warning)};},{once:true});</script>`;
   const server=http.createServer((req,res)=>{
     if((mode==='path'||mode==='no-time')&&!req.url!.startsWith('/web/passport/zp/403'))return res.writeHead(302,{location:'/web/passport/zp/403.html?code=32'}).end();

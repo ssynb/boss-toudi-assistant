@@ -10,7 +10,7 @@ async function fixture(mode: string) {
   const html = `<!doctype html><meta charset="utf-8"><title>本地搜索</title><div class="nav-figure">账号</div>
 <div class="page-jobs-main"><ul>${mode === 'empty' ? '<div class="job-empty-box">无结果</div>' : mode === 'unrendered' || mode === 'detail' ? '' : '<li class="job-card-box" style="height:1600px"><a href="/job_detail/a.html">岗位A</a></li>'}</ul></div>
 <script>
-const root=document.querySelector('.page-jobs-main'),state=root.__vue__={pageVo:{page:1},hasMore:${mode !== 'empty'},loading:false,moreLoading:false};
+const root=document.querySelector('.page-jobs-main'),state=root.__vue__={pageVo:{page:1},hasMore:${mode !== 'empty'},loading:false,moreLoading:false,get jobList(){return [...document.querySelectorAll('.job-card-box')];}};
 let requested=0;
 addEventListener('scroll',()=>{if(requested&&${JSON.stringify(mode)}!=='growing-layout')return;requested++;
  if(${JSON.stringify(mode)}==='growing-layout'&&requested===1){root.querySelector('ul').insertAdjacentHTML('beforeend','<li style="height:1600px">稍后加载的页面内容</li>');return;}
