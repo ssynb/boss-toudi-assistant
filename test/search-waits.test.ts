@@ -8,9 +8,10 @@ import { localBrowser } from './boss-fixture.ts';
 async function fixture(mode: string) {
   const browser = localBrowser('search-waits');
   const html = `<!doctype html><meta charset="utf-8"><title>本地搜索</title><div class="nav-figure">账号</div>
-<div class="page-jobs-main"><ul>${mode === 'empty' ? '<div class="job-empty-box">无结果</div>' : mode === 'unrendered' || mode === 'detail' ? '' : '<li class="job-card-box" style="height:1600px"><a href="/job_detail/a.html">岗位A</a></li>'}</ul></div>
+<div class="page-jobs-main"><ul>${mode === 'empty' || mode === 'loading-placeholder' ? '<div class="job-empty-box">无结果</div>' : mode === 'unrendered' || mode === 'detail' ? '' : '<li class="job-card-box" style="height:1600px"><a href="/job_detail/a.html">岗位A</a></li>'}</ul></div>
 <script>
-const root=document.querySelector('.page-jobs-main'),state=root.__vue__={pageVo:{page:1},hasMore:${mode !== 'empty'},loading:false,moreLoading:false,get jobList(){return [...document.querySelectorAll('.job-card-box')];}};
+const root=document.querySelector('.page-jobs-main'),state=root.__vue__={pageVo:{page:1},hasMore:${mode !== 'empty'},loading:${mode === 'loading-placeholder'},moreLoading:false,get jobList(){return [...document.querySelectorAll('.job-card-box')];}};
+if(${JSON.stringify(mode)}==='loading-placeholder')setTimeout(()=>{root.querySelector('ul').innerHTML='<li class="job-card-box"><a href="/job_detail/late.html">岗位</a></li>';state.loading=false;},1500);
 let requested=0;
 addEventListener('scroll',()=>{if(requested&&${JSON.stringify(mode)}!=='growing-layout')return;requested++;
  if(${JSON.stringify(mode)}==='growing-layout'&&requested===1){root.querySelector('ul').insertAdjacentHTML('beforeend','<li style="height:1600px">稍后加载的页面内容</li>');return;}
@@ -55,3 +56,11 @@ for (const [mode,step] of [['stalled','分页加载'],['unrendered','搜索结�
     }finally{await f.close();}
   });
 }
+
+test('搜索首屏加载中的空占位不当作没有结果，等加载完成后读取', { timeout: 60_000 }, async () => {
+  const f = await fixture('loading-placeholder');
+  try {
+    const result = await f.site.search({ keyword: 'Python', city: '深圳', page: 1 });
+    assert.deepEqual([result.cards.map(card => card.jobId), result.exhausted], [['late'], false]);
+  } finally { await f.close(); }
+});

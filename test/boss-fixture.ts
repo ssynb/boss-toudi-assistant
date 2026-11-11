@@ -155,7 +155,7 @@ export async function startBoss(scenario: Partial<Scenario> = {}): Promise<BossF
     const job = url.pathname.match(/^\/job_detail\/([^/]+)\.html$/);
     if (job) { f.jobVisits.push(job[1]!); return html(jobPage(f, job[1]!)); }
     if (url.pathname === '/web/geek/chat') return html(chatPage(f));
-    if (url.pathname === '/web/geek/jobs') return html('<!doctype html><div class="nav-figure">账号</div><div class="job-empty-box">没有找到相关职位</div>');
+    if (url.pathname === '/web/geek/jobs') return html('<!doctype html><div class="nav-figure">账号</div><div class="page-jobs-main"><div class="job-empty-box">没有找到相关职位</div></div><script>document.querySelector(".page-jobs-main").__vue__={pageVo:{page:1},hasMore:false,loading:false,moreLoading:false,jobList:[]};</script>');
     if (url.pathname === '/wapi/friends') return json(200, f.scenario.friends.filter(x => !f.scenario.newFriendDelay || x.jobId !== f.scenario.target.jobId).map(friendJson));
     if (url.pathname === '/wapi/friend-page') {
       const page = Number(url.searchParams.get('page'));
