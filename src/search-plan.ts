@@ -180,6 +180,12 @@ function readCardRules(plan: SearchPlan, sources: string[]): void {
   }
 }
 
+/** 「键：值」独占一行的配置，返回最后出现的值。 */
+function configLine(sources: string[], key: string): string | undefined {
+  const line = new RegExp(`^[ \\t]*${key}[：:][ \\t]*(\\S(?:.*\\S)?)[ \\t]*$`, 'gmu');
+  return sources.flatMap(source => [...source.matchAll(line)]).at(-1)?.[1];
+}
+
 export function readSearchPlan(value: unknown, latestMessage: string, contactedToday: number, salaryEvidence: string[] = [], ruleSources: string[] = []): SearchPlan {
   const plan = value as SearchPlan;
   requireQuote(plan?.quote, latestMessage);
@@ -202,10 +208,9 @@ export function readSearchPlan(value: unknown, latestMessage: string, contactedT
   if (new Set(plan.directions.map(d => d.name.trim())).size !== plan.directions.length) throw new Error('投递方向不能重复');
   const sources = [...ruleSources, latestMessage];
   readCardRules(plan, sources);
-  const recommendation = sources.flatMap(source => [...source.matchAll(/推荐来源[：:]\s*([^\n。；]+)/gu)]).at(-1)?.[1]?.trim();
-  plan.recommendationTab = recommendation;
-  // 是否在推荐用尽后搜索只由用户要求或消息决定，覆盖模型给出的任何值；最后出现的一行为准。
-  plan.searchAfterExhausted = sources.flatMap(source => [...source.matchAll(/推荐耗尽后搜索补充[：:]\s*([^\n。；]+)/gu)]).at(-1)?.[1]?.trim() === '允许';
+  // 推荐来源与搜索补充开关都是独立配置行，只由用户要求或消息决定（覆盖模型给出的值），最后出现的一行为准；句中提及或否定不算。
+  plan.recommendationTab = configLine(sources, '推荐来源');
+  plan.searchAfterExhausted = configLine(sources, '推荐耗尽后搜索补充') === '允许';
   // 只找不投不联系任何人，额度在发送草稿时再核对。
   const total = plan.directions.reduce((sum, direction) => sum + direction.count, 0);
   if (total > MAX_BATCH_TARGETS) throw new AppError('bad_request', `本批最多 ${MAX_BATCH_TARGETS} 个，请求 ${total} 个，未启动`);

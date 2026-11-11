@@ -424,11 +424,16 @@ export function createBossSite(browser: Browser, beforeJobOpen?: () => void): Si
     }
   }
 
-  /** 点击之后的第一页列表响应：须完整成功，给出岗位 ID 与是否还有更多。 */
-  async function firstPageResponse(watch: ResponseWatch): Promise<{ ids: string[]; hasMore: boolean }> {
+  /**
+   * 点击之后、目标方向与城市的第一页列表响应：须完整成功，给出岗位 ID 与是否还有更多。
+   * 站点点击时同步写入目标方向的 catchExpectId 与 formData.city；其他方向、城市或页码的响应一律忽略。
+   */
+  async function firstPageResponse(watch: ResponseWatch, target: { expectId: string; city: string }): Promise<{ ids: string[]; hasMore: boolean }> {
     for (;;) {
       const event = await watch.next();
-      if (new URL(event.url).searchParams.get('page') !== '1') continue;
+      const params = new URL(event.url).searchParams;
+      const expectId = params.get('encryptExpectId') ?? params.get('expectId');
+      if (params.get('page') !== '1' || expectId !== target.expectId || params.get('city') !== target.city) continue;
       const data = event.kind === 'response' && event.status === 200 ? (event.body as { code?: unknown; zpData?: { jobList?: unknown; hasMore?: unknown } } | null) : null;
       const jobs = data?.zpData?.jobList;
       if (data?.code !== 0 || !Array.isArray(jobs) || typeof data.zpData?.hasMore !== 'boolean' || jobs.some(job => typeof job?.encryptJobId !== 'string')) {
@@ -457,7 +462,9 @@ export function createBossSite(browser: Browser, beforeJobOpen?: () => void): Si
         const watch = await browser.watchResponses(RECOMMEND_LIST);
         try {
           await browser.click(matches[0]![0]);
-          const list = await firstPageResponse(watch);
+          const target = await browser.eval<{ expectId: unknown; city: unknown }>(`(() => { const state = document.querySelector('.page-jobs-main')?.__vue__; return { expectId: state?.catchExpectId, city: state?.formData?.city }; })()`);
+          if (typeof target.expectId !== 'string' || !target.expectId || typeof target.city !== 'string' || !target.city) throw wrongTab();
+          const list = await firstPageResponse(watch, { expectId: target.expectId, city: target.city });
           const rendered = `${JSON.stringify(list.ids)}.every(id => document.querySelector('.job-card-box a[href*="/job_detail/' + id + '.html"]'))`;
           await waitPage(`(${selected}) && (${LIST_RENDERED}) && (${rendered})`, '求职方向推荐数据加载');
           only = new Set(list.ids);
@@ -465,8 +472,10 @@ export function createBossSite(browser: Browser, beforeJobOpen?: () => void): Si
         } finally { await watch.close(); }
         if (!(await browser.eval<boolean>(selected))) throw wrongTab();
       } else {
-        // 首屏只有确认是空结果才算用尽；其余情况由后续批次的分页状态判断。
-        exhausted = await browser.eval<boolean>(`(${LIST_RENDERED}) && document.querySelector('.page-jobs-main').__vue__.hasMore === false && !document.querySelector('.job-card-box')`);
+        const first = await firstScreen();
+        recommendPages = 1;
+        for (const card of first.cards) recommended.add(card.jobId);
+        return first;
       }
     } else {
       // 重新打开会得到另一轮推荐，只能在原页面续读；某批失败时 recommendPages 不前进，可重试同一批。
@@ -490,13 +499,26 @@ export function createBossSite(browser: Browser, beforeJobOpen?: () => void): Si
     return more;
   }
 
+  /**
+   * 导航后的首屏：有卡片即返回，是否用尽看加载完成后的分页状态；没有卡片时（可能是加载中的空占位）
+   * 等列表加载完成且有数据或站点明确没有更多再读，读不到分页状态就超时报错，不当作空结果。
+   */
+  async function firstScreen(): Promise<ListPage> {
+    let cards = await browser.eval<JobCard[]>(EXTRACT_CARDS);
+    if (!cards.length) {
+      await waitPage(`(${LIST_RENDERED}) && (document.querySelector('.page-jobs-main').__vue__.jobList.length > 0 || document.querySelector('.page-jobs-main').__vue__.hasMore === false)`, '列表首屏加载');
+      cards = await browser.eval<JobCard[]>(EXTRACT_CARDS);
+    }
+    return { cards, exhausted: await browser.eval<boolean>(`(${LIST_RENDERED}) && document.querySelector('.page-jobs-main').__vue__.hasMore === false`) };
+  }
+
   async function searchPage(q: SearchQuery): Promise<ListPage> {
     const params = new URLSearchParams({ query: q.keyword, city: CITY_CODES[q.city]! });
     await goto(`${ORIGIN}${JOBS_PATH}?${params}`);
     await waitPage(RESULTS_RENDERED, '搜索结果渲染');
-    let cards = await browser.eval<JobCard[]>(EXTRACT_CARDS);
-    // 首屏确认是空结果才算用尽；否则看本批加载完成后的分页状态。
-    if (!cards.length) return { cards: [], exhausted: true };
+    const first = await firstScreen();
+    if (q.page === 1 || first.exhausted) return q.page === 1 ? first : { cards: [], exhausted: true };
+    let cards = first.cards;
     let result = cards;
     // 站点忽略 URL 的 page 参数；每次滚到底部才请求下一批，页面保留已加载岗位。
     for (let page = 2; page <= q.page; page++) {
